@@ -1,5 +1,5 @@
 # rk-drl
-Offline multi-dimensional distributional RL via RKHS embeddings
+Offline Multi-Simensional Distributional RL - RKHS Mean Embedding Estimation
 
 ## Installation
 ### Works on Linux/macOS/Windows (requires Python ≥3.9, git, and pip). 
