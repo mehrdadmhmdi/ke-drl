@@ -36,9 +36,9 @@ class RecoverAndPlot:
         c = self.cfg
 
         base = (
-            f"Behavioral Policy: {c['behavioral_policy']}  |  Target Policy: {c['target_policy']}\n"
-            rf"Data id={c['data_ID']} | Matérn($\nu,\ell,\sigma$)=({c['nu']},{c['length_scale']},{np.array(c['sigma_k']).round(2)}) | "
-            f"n={c['n_ids']}, T={c['n_timepoints']} | dims(S,R,A)=({c['state_dim']},{c['reward_dim']},{c['action_dim']})"
+            f"Target Policy: {c['target_policy']}\n"
+            rf" Matérn($\nu,\ell,\sigma$)=({c['nu']},{c['length_scale']},{np.array(c['sigma_k']).round(2)}) | "
+            f"dims(S,R,A)=({c['state_dim']},{c['reward_dim']},{c['action_dim']})"
             f"\nlr={c['lr']:.1e} | Training Reg-$\\lambda$={c['lambda_reg']:.1e} | "
             f"FP_constraint={c['fixed_point_constraint']} | $FP_\\lambda$={c['FP_penalty_lambda']} | "
             f"Recovery Reg-$\\lambda$={c['lambda_rec']:.1e}"
