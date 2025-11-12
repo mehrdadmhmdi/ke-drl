@@ -80,7 +80,7 @@ class RecoverAndPlot:
 
     def _fname(self, plot_type: str) -> str:
         c = self.cfg
-        return f"{plot_type}_{c['job_id']}.png"
+        return f"{plot_type}.png"
 
     @staticmethod
     def _trapz1(u: torch.Tensor, x: torch.Tensor, dim: int) -> torch.Tensor:
