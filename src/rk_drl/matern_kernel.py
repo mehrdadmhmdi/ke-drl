@@ -1,103 +1,119 @@
-import math, time
 import numpy as np
 from scipy.spatial.distance import cdist
 from scipy.special import gamma, kv
 import torch
-from contextlib import nullcontext
+import time
+import math
+# import torch_bessel
 
-# --- internal cap: max temporary elements per block (tune if needed) ---
-_MAX_BLOCK_ELEMS = 2_000_000  # ~2M elems ≈ 8 MB in float32, 16 MB in float64
+
+
+# def matern_kernel(x:np.ndarray,
+#                   y:np.ndarray,
+#                   nu=1.5, length_scale=1.0):
+#
+#     kernel = Matern(length_scale=length_scale, nu=nu)
+#     return kernel(x, y)
 
 def matern_kernel_np(X1, X2, nu, length_scale, sigma=1.0):
     """
-    Matérn kernel (NumPy/SciPy) with row-chunking to limit peak memory.
-    Returns (X1.shape[0], X2.shape[0]) ndarray.
+    Compute the Matérn kernel matrix between two sets of vectors.
+    Parameters:
+        - x (np.ndarray): Array of shape (n_samples_x, n_features) representing input points.
+        - y (np.ndarray): Array of shape (n_samples_y, n_features) representing input points.
+        - nu (float, optional): Smoothness parameter of the Matern kernel.
+        - length_scale (float, optional): Length scale parameter of the Matern kernel.
+        - sigma (float, optional):  parameter of the Matern kernel. default is 1.0.
+
+    Returns:
+        - kernel_matrix (np.ndarray): The computed Matern kernel matrix of shape (n_samples_x, n_samples_y).
     """
-    X1 = np.asarray(X1, dtype=float, order="C")
-    X2 = np.asarray(X2, dtype=float, order="C")
-    m, n = X1.shape[0], X2.shape[0]
-    out = np.empty((m, n), dtype=float)
+    dist = cdist(X1, X2, metric='euclidean')
+    scaled_dist = np.sqrt(2 * nu) * dist / length_scale
+    scaled_safe = np.maximum(scaled_dist, np.finfo(float).eps)
 
-    ell = float(length_scale)
-    if ell <= 0 or sigma <= 0:
-        raise ValueError("length_scale and sigma must be > 0.")
-    if nu <= 0:
-        raise ValueError("nu must be > 0.")
+    coeff  = sigma ** 2 * (2 ** (1 - nu)) / gamma(nu)
+    kernel = coeff * (scaled_safe ** nu) * kv(nu, scaled_safe)
+    kernel[dist == 0] = sigma ** 2  # variance on the diagonal
 
-    # rows per block so that (bs * n) <= cap
-    bs = max(1, min(m, _MAX_BLOCK_ELEMS // max(1, n)))
-    root2nu_over_ell = math.sqrt(2.0 * nu) / ell
-    coeff = (sigma ** 2) * (2.0 ** (1.0 - nu)) / gamma(nu)
-
-    for i in range(0, m, bs):
-        Xi = X1[i:i+bs]
-        # Euclidean distances for the block
-        D = cdist(Xi, X2, metric='euclidean')  # (bs, n)
-        z = root2nu_over_ell * D
-        # avoid 0^nu in Bessel term; Bessel handles >0
-        z_safe = np.maximum(z, np.finfo(float).eps)
-        Kblk = coeff * np.power(z_safe, nu) * kv(nu, z_safe)
-        # exact variance on zero distances (diagonal when X1==X2 and block aligns)
-        Kblk[D == 0.0] = (sigma ** 2)
-        out[i:i+bs] = Kblk
-        # free big temporaries
-        del Xi, D, z, z_safe, Kblk
-
-    return out
+    return kernel
 
 
-def matern_kernel(X1: torch.Tensor, X2: torch.Tensor, nu: float, length_scale: float, sigma: float = 1.0) -> torch.Tensor:
+import math
+import torch
+
+def matern_kernel(
+    X1: torch.Tensor,
+    X2: torch.Tensor,
+    nu: float,
+    length_scale: float,
+    sigma: float = 1.0,
+    batch_size: int = None
+) -> torch.Tensor:
     """
-    Matérn kernel for half-integer ν = p + 0.5 using exp×poly closed form,
-    computed in row-chunks to bound memory. Returns (N, M) tensor on X1.device.
+    Matérn kernel for ν = p + 0.5 (p ∈ ℕ₀) using the closed-form
+    exponential × polynomial representation in pure PyTorch.
+    Supports batching over X1 to reduce memory usage for large datasets.
+
+    Args:
+        X1: Tensor of shape (N, D)
+        X2: Tensor of shape (M, D)
+        nu: Smoothness parameter, must satisfy nu = p + 0.5
+        length_scale: Length-scale ℓ > 0
+        sigma: Signal variance σ (default 1.0)
+        batch_size: Optional batch size for computing kernel in chunks over X1 (default None, no batching)
+
+    Returns:
+        Kernel matrix of shape (N, M)
     """
     if X1.ndim != 2 or X2.ndim != 2 or X1.size(1) != X2.size(1):
         raise ValueError("X1, X2 must be 2D with same feature dim.")
     if length_scale <= 0 or sigma <= 0:
         raise ValueError("length_scale and sigma must be > 0.")
-    # enforce half-integer ν (p ∈ ℕ₀)
+    # Determine p = ν - 0.5 and verify half-integer
     p = int(nu - 0.5)
     if abs(nu - (p + 0.5)) > 1e-8:
-        raise ValueError(f"nu={nu} must be half-integer (p + 0.5).")
+        raise ValueError(f"nu={nu} must be half-integer (p + 0.5)")
 
-    # align device/dtype; keep contiguity
     X1 = X1.contiguous()
     X2 = X2.to(device=X1.device, dtype=X1.dtype).contiguous()
 
-    m, n = X1.shape[0], X2.shape[0]
-    out = X1.new_empty((m, n))
+    prefac = (sigma ** 2) * (math.factorial(p) / math.factorial(2 * p))
+    sqrt_2nu = math.sqrt(2.0 * nu)
 
-    ell = float(length_scale)
-    s2  = float(sigma) ** 2
-    root2nu = math.sqrt(2.0 * nu)
+    # Precompute coefficients for the polynomial
+    a = [math.factorial(2 * p - m) // (math.factorial(p - m) * math.factorial(m)) for m in range(p + 1)]
 
-    # choose rows-per-block so (bs * n) <= cap
-    bs = max(1, min(m, _MAX_BLOCK_ELEMS // max(1, n)))
-
-    # optional AMP on CUDA for lower peak memory
-    amp_ctx = torch.autocast(device_type="cuda", dtype=torch.bfloat16) if (X1.is_cuda) else nullcontext()
-
-    # precompute integer polynomial coefficients on CPU (Horner later on GPU)
-    # a_m = (2p - m)! / ( (p - m)! * m! ), m=0..p
-    coeffs = [math.factorial(2 * p - m) // (math.factorial(p - m) * math.factorial(m)) for m in range(p + 1)]
-    prefac = s2 * (math.factorial(p) / math.factorial(2 * p))
-
-    with torch.no_grad(), amp_ctx:
-        for i in range(0, m, bs):
-            Xi = X1[i:i+bs]                              # (bs, d)
-            D  = torch.cdist(Xi, X2, p=2.0)              # (bs, n)  :contentReference[oaicite:1]{index=1}
-            # z = sqrt(2ν) * d / ℓ
-            z  = D.mul_(root2nu / max(ell, 1e-12))
-            E  = torch.exp(-z)                            # exp(-z) — computed per block
-            # Horner in t=2z for the polynomial part
-            t  = z.mul(2.0)
-            poly = t.new_full(t.shape, float(coeffs[-1]))
-            for m_ in range(p - 1, -1, -1):
-                poly.mul_(t).add_(float(coeffs[m_]))
-            Kblk = prefac * E * poly
-            out[i:i+bs] = Kblk
-
-            # release block temps early
-            del Xi, D, z, E, t, poly, Kblk
-
-    return out
+    if batch_size is None or batch_size >= X1.size(0):
+        # Non-batched computation
+        dists = torch.cdist(X1, X2, p=2.0)
+        dists.div_(length_scale)
+        z = dists.mul_(sqrt_2nu)
+        exp_term = torch.exp(-z)
+        z.mul_(2.0)  # t = 2z
+        result = z.new_full(z.shape, float(a[-1]))
+        for m in range(p - 1, -1, -1):
+            result.mul_(z).add_(float(a[m]))
+        exp_term.mul_(prefac).mul_(result)
+        del dists, z, result, a
+        return exp_term
+    else:
+        # Batched computation over X1
+        kernel_parts = []
+        for i in range(0, X1.size(0), batch_size):
+            end = min(i + batch_size, X1.size(0))
+            X1_batch = X1[i:end]
+            dists = torch.cdist(X1_batch, X2, p=2.0)
+            dists.div_(length_scale)
+            z = dists.mul_(sqrt_2nu)
+            exp_term = torch.exp(-z)
+            z.mul_(2.0)  # t = 2z
+            result = z.new_full(z.shape, float(a[-1]))
+            for m in range(p - 1, -1, -1):
+                result.mul_(z).add_(float(a[m]))
+            exp_term.mul_(prefac).mul_(result)
+            kernel_parts.append(exp_term)
+            del dists, z, result, exp_term  # Explicitly free memory
+            torch.cuda.empty_cache() if X1.device.type == 'cuda' else None
+        del a
+        return torch.cat(kernel_parts, dim=0)
