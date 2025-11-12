@@ -4,12 +4,8 @@ import os, sys, json
 from typing import Any, Dict, Optional, Tuple
 import torch
 
-# ---- single pipeline (no duplication)
 from .RK_DRL import RK_DRL
-
-# ---- your recovery/plot utilities
 from .density_recovery import RecoverAndPlot
-
 
 # ========= FIT (thin wrapper over RK_DRL) =========
 def estimate_embedding(
@@ -21,7 +17,6 @@ def estimate_embedding(
     nu, length_scale, sigma,
     gamma_val, lambda_reg,
     num_grid_points,
-    # optional (kept identical to RK_DRL defaults)
     hull_expand_factor: float = 1.8,
     lr: float = 1e-3, weight_decay: float = 0.0, num_steps: int = 5000,
     FP_penalty_lambda: float = 1e2,
@@ -34,7 +29,6 @@ def estimate_embedding(
     device: Optional[str] = None, dtype: torch.dtype = torch.float64,
     verbose: bool = True,
 ) -> Tuple[torch.Tensor, list, list, Dict[str, torch.Tensor]]:
-    """Call the core RK_DRL and return (B, history_obj, history_be, pre)."""
     return RK_DRL(
         s0=s0, s1=s1, a0=a0, a1=a1,
         s_star=s_star, a_star=a_star, r=r,
@@ -54,8 +48,7 @@ def estimate_embedding(
         device=device, dtype=dtype, verbose=verbose,
     )
 
-
-# ========= PLOTTING CONFIG (exact dict your code expects) =========
+# ========= PLOTTING CONFIG =========
 def build_plot_config(
     *,
     lr: float,
@@ -110,10 +103,9 @@ def build_plot_config(
         'target_policy': str(target_policy),
     }
 
-
-# ========= INDIVIDUAL PLOT FUNCTIONS (each does one thing) =========
+# ========= INDIVIDUAL PLOT FUNCTIONS =========
 def plot_bellman_error(history_be: list, outdir: str = "./plots"):
-    tool = RecoverAndPlot({})
+    tool = RecoverAndPlot({})  # safe due to robust _footer
     os.makedirs(outdir, exist_ok=True)
     tool.plot_bellman_error(history_be, outdir=outdir)
 
@@ -151,7 +143,7 @@ def plot_densities(
 ):
     tool = RecoverAndPlot({})
     os.makedirs(outdir, exist_ok=True)
-    # New 3-arg plotting API: only estimated densities
+    # estimates-only signature
     tool.plot_densities(fz, grid_dict, outdir=outdir)
 
 def compute_L2_marginal_error(
@@ -205,22 +197,10 @@ def save_weights_and_grid(beta_full: torch.Tensor, Z_grid: torch.Tensor, run_id:
     np.savetxt(os.path.join(mu_dir, f"weights_{run_id}.csv"),
                beta_full.detach().cpu().view(-1).numpy(), delimiter=",", fmt="%.8e")
 
-
 # ========= CLI (optional) =========
 def _shape(x): return tuple(x.shape) if hasattr(x, "shape") else x
 
 def cli():
-    """
-    stdin JSON:
-    {
-      "fit": { ... RK_DRL kwargs ... },
-      "plots": {
-        "config": { ... build_plot_config kwargs ... },
-        "r_obs": null or array, "Z_true": null or array,
-        "what": ["bellman","loss","beta","marginal","mean","ba","qcal","evs","op2d","heat","stats"]
-      }
-    }
-    """
     cfg = json.load(sys.stdin)
     B, hist_obj, hist_be, pre = estimate_embedding(**cfg["fit"])
     print("OK fit:", {"B": _shape(B), "hist_obj": len(hist_obj), "hist_be": len(hist_be),
@@ -229,23 +209,22 @@ def cli():
     if "plots" in cfg:
         pc = cfg["plots"]
         config = build_plot_config(**pc["config"])
-        r_obs = (torch.as_tensor(pc["r_obs"]) if pc.get("r_obs") is not None else None)
+        r_obs  = (torch.as_tensor(pc["r_obs"])  if pc.get("r_obs")  is not None else None)
         Z_true = (torch.as_tensor(pc["Z_true"]) if pc.get("Z_true") is not None else None)
 
         what = set(pc.get("what", []))
         if "bellman" in what: plot_bellman_error(hist_be)
-        if "loss" in what:    plot_total_loss(hist_obj)
+        if "loss"    in what: plot_total_loss(hist_obj)
 
-        if "beta" in what or "marginal" in what or "mean" in what or "stats" in what:
+        if {"beta","marginal","mean","stats"} & what:
             beta, Zg = recover_joint_beta(B=B, k_sa=pre["k_sa"], Z_grid=pre["Z_grid"], Phi=pre["Phi"], K_sa=pre["K_sa"], config=config)
             print("OK beta:", {"beta": _shape(beta), "Zg": _shape(Zg)})
 
             if "marginal" in what:
                 fz, grid = compute_marginals_from_beta(beta_full=beta, Z_grid=Zg, config=config)
-                # Wrapper now ignores Z_true/r_obs/Z_grid
                 plot_densities(fz=fz, Z_true_tensor=Z_true, r_obs=r_obs, Z_grid=Zg, grid_dict=grid)
 
-            if "mean" in what or "ba" in what or "qcal" in what or "evs" in what or "op2d" in what or "heat" in what or "stats" in what:
+            if {"mean","ba","qcal","evs","op2d","heat","stats"} & what:
                 cache, _ = mean_embedding_all(beta_full=beta, Z_grid=Zg, Z_true_tensor=Z_true, config=config)
                 if "ba"    in what: plot_bland_altman(cache)
                 if "qcal"  in what: plot_quantile_calibration(cache)

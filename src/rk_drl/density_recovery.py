@@ -34,16 +34,47 @@ class RecoverAndPlot:
 
     # -------------------- helpers --------------------
     def _footer(self, extra: str = "") -> str:
-        c = self.cfg
+        c = self.cfg or {}
+
+        def gj(k, default):
+            return c.get(k, default)
+
+        # numbers/arrays with safe formatting
+        nu = gj('nu', 'N/A')
+        ell = gj('length_scale', 'N/A')
+        sig = gj('sigma_k', 'N/A')
+        try:
+            import numpy as np
+            sig_str = np.array(sig).round(2).tolist() if isinstance(sig, (list, tuple)) else (
+                round(float(sig), 2) if isinstance(sig, (int, float)) else sig)
+        except Exception:
+            sig_str = sig
+
+        # text fields
+        tp = gj('target_policy', 'N/A')
+        sdim = gj('state_dim', 'N/A')
+        rdim = gj('reward_dim', 'N/A')
+        adim = gj('action_dim', 'N/A')
+
+        lr = gj('lr', 'N/A')
+        lam = gj('lambda_reg', 'N/A')
+        fpc = gj('fixed_point_constraint', 'N/A')
+        fpl = gj('FP_penalty_lambda', 'N/A')
+        lrec = gj('lambda_rec', 'N/A')
+        bw = gj('bandwidth', 'N/A')
+        hef = gj('hull_expand_factor', 'N/A')
+        sst = gj('s_star', 'N/A')
+        ast = gj('a_star', 'N/A')
+
         base = (
-            f"Target Policy: {c['target_policy']}\n"
-            rf" Matérn($\nu,\ell,\sigma$)=({c['nu']},{c['length_scale']},{np.array(c['sigma_k']).round(2)}) | "
-            f"dims(S,R,A)=({c['state_dim']},{c['reward_dim']},{c['action_dim']})"
-            f"\nlr={c['lr']:.1e} | Training Reg-$\\lambda$={c['lambda_reg']:.1e} | "
-            f"FP_constraint={c['fixed_point_constraint']} | $FP_\\lambda$={c['FP_penalty_lambda']} | "
-            f"Recovery Reg-$\\lambda$={c['lambda_rec']:.1e}"
-            f"\nDensity G-Bandwidth={c.get('bandwidth', 'N/A')} | Z grid expand factor = {c.get('hull_expand_factor', 'N/A')}"
-            f"\n(s*,a*)=({np.array(c['s_star']).round(3)}, {np.array(c['a_star']).round(3)})"
+            f"Target Policy: {tp}\n"
+            rf" Matérn($\nu,\ell,\sigma$)=({nu},{ell},{sig_str}) | "
+            f"dims(S,R,A)=({sdim},{rdim},{adim})"
+            f"\nlr={lr} | Training Reg-$\\lambda$={lam} | "
+            f"FP_constraint={fpc} | $FP_\\lambda$={fpl} | "
+            f"Recovery Reg-$\\lambda$={lrec}"
+            f"\nDensity G-Bandwidth={bw} | Z grid expand factor = {hef}"
+            f"\n(s*,a*)=({sst}, {ast})"
         )
         return base + (f" | {extra}" if extra else "")
 
@@ -140,7 +171,7 @@ class RecoverAndPlot:
         return F, grids
 
     # -------------------- plots (estimate-only) --------------------
-    def plot_densities(self, fz, grid_dict, outdir="./plots/ind_plots"):
+    def plot_densities(self, fz, grid_dict, outdir="./plots/"):
         """
         Signature changed: drop Z_true, r, Z. Only plot estimated marginals.
         """
@@ -161,7 +192,7 @@ class RecoverAndPlot:
         plt.savefig(f"{outdir}/{self._fname('marginal_fZ')}", dpi=600)
         plt.close()
 
-    def plot_bellman_error(self, hist_be, outdir="./plots/ind_plots"):
+    def plot_bellman_error(self, hist_be, outdir="./plots/"):
         plt.figure(figsize=(7, 5))
         plt.plot(np.asarray(hist_be), color="#FF5F05")
         plt.xlabel("Iteration"); plt.ylabel("Log ‖Bellman Error‖")
@@ -173,7 +204,7 @@ class RecoverAndPlot:
         plt.savefig(f"{outdir}/{self._fname('BellmanError_ADAM')}", dpi=600)
         plt.close()
 
-    def plot_total_loss(self, hist_obj, outdir="./plots/ind_plots"):
+    def plot_total_loss(self, hist_obj, outdir="./plots/"):
         plt.figure(figsize=(7, 5))
         plt.plot(np.asarray(hist_obj), color="#FF5F05")
         plt.xlabel("Iteration"); plt.ylabel("Log Loss (objective + penalty)")
@@ -247,7 +278,7 @@ class RecoverAndPlot:
 
     def plot_mean_embedding_3d_slice(self, cache, *, dims=(0, 1), ref="median",
                                      n1=120, n2=120, margin_factor=0.35,
-                                     outdir="./plots"):
+                                     outdir="./plots/"):
         """
         Single 3D surface for μ̂ on a 2-D slice (dims=j,k).
         """
@@ -294,7 +325,7 @@ class RecoverAndPlot:
         plt.close()
         print(f"Saved {os.path.join(outdir, fname)}")
 
-    def plot_mu_joint_contour(self, mu_hat_2d, Xg, Yg, dims=(0, 1), outdir="./plots/ind_plots"):
+    def plot_mu_joint_contour(self, mu_hat_2d, Xg, Yg, dims=(0, 1), outdir="./plots/"):
         os.makedirs(outdir, exist_ok=True)
         Z1, Z2 = Xg.detach().cpu().numpy(), Yg.detach().cpu().numpy()
         EH = mu_hat_2d.detach().cpu().numpy()
@@ -315,7 +346,7 @@ class RecoverAndPlot:
     def mean_embedding_all(self, beta, Z_grid, *,  # signature changed: removed Z_true
                            nu, length_scale, sigma_k,
                            do_joint_dims=(0, 1), n1=120, n2=120, margin_factor=0.35,
-                           outdir="./plots/ind_plots"):
+                           outdir="./plots/"):
         """
         - Computes μ̂ on full grid once (CSV) and plots per-dim.
         - Computes a 2-D slice (CSV) and plots (contour + 3D) for μ̂ only.
@@ -337,7 +368,7 @@ class RecoverAndPlot:
         return cache, (mu2d_hat, Xg, Yg)
 
     # ---------- estimate-only per-dim ribbons ----------
-    def plot_mu_per_dim(self, cache, outdir="./plots/ind_plots"):
+    def plot_mu_per_dim(self, cache, outdir="./plots/"):
         os.makedirs(outdir, exist_ok=True)
         Zg = cache["Z_grid"].detach().cpu().numpy()  # (m,d)
         mh = cache["mu_hat"].detach().cpu().numpy()  # (m,)
@@ -364,7 +395,7 @@ class RecoverAndPlot:
         plt.savefig(f"{outdir}/{fname}", dpi=600); plt.close()
 
     # ---------- All runs (estimate-only) ----------
-    def plot_all_mu(self, data_dir="./mu", outdir="./plots", n_bins=20):
+    def plot_all_mu(self, data_dir="./mu", outdir="./plots/", n_bins=20):
         """
         Across-run summary (μ̂ only):
           [A] mean±SD ribbons of μ̂ (over grid index)
@@ -419,7 +450,7 @@ class RecoverAndPlot:
     @torch.no_grad()
     def plot_operator_check_2d(self, cache, R, gamma, dims=(0,1),
                                n1=80, n2=80, margin_factor=0.35,
-                               max_rewards=2000, outdir="./plots/ind_plots"):
+                               max_rewards=2000, outdir="./plots/"):
         os.makedirs(outdir, exist_ok=True)
         beta, Zg = cache["beta"], cache["Z_grid"]
         nu, ell, sig = cache["nu"], cache["length_scale"], cache["sigma_k"]
