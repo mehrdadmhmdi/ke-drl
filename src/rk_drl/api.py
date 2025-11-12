@@ -16,7 +16,7 @@ def estimate_embedding(
     *,
     s0, s1, a0, a1,
     s_star, a_star,
-    r,
+    r0,
     target_p_choice, target_p_params,
     nu, length_scale, sigma,
     gamma_val, lambda_reg,
@@ -37,7 +37,7 @@ def estimate_embedding(
     """Call the core RK_DRL and return (B, history_obj, history_be, pre)."""
     return RK_DRL(
         s0=s0, s1=s1, a0=a0, a1=a1,
-        s_star=s_star, a_star=a_star, r=r,
+        s_star=s_star, a_star=a_star, r=r0,
         target_p_choice=target_p_choice, target_p_params=target_p_params,
         nu=nu, length_scale=length_scale, sigma=sigma,
         gamma_val=gamma_val, lambda_reg=lambda_reg,
@@ -58,8 +58,6 @@ def estimate_embedding(
 # ========= PLOTTING CONFIG (exact dict your code expects) =========
 def build_plot_config(
     *,
-    job_id: str = "local",
-    data_ID: str = "0",
     lr: float,
     fixed_point_constraint: bool,
     FP_penalty_lambda: float,
@@ -85,12 +83,9 @@ def build_plot_config(
     action_dim: int,
     s_star,
     a_star,
-    behavioral_policy: str,
     target_policy: str,
 ) -> Dict[str, Any]:
     return {
-        'job_id': f"{job_id}",
-        'data_ID': f"{data_ID}",
         'lr': lr,
         'fixed_point_constraint': fixed_point_constraint,
         'FP_penalty_lambda': FP_penalty_lambda,
@@ -116,7 +111,6 @@ def build_plot_config(
         'action_dim': int(action_dim),
         's_star': (s_star.detach().cpu().tolist() if isinstance(s_star, torch.Tensor) else s_star),
         'a_star': (a_star.detach().cpu().tolist() if isinstance(a_star, torch.Tensor) else a_star),
-        'behavioral_policy': str(behavioral_policy),
         'target_policy': str(target_policy),
     }
 
