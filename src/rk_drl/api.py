@@ -160,12 +160,63 @@ def plot_operator_check_2d(cache: Dict[str, Any], *, r_obs: torch.Tensor, gamma:
     tool = RecoverAndPlot({})
     tool.plot_operator_check_2d(cache, R=r_obs, gamma=gamma, dims=dims, outdir=outdir)
 
-def save_weights_and_grid(beta_full: torch.Tensor, Z_grid: torch.Tensor, run_id: int, mu_dir="./mu", data_dir="./data"):
+def save_weights_and_grid(beta_full: torch.Tensor, Z_grid: torch.Tensor,  mu_dir="./mu", data_dir="./data"):
     os.makedirs(mu_dir, exist_ok=True); os.makedirs(data_dir, exist_ok=True)
-    torch.save(Z_grid, os.path.join(data_dir, f"Zgrid_{run_id}.pt"))
+    torch.save(Z_grid, os.path.join(data_dir, f"Zgrid.pt"))
     import numpy as np
-    np.savetxt(os.path.join(mu_dir, f"weights_{run_id}.csv"),
+    np.savetxt(os.path.join(mu_dir, f"weights.csv"),
                beta_full.detach().cpu().view(-1).numpy(), delimiter=",", fmt="%.8e")
+
+
+def compute_L2_marginal_error(
+    *,
+    fz: torch.Tensor,                 # [n_grid, d] estimated marginals
+    grid_dict: Dict[str, Any],        # {j: 1D grid for dim j}
+    config: Dict[str, Any],           # needs reward_dim and (optionally) bandwidth
+    Z_true_tensor: Optional[torch.Tensor] = None  # [N, d] samples from truth (optional)
+) -> Dict[str, Any]:
+    """
+    L2( f_hat , f_true ) per marginal on provided grids.
+    If Z_true_tensor is None, this exists for backward-compatibility and will raise at call time.
+    """
+    if Z_true_tensor is None:
+        raise RuntimeError(
+            "compute_L2_marginal_error requires Z_true_tensor (ground truth). "
+            "In estimate-only mode remove this call, or pass true samples."
+        )
+
+    import math
+    d = int(config.get("reward_dim", fz.shape[1]))
+    h = float(config.get("bandwidth", 0.5))
+    eps = torch.finfo(fz.dtype).eps
+
+    fz = fz.to(dtype=torch.float64)
+    Z_true_tensor = Z_true_tensor.to(dtype=torch.float64, device=fz.device)
+
+    per_dim = []
+    for j in range(d):
+        u = torch.as_tensor(grid_dict[j], dtype=fz.dtype, device=fz.device).view(-1)   # [n_grid]
+        fhat = fz[:, j].view(-1)                                                       # [n_grid]
+
+        x = Z_true_tensor[:, j].view(1, -1)                                            # [1, N]
+        uu = u.view(-1, 1)                                                             # [n_grid, 1]
+        T = (uu - x) / h
+        ftrue = torch.exp(-0.5 * T**2) / (math.sqrt(2.0 * math.pi) * h)                # [n_grid, N]
+        ftrue = ftrue.mean(dim=1)                                                      # KDE average over samples
+
+        # normalize both to integrate to 1 on u
+        du = u[1:] - u[:-1]
+        def trapz(y: torch.Tensor) -> torch.Tensor:
+            return 0.5 * (y[:-1] + y[1:]) @ du
+
+        ftrue = ftrue / (trapz(ftrue) + eps)
+        fhat  = fhat  / (trapz(fhat)  + eps)
+
+        diff = fhat - ftrue
+        l2_j = 0.5 * ((diff[:-1]**2 + diff[1:]**2) @ du)                               # trapezoid on (diff^2)
+        per_dim.append(float(l2_j.item()))
+
+    return {"L2_total": float(sum(per_dim)), "per_dim": per_dim}
 
 # ========= CLI (estimate-only) =========
 def _shape(x): return tuple(x.shape) if hasattr(x, "shape") else x
