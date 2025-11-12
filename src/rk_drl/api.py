@@ -1,4 +1,4 @@
-# src/rkdrl/api.py
+# rk_drl/api.py
 from __future__ import annotations
 import os, sys, json
 from typing import Any, Dict, Optional, Tuple
@@ -7,17 +7,14 @@ import torch
 from .RK_DRL import RK_DRL
 from .density_recovery import RecoverAndPlot
 
-# ========= FIT (thin wrapper over RK_DRL) =========
+# ----------------- FIT -----------------
 def estimate_embedding(
-    *,
-    s0, s1, a0, a1,
-    s_star, a_star,
-    r,
+    *, s0, s1, a0, a1, s_star, a_star, r,
     target_p_choice, target_p_params,
     nu, length_scale, sigma,
     gamma_val, lambda_reg,
     num_grid_points,
-    # optional (kept identical to RK_DRL defaults)
+    # passthrough options identical to RK_DRL defaults
     hull_expand_factor: float = 1.8,
     lr: float = 1e-3, weight_decay: float = 0.0, num_steps: int = 5000,
     FP_penalty_lambda: float = 1e2,
@@ -49,176 +46,97 @@ def estimate_embedding(
         device=device, dtype=dtype, verbose=verbose,
     )
 
-# ========= PLOTTING CONFIG =========
+# ------------- PLOT CONFIG -------------
 def build_plot_config(
-    *,
-    lr: float,
-    fixed_point_constraint: bool,
-    FP_penalty_lambda: float,
-    Sum_one_W: bool,
-    NonNeg_W: bool,
-    mass_anchor_lambda: float,
-    target_mass: float,
-    num_steps: int,
-    nu: float,
-    length_scale: float,
-    sigma_k: float,
-    gamma_val: float,
-    num_grid_points: int,
-    hull_expand_factor: float,
-    lambda_reg: float,
-    bandwidth: float,
-    lambda_rec: float,
-    method: str,
-    state_dim: int,
-    reward_dim: int,
-    action_dim: int,
-    s_star,
-    a_star,
-    target_policy: str,
+    *, lr: float, fixed_point_constraint: bool, FP_penalty_lambda: float,
+    Sum_one_W: bool, NonNeg_W: bool, mass_anchor_lambda: float, target_mass: float,
+    num_steps: int, nu: float, length_scale: float, sigma_k: float, gamma_val: float,
+    num_grid_points: int, hull_expand_factor: float, lambda_reg: float,
+    bandwidth: float, lambda_rec: float, method: str,
+    state_dim: int, reward_dim: int, action_dim: int,
+    s_star, a_star, target_policy: str,
 ) -> Dict[str, Any]:
     return {
-        'lr': lr,
-        'fixed_point_constraint': fixed_point_constraint,
-        'FP_penalty_lambda': FP_penalty_lambda,
-        'Sum_one_W': Sum_one_W,
-        'NonNeg_W': NonNeg_W,
-        'mass_anchor_lambda': mass_anchor_lambda,
-        'target_mass': target_mass,
-        'num_steps': int(num_steps),
-        'nu': float(nu),
-        'length_scale': float(length_scale),
-        'sigma_k': float(sigma_k),
-        'gamma_val': float(gamma_val),
-        'num_grid_points': int(num_grid_points),
-        'hull_expand_factor': float(hull_expand_factor),
-        'lambda_reg': float(lambda_reg),
-        'bandwidth': float(bandwidth),
-        'lambda_rec': float(lambda_rec),
-        'method': str(method),
-        'state_dim': int(state_dim),
-        'reward_dim': int(reward_dim),
-        'action_dim': int(action_dim),
-        's_star': (s_star.detach().cpu().tolist() if isinstance(s_star, torch.Tensor) else s_star),
-        'a_star': (a_star.detach().cpu().tolist() if isinstance(a_star, torch.Tensor) else a_star),
-        'target_policy': str(target_policy),
+        "lr": lr, "fixed_point_constraint": fixed_point_constraint, "FP_penalty_lambda": FP_penalty_lambda,
+        "Sum_one_W": Sum_one_W, "NonNeg_W": NonNeg_W, "mass_anchor_lambda": mass_anchor_lambda, "target_mass": target_mass,
+        "num_steps": int(num_steps), "nu": float(nu), "length_scale": float(length_scale), "sigma_k": float(sigma_k),
+        "gamma_val": float(gamma_val), "num_grid_points": int(num_grid_points),
+        "hull_expand_factor": float(hull_expand_factor), "lambda_reg": float(lambda_reg),
+        "bandwidth": float(bandwidth), "lambda_rec": float(lambda_rec), "method": str(method),
+        "state_dim": int(state_dim), "reward_dim": int(reward_dim), "action_dim": int(action_dim),
+        "s_star": (s_star.detach().cpu().tolist() if isinstance(s_star, torch.Tensor) else s_star),
+        "a_star": (a_star.detach().cpu().tolist() if isinstance(a_star, torch.Tensor) else a_star),
+        "target_policy": str(target_policy),
     }
 
-# ========= INDIVIDUAL PLOT / RECOVERY HELPERS =========
-def plot_bellman_error(history_be: list, outdir: str = "./plots"):
-    tool = RecoverAndPlot({})
+# ------------- SIMPLE PLOTS -------------
+def plot_bellman_error(history_be: list, *, config: Dict[str, Any] | None = None, outdir: str = "./plots/"):
+    tool = RecoverAndPlot(config or {})
     os.makedirs(outdir, exist_ok=True)
     tool.plot_bellman_error(history_be, outdir=outdir)
 
-def plot_total_loss(history_obj: list, outdir: str = "./plots"):
-    tool = RecoverAndPlot({})
+def plot_total_loss(history_obj: list, *, config: Dict[str, Any] | None = None, outdir: str = "./plots/"):
+    tool = RecoverAndPlot(config or {})
     os.makedirs(outdir, exist_ok=True)
     tool.plot_total_loss(history_obj, outdir=outdir)
 
+
+# ------------- RECOVERY / EVAL -------------
 def recover_joint_beta(
     *, B: torch.Tensor, k_sa: torch.Tensor, Z_grid: torch.Tensor, Phi: torch.Tensor, K_sa: torch.Tensor,
     config: Dict[str, Any],
 ):
-    tool = RecoverAndPlot(config)
+    tool = RecoverAndPlot(config or {})
     return tool.recover_joint_beta(
         B, k_sa, Z_grid, Phi, K_sa,
-        nu=config['nu'], length_scale=config['length_scale'], sigma_k=config['sigma_k'],
-        method=config['method'], lambda_reg=config['lambda_reg']
+        nu=config["nu"], length_scale=config["length_scale"], sigma_k=config["sigma_k"],
+        method=config["method"], lambda_reg=config["lambda_reg"],
     )
 
 def compute_marginals_from_beta(
     *, beta_full: torch.Tensor, Z_grid: torch.Tensor, config: Dict[str, Any],
     n_grid: int = 400, margin_factor: float = 0.25
 ):
-    tool = RecoverAndPlot(config)
+    tool = RecoverAndPlot(config or {})
     return tool.marginals_from_beta(
-        beta_full, Z_grid, reward_dim=config['reward_dim'],
-        nu=config['nu'], length_scale=config['length_scale'], sigma_k=config['sigma_k'],
-        lambda_rec=config['lambda_rec'], bandwidth=config['bandwidth'],
-        n_grid=n_grid, margin_factor=margin_factor
+        beta_full, Z_grid, reward_dim=config["reward_dim"],
+        nu=config["nu"], length_scale=config["length_scale"], sigma_k=config["sigma_k"],
+        lambda_rec=config["lambda_rec"], bandwidth=config["bandwidth"],
+        n_grid=n_grid, margin_factor=margin_factor,
     )
 
 def plot_densities(
-    *, fz: torch.Tensor, grid_dict: Dict[str, Any], config: Dict[str, Any], outdir: str = "./plots"
+    *, fz: torch.Tensor, grid_dict: Dict[str, Any], config: Dict[str, Any], outdir: str = "./plots/"
 ):
-    tool = RecoverAndPlot(config)  # needs reward_dim for subplot count
+    tool = RecoverAndPlot(config or {})
     os.makedirs(outdir, exist_ok=True)
     tool.plot_densities(fz, grid_dict, outdir=outdir)
 
 def mean_embedding_all(
     *, beta_full: torch.Tensor, Z_grid: torch.Tensor, config: Dict[str, Any],
-    do_joint_dims=(0,1), n1: int = 120, n2: int = 120, margin_factor: float = 0.35, outdir: str = "./plots"
+    do_joint_dims=(0, 1), n1: int = 120, n2: int = 120, outdir: str = "./plots/"
 ):
-    tool = RecoverAndPlot(config)
+    tool = RecoverAndPlot(config or {})
     return tool.mean_embedding_all(
         beta_full, Z_grid,
-        nu=config['nu'], length_scale=config['length_scale'], sigma_k=config['sigma_k'],
-        do_joint_dims=do_joint_dims, n1=n1, n2=n2, margin_factor=margin_factor, outdir=outdir
+        nu=config["nu"], length_scale=config["length_scale"], sigma_k=config["sigma_k"],
+        do_joint_dims=do_joint_dims, n1=n1, n2=n2, outdir=outdir,
     )
 
-def plot_operator_check_2d(cache: Dict[str, Any], *, r_obs: torch.Tensor, gamma: float, dims=(0,1), outdir: str = "./plots"):
-    tool = RecoverAndPlot({})
+def plot_operator_check_2d(cache: Dict[str, Any], *, r_obs: torch.Tensor | None,
+                           gamma: float, dims=(0,1), outdir: str = "./plots/",
+                           config: Dict[str, Any] | None = None):
+    tool = RecoverAndPlot(config or {})
     tool.plot_operator_check_2d(cache, R=r_obs, gamma=gamma, dims=dims, outdir=outdir)
 
-def save_weights_and_grid(beta_full: torch.Tensor, Z_grid: torch.Tensor,  mu_dir="./mu", data_dir="./data"):
+def save_weights_and_grid(beta_full: torch.Tensor, Z_grid: torch.Tensor, run_id: int, mu_dir="./mu", data_dir="./data"):
     os.makedirs(mu_dir, exist_ok=True); os.makedirs(data_dir, exist_ok=True)
-    torch.save(Z_grid, os.path.join(data_dir, f"Zgrid.pt"))
+    torch.save(Z_grid, os.path.join(data_dir, f"Zgrid_{run_id}.pt"))
     import numpy as np
-    np.savetxt(os.path.join(mu_dir, f"weights.csv"),
+    np.savetxt(os.path.join(mu_dir, f"weights_{run_id}.csv"),
                beta_full.detach().cpu().view(-1).numpy(), delimiter=",", fmt="%.8e")
 
-
-def compute_L2_marginal_error(
-    *,
-    fz: torch.Tensor,                 # [n_grid, d] estimated marginals
-    grid_dict: Dict[str, Any],        # {j: 1D grid for dim j}
-    config: Dict[str, Any],           # needs reward_dim and (optionally) bandwidth
-    Z_true_tensor: Optional[torch.Tensor] = None  # [N, d] samples from truth (optional)
-) -> Dict[str, Any]:
-    """
-    L2( f_hat , f_true ) per marginal on provided grids.
-    If Z_true_tensor is None, this exists for backward-compatibility and will raise at call time.
-    """
-    if Z_true_tensor is None:
-        raise RuntimeError(
-            "compute_L2_marginal_error requires Z_true_tensor (ground truth). "
-            "In estimate-only mode remove this call, or pass true samples."
-        )
-
-    import math
-    d = int(config.get("reward_dim", fz.shape[1]))
-    h = float(config.get("bandwidth", 0.5))
-    eps = torch.finfo(fz.dtype).eps
-
-    fz = fz.to(dtype=torch.float64)
-    Z_true_tensor = Z_true_tensor.to(dtype=torch.float64, device=fz.device)
-
-    per_dim = []
-    for j in range(d):
-        u = torch.as_tensor(grid_dict[j], dtype=fz.dtype, device=fz.device).view(-1)   # [n_grid]
-        fhat = fz[:, j].view(-1)                                                       # [n_grid]
-
-        x = Z_true_tensor[:, j].view(1, -1)                                            # [1, N]
-        uu = u.view(-1, 1)                                                             # [n_grid, 1]
-        T = (uu - x) / h
-        ftrue = torch.exp(-0.5 * T**2) / (math.sqrt(2.0 * math.pi) * h)                # [n_grid, N]
-        ftrue = ftrue.mean(dim=1)                                                      # KDE average over samples
-
-        # normalize both to integrate to 1 on u
-        du = u[1:] - u[:-1]
-        def trapz(y: torch.Tensor) -> torch.Tensor:
-            return 0.5 * (y[:-1] + y[1:]) @ du
-
-        ftrue = ftrue / (trapz(ftrue) + eps)
-        fhat  = fhat  / (trapz(fhat)  + eps)
-
-        diff = fhat - ftrue
-        l2_j = 0.5 * ((diff[:-1]**2 + diff[1:]**2) @ du)                               # trapezoid on (diff^2)
-        per_dim.append(float(l2_j.item()))
-
-    return {"L2_total": float(sum(per_dim)), "per_dim": per_dim}
-
-# ========= CLI (estimate-only) =========
+# ------------- CLI (optional) -------------
 def _shape(x): return tuple(x.shape) if hasattr(x, "shape") else x
 
 def cli():
@@ -241,15 +159,15 @@ def cli():
     if "plots" in cfg:
         pc = cfg["plots"]
         config = build_plot_config(**pc["config"])
-        r_obs  = (torch.as_tensor(pc["r_obs"]) if pc.get("r_obs") is not None else None)
+        r_obs = (torch.as_tensor(pc["r_obs"]) if pc.get("r_obs") is not None else None)
 
+        # --- CLI fragment ---
         what = set(pc.get("what", []))
-        if "bellman" in what: plot_bellman_error(hist_be)
-        if "loss"    in what: plot_total_loss(hist_obj)
+        if "bellman" in what: plot_bellman_error(hist_be, config=config)
+        if "loss" in what: plot_total_loss(hist_obj, config=config)
 
         if {"beta","marginal","mean","op2d"} & what:
-            beta, Zg = recover_joint_beta(B=B, k_sa=pre["k_sa"], Z_grid=pre["Z_grid"],
-                                          Phi=pre["Phi"], K_sa=pre["K_sa"], config=config)
+            beta, Zg = recover_joint_beta(B=B, k_sa=pre["k_sa"], Z_grid=pre["Z_grid"], Phi=pre["Phi"], K_sa=pre["K_sa"], config=config)
             print("OK beta:", {"beta": _shape(beta), "Zg": _shape(Zg)})
 
             if "marginal" in what:
@@ -258,5 +176,5 @@ def cli():
 
             if "mean" in what or "op2d" in what:
                 cache, _ = mean_embedding_all(beta_full=beta, Z_grid=Zg, config=config)
-                if "op2d" in what and r_obs is not None:
+                if "op2d" in what:
                     plot_operator_check_2d(cache, r_obs=r_obs, gamma=config["gamma_val"])
