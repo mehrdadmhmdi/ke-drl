@@ -1,10 +1,10 @@
-# rk_drl/api.py
+# KE_DRL/api.py
 from __future__ import annotations
 import os, sys, json
 from typing import Any, Dict, Optional, Tuple
 import torch
 
-from .RK_DRL import RK_DRL
+from .KE_DRL import KE_DRL
 from .density_recovery import RecoverAndPlot
 
 # ----------------- FIT -----------------
@@ -14,7 +14,7 @@ def estimate_embedding(
     nu, length_scale, sigma,
     gamma_val, lambda_reg,
     num_grid_points,
-    # passthrough options identical to RK_DRL defaults
+    # passthrough options identical to KE_DRL defaults
     hull_expand_factor: float = 1.8,
     lr: float = 1e-3, weight_decay: float = 0.0, num_steps: int = 5000,
     FP_penalty_lambda: float = 1e2,
@@ -27,7 +27,7 @@ def estimate_embedding(
     device: Optional[str] = None, dtype: torch.dtype = torch.float64,
     verbose: bool = True,
 ) -> Tuple[torch.Tensor, list, list, Dict[str, torch.Tensor]]:
-    return RK_DRL(
+    return KE_DRL(
         s0=s0, s1=s1, a0=a0, a1=a1,
         s_star=s_star, a_star=a_star, r=r,
         target_p_choice=target_p_choice, target_p_params=target_p_params,
@@ -143,7 +143,7 @@ def cli():
     """
     stdin JSON:
     {
-      "fit": { ... RK_DRL kwargs ... },
+      "fit": { ... KE_DRL kwargs ... },
       "plots": {
         "config": { ... build_plot_config kwargs ... },
         "r_obs": null or array,
@@ -178,3 +178,4 @@ def cli():
                 cache, _ = mean_embedding_all(beta_full=beta, Z_grid=Zg, config=config)
                 if "op2d" in what:
                     plot_operator_check_2d(cache, r_obs=r_obs, gamma=config["gamma_val"])
+
