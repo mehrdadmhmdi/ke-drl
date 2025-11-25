@@ -17,7 +17,7 @@ from .IS_ULSIF import ULSIFEstimator
 from .optimize import RKDRL_Optimizer
 
 
-def RK_DRL(
+def KE_DRL(
     *,
     # --- core data ---
     s0: torch.Tensor,               # (N, Ds) current states
@@ -299,3 +299,4 @@ def RK_DRL(
         G_emp,Gamma_sa_emp
 
     return B_hat_torch, history_obj, history_be, pre_computed_matrices
+
