@@ -2,7 +2,7 @@
 Offline Multi-Simensional Distributional RL - RKHS Mean Embedding Estimation
 
 ## Installation
-### Works on Linux/macOS/Windows (requires Python ≥3.9, git, and pip). 
+### Works on Linux/macOS/Windows (requires GPU, Python ≥3.9, git, and pip). 
 ```python
 # install directly from GitHub
 python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"
