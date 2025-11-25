@@ -19,3 +19,4 @@ cd ke-drl
 # install in editable mode
 python -m pip install -e .
 ```
+### Directory Layout
