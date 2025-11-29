@@ -1,4 +1,4 @@
-# KE_DRL/api.py
+# rk_drl/api.py
 from __future__ import annotations
 import os, sys, json
 from typing import Any, Dict, Optional, Tuple
@@ -6,7 +6,10 @@ import torch
 
 from .KE_DRL import KE_DRL
 from .density_recovery import RecoverAndPlot
-
+from .get_dataset import get_dataset
+from .evaluation_metric import embedding_test_risk
+# ----------------- datasets -----------------
+__all__ += ["get_dataset", "embedding_test_risk"]
 # ----------------- FIT -----------------
 def estimate_embedding(
     *, s0, s1, a0, a1, s_star, a_star, r,
@@ -178,4 +181,3 @@ def cli():
                 cache, _ = mean_embedding_all(beta_full=beta, Z_grid=Zg, config=config)
                 if "op2d" in what:
                     plot_operator_check_2d(cache, r_obs=r_obs, gamma=config["gamma_val"])
-
