@@ -9,7 +9,7 @@ python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"
 
 ```
 
-### Developer install (editable)
+### Developer install (locally editable)
 
 ```python
 # clone the repo
