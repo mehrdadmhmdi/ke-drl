@@ -1,4 +1,4 @@
-# src/rk_drl/__init__.py
+# src/ke_drl/__init__.py
 import os
 os.environ.setdefault("VISPY_GL_BACKEND", "egl")
 os.environ.setdefault("VISPY_USE_APP", "headless")
@@ -9,8 +9,8 @@ os.environ.setdefault(
     "expandable_segments:True,max_split_size_mb:64,garbage_collection_threshold:0.8"
 )
 
-from .RK_DRL import RK_DRL
-# rk_drl/__init__.py
+from .KE_DRL import KE_DRL
+# ke_drl/__init__.py
 from .api import (
     estimate_embedding,
     build_plot_config,
@@ -38,3 +38,4 @@ __all__ = [
     "save_weights_and_grid",
     "cli",
 ]
+
