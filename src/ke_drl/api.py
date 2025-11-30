@@ -1,4 +1,4 @@
-# rk_drl/api.py
+# ke_drl/api.py
 from __future__ import annotations
 import os, sys, json
 from typing import Any, Dict, Optional, Tuple
@@ -181,3 +181,4 @@ def cli():
                 cache, _ = mean_embedding_all(beta_full=beta, Z_grid=Zg, config=config)
                 if "op2d" in what:
                     plot_operator_check_2d(cache, r_obs=r_obs, gamma=config["gamma_val"])
+
