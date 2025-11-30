@@ -4,6 +4,7 @@ import time
 import math
 from typing import Optional
 from .matern_kernel import matern_kernel
+from memory_profiler import profile
 
 
 def compute_transformed_grid_pytorch(Z_grid, reward_set, gamma_val):
@@ -38,6 +39,7 @@ def compute_G_pytorch_fully_vectorized(transformed, Gamma_sa, nu, length_scale, 
     return G
 
 ##================================================
+@profile
 def compute_G_pytorch_batched(transformed: torch.Tensor,Gamma_sa: torch.Tensor,nu: float,length_scale: float,
                               sigma: float = 1.0, block_i: int = 1,block_j: Optional[int] = None,
                               check_props: bool = False) -> torch.Tensor:
@@ -57,7 +59,7 @@ def compute_G_pytorch_batched(transformed: torch.Tensor,Gamma_sa: torch.Tensor,n
     device, dtype = transformed.device, transformed.dtype
 
     if block_j is None:
-        block_j = 1000 * n
+        block_j = n
 
     Gamma1d = Gamma_sa.reshape(-1)        # (n,)
     G = torch.zeros((m, m), device=device, dtype=dtype)
