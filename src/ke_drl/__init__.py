@@ -23,6 +23,8 @@ from .api import (
     plot_operator_check_2d,
     save_weights_and_grid,
     cli,
+    get_dataset,
+    embedding_test_risk,
 )
 
 __all__ = [
@@ -37,5 +39,8 @@ __all__ = [
     "plot_operator_check_2d",
     "save_weights_and_grid",
     "cli",
+    "get_dataset", 
+    "embedding_test_risk",
 ]
+
 
