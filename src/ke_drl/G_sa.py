@@ -38,7 +38,9 @@ def compute_G_pytorch_fully_vectorized(transformed, Gamma_sa, nu, length_scale, 
     return G
 
 ##================================================
-def compute_G_pytorch_batched(transformed:   torch.Tensor,Gamma_sa: torch.Tensor, nu: float,length_scale:  float,sigma:float = 1.0,block_i:int= 1,block_j:int= None) -> torch.Tensor:
+def compute_G_pytorch_batched(transformed: torch.Tensor,Gamma_sa: torch.Tensor,nu: float,length_scale: float,
+                              sigma: float = 1.0, block_i: int = 1,block_j: Optional[int] = None,
+                              check_props: bool = False) -> torch.Tensor:
     """
     Batched G-matrix computation in 2D blocks to limit peak memory:
 
@@ -49,63 +51,61 @@ def compute_G_pytorch_batched(transformed:   torch.Tensor,Gamma_sa: torch.Tensor
       block_j = 1000 * n
     """
     m, n, d = transformed.shape
+    if Gamma_sa.numel() != n:
+        raise ValueError(f"Gamma_sa length {Gamma_sa.numel()} must equal transformed.shape[1] {n}.")
+
     device, dtype = transformed.device, transformed.dtype
 
-    # internal default for block_j
     if block_j is None:
         block_j = 1000 * n
 
-    # flatten all (i,u) points once: (m*n, d)
-    flat_all = transformed.reshape(m*n, d)
-
-    # ensure Gamma_sa is 1-D
     Gamma1d = Gamma_sa.reshape(-1)        # (n,)
-
-    # precompute full repeated Gamma for flattened columns
-    Gamma_cols_full = Gamma1d.repeat(m)    # (m*n,)
-
     G = torch.zeros((m, m), device=device, dtype=dtype)
 
-    # outer loop over rows
     for i0 in range(0, m, block_i):
         i1 = min(m, i0 + block_i)
         bi = i1 - i0
 
-        # slice and flatten this Z-block
-        blk = transformed[i0:i1].reshape(bi*n, d)   # (bi*n, d)
-        Gamma_rows_blk = Gamma1d.repeat(bi)         # (bi*n,)
+        blk = transformed[i0:i1].reshape(bi * n, d)   # (bi*n, d)
+        Gamma_rows_blk = Gamma1d.repeat(bi)           # (bi*n,)
 
-        # inner loop over flattened columns
-        for j0 in range(0, m*n, block_j):
-            j1 = min(m*n, j0 + block_j)
+        for j0 in range(0, m * n, block_j):
+            j1 = min(m * n, j0 + block_j)
             bj = j1 - j0
 
-            flat_cols_blk = flat_all[j0:j1]            # (bj, d)
-            Gamma_cols_blk = Gamma_cols_full[j0:j1]    # (bj,)
+            j_i0 = j0 // n
+            j_i1 = j1 // n
 
-            Kblk = matern_kernel(
-                blk,               # (bi*n, d)
-                flat_cols_blk,     # (bj, d)
-                nu,
-                length_scale,
-                sigma
-            )                                             # (bi*n, bj)
-            # ------------------------------------------------------
+            flat_cols_blk = transformed[j_i0:j_i1].reshape((j_i1 - j_i0) * n, d)
+            Gamma_cols_blk = Gamma1d.repeat(j_i1 - j_i0)
 
-            # weight by Gamma_rows_blk[u] * Kblk * Gamma_cols_blk[v]
+            Kblk = matern_kernel(blk,               # (bi*n, d)
+                                 flat_cols_blk,     # (bj, d)
+                                 nu, length_scale,sigma
+                                 )  # (bi*n, bj)
+
             W = (Gamma_rows_blk.unsqueeze(1) * Kblk) * Gamma_cols_blk.unsqueeze(0)  # (bi*n, bj)
 
-            # reshape to (bi, n, bjm, n) and sum over u,v dims
             assert bj % n == 0, "block_j must be a multiple of n"
-            bjm    = bj // n
+            bjm = bj // n
             G_block = W.view(bi, n, bjm, n).sum(dim=(1, 3))  # (bi, bjm)
 
-            # map bj columns back to j-indices
-            j_i0 = j0 // n
             G[i0:i1, j_i0:j_i0 + bjm] += G_block
-            del Kblk,W
-    _check_G_properties(G.detach().cpu().numpy())
-    torch.cuda.empty_cache()
+
+            del Kblk, W, flat_cols_blk, Gamma_cols_blk, G_block
+            if device.type == "cuda":
+                torch.cuda.empty_cache()
+
+        del blk, Gamma_rows_blk
+        if device.type == "cuda":
+            torch.cuda.empty_cache()
+
+    if check_props:
+        _check_G_properties(G.detach().cpu().numpy())
+
+    if device.type == "cuda":
+        torch.cuda.empty_cache()
+
     return G
 
 
