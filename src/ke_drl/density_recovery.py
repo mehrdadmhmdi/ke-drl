@@ -286,7 +286,7 @@ class RecoverAndPlot:
         from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
 
         os.makedirs(outdir, exist_ok=True)
-        font_family = "Bitstream Charter"
+        font_family = "Nimbus Roman"
         plt.rcParams.update({
             "font.family": font_family,
             "axes.titlesize": 13,
@@ -406,7 +406,7 @@ class RecoverAndPlot:
         data_dir = os.fspath(data_dir)
 
         plt.rcParams.update({
-            "font.family": "Bitstream Charter",
+            "font.family": "Nimbus Roman",
             "axes.titlesize": 16,
             "axes.labelsize": 14,
             "xtick.labelsize": 14,
@@ -495,3 +495,4 @@ class RecoverAndPlot:
         plt.savefig(f"{outdir}/{self._fname('OperatorCheck2D_hat_only')}", dpi=600); plt.close()
 
     # ================= END =================
+
