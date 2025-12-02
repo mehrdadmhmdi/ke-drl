@@ -67,25 +67,33 @@ class RKDRL_Optimizer:
           mineig1, mineig2: the minimum eigenvalues of the two difference matrices
         """
 
-        # helper to get a stable inverse via Cholesky + jitter
-        def chol_inverse(A, jitter=1e-8):
-            n = A.shape[0]
-            # add tiny jitter to diagonal to ensure PD
-            L, lower = cho_factor(A + jitter * np.eye(n), lower=True, check_finite=False)
-            # solve A X = I for X
-            return cho_solve((L, lower), np.eye(n), check_finite=False)
+        # helper to get a stable inverse via Cholesky + jitter, with fallback
+        def chol_inverse(A, jitter=1e-8, max_tries=6):
+            n   = A.shape[0]
+            eye = np.eye(n)
+
+            for _ in range(max_tries):
+                try:
+                    L, lower = cho_factor(A + jitter * eye, lower=True, check_finite=False)
+                    return cho_solve((L, lower), eye, check_finite=False)
+                except LinAlgError:
+                    jitter *= 10.0  # increase jitter and retry
+
+            # last resort: pseudo-inverse
+            print("[WARN] chol_inverse: using np.linalg.pinv fallback after failed Cholesky.")
+            return np.linalg.pinv(A)
 
         # compute inverses of K_Z and G safely
         KZ_inv = chol_inverse(K_Z)
         G_inv  = chol_inverse(G)
 
         # squared norms of k and Phi vectors
-        k2   = float((k.ravel() @ k.ravel()))    # ‖k‖²
-        Phi2 = float((Phi.ravel() @ Phi.ravel()))  # ‖Φ‖²
+        k2   = float((k.ravel() @ k.ravel()))       # ‖k‖²
+        Phi2 = float((Phi.ravel() @ Phi.ravel()))   # ‖Φ‖²
 
         # form the two Schur‐complement matrices (should be PD if conditions hold)
-        M1 = k2 * G - H.T @ KZ_inv @ H
-        M2 = Phi2 * K_Z - H   @ G_inv  @ H.T
+        M1 = k2 * G   - H.T @ KZ_inv @ H
+        M2 = Phi2 * K_Z - H @ G_inv  @ H.T
 
         # get the smallest eigenvalue of each (must be > 0 for PD)
         mineig1 = np.linalg.eigvalsh(M1).min()
