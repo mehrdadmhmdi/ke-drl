@@ -1,101 +1,64 @@
 import torch
 from .matern_kernel import matern_kernel
 
-
 @torch.no_grad()
 def embedding_test_risk(
-    Z_test: torch.Tensor,        # (N_test, d_z), realized returns
-    k_sa_test: torch.Tensor,     # (N_test, n_sa), k_sa(s_i, a_i) features
-    B_hat_torch: torch.Tensor,   # (n_sa, m) or (m, n_sa), KE-DRL output
-    Z_grid: torch.Tensor,        # (m, d_z), Z_grid from pre_computed_matrices["Z_grid"]
-    nu: float,
-    length_scale: float,
-    sigma: float = 1.0,
-    batch_size: int = 4096,
-    device: torch.device | None = None,
-) -> float:
+        Z_test: torch.Tensor,        # (m, d_z) Monte Carlo Z_j
+        k_sa_test: torch.Tensor,     # (m, n_sa) or (n_sa,)  -> k_sa((s,a)_j, (s,a)_train)
+        B_hat_torch: torch.Tensor,   # (n_sa, m_Z)  -> embedding operator
+        Z_grid: torch.Tensor,        # (m_Z, d_z) support grid in Z-space
+        nu: float,
+        length_scale: float,
+        sigma: float = 1.0,
+) -> torch.Tensor:
     """
-    Compute
-        R_hat = (1/N) sum_i || k_Z(·, Z_i) - mu_hat(s_i, a_i) ||_H^2
-    where mu_hat(s,a)(·) = sum_j omega_j(s,a) k_Z(·, z_j)
-          and omega_i = B^T k_sa(s_i, a_i).
-
-    Shapes:
-        Z_test      : (N_test, d_z)
-        k_sa_test   : (N_test, n_sa)
-        B_hat_torch : (n_sa, m)  OR  (m, n_sa)
-        Z_grid      : (m, d_z)
+    Compute:
+      R_hat = (1/m) sum_j || k_Z(·, Z_j) - sum_ℓ β_{jℓ} k_Z(·, Z_grid_ℓ) ||_{H_Z}^2,
+    where β_j = k_sa_test[j, :] @ B_hat_torch.
     """
 
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = Z_test.device
+    dtype  = Z_test.dtype
 
-    Z_test = Z_test.to(device)
-    k_sa_test = k_sa_test.to(device)
-    B_hat_torch = B_hat_torch.to(device)
-    Z_grid = Z_grid.to(device)
+    Z_test  = Z_test.to(device=device, dtype=dtype)
+    Z_grid  = Z_grid.to(device=device, dtype=dtype)
+    B_hat   = B_hat_torch.to(device=device, dtype=dtype)
 
-    N_test, n_sa = k_sa_test.shape
-
-    # ------------------------------------------------------------------
-    # Compute omega_test = B^T k_sa for all test points
-    # (handle both (n_sa, m) and (m, n_sa) conventions)
-    # ------------------------------------------------------------------
-    if B_hat_torch.shape[0] == n_sa:
-        # B: (n_sa, m)  => omega_i = k_sa_i @ B  (row form of B^T k_sa)
-        omega_test = k_sa_test @ B_hat_torch       # (N_test, m)
-    elif B_hat_torch.shape[1] == n_sa:
-        # B: (m, n_sa)  => omega_i = k_sa_i @ B^T
-        omega_test = k_sa_test @ B_hat_torch.t()   # (N_test, m)
+    # ensure k_sa_test is 2D: (m, n_sa)
+    if k_sa_test.ndim == 1:
+        k_sa = k_sa_test.unsqueeze(0)      # single (s,a)
     else:
-        raise ValueError(
-            f"Incompatible shapes: k_sa_test {k_sa_test.shape}, "
-            f"B_hat_torch {B_hat_torch.shape}"
-        )
+        k_sa = k_sa_test
+    k_sa = k_sa.to(device=device, dtype=dtype)
 
-    N_test, m = omega_test.shape
+    m, d_z   = Z_test.shape
+    n_sa, mZ = B_hat.shape
 
-    # ------------------------------------------------------------------
-    # Precompute K_Z on the grid and self-term
-    # ------------------------------------------------------------------
-    K_Z = matern_kernel(
-        Z_grid, Z_grid,
-        nu=nu, length_scale=length_scale, sigma=sigma
-    )                                  # (m, m)
-    # For this Matérn implementation k_Z(z, z) = sigma^2
-    self_term = sigma ** 2
+    assert k_sa.shape[1] == n_sa, "k_sa_test second dim must match B_hat_torch first dim."
 
-    total_loss = 0.0
+    # β_j coefficients: (m, m_Z)
+    Beta = k_sa @ B_hat  # each row j corresponds to β_j
 
-    # ------------------------------------------------------------------
-    # Batch over test points for memory
-    # ------------------------------------------------------------------
-    for start in range(0, N_test, batch_size):
-        end = min(start + batch_size, N_test)
+    # Gram matrices in Z-space
+    K_grid_grid = matern_kernel(Z_grid, Z_grid, nu=nu, length_scale=length_scale, sigma=sigma)   # (m_Z, m_Z)
+    K_grid_grid = 0.5 * (K_grid_grid + K_grid_grid.T)  # symmetrize numerically
 
-        Z_batch = Z_test[start:end]          # (B, d_z)
-        omega_batch = omega_test[start:end]  # (B, m)
+    K_test_grid = matern_kernel(Z_test, Z_grid, nu=nu, length_scale=length_scale, sigma=sigma)   # (m, m_Z)
 
-        # k_Z(Z_i, Z_grid): (B, m)
-        K_batch = matern_kernel(
-            Z_batch, Z_grid,
-            nu=nu, length_scale=length_scale, sigma=sigma
-        )
+    # term1: k(Z_j, Z_j) = sigma^2 for Matérn at zero distance
+    term1 = (sigma ** 2) * torch.ones(m, device=device, dtype=dtype)
 
-        # ||mu_hat||^2_H = omega K_Z omega^T, per sample
-        tmp = omega_batch @ K_Z                   # (B, m)
-        mu_norm_sq = (tmp * omega_batch).sum(dim=1)  # (B,)
+    # term2: 2 * sum_ℓ β_{jℓ} k(Z_j, Z_grid_ℓ)
+    term2 = 2.0 * torch.sum(K_test_grid * Beta, dim=1)  # (m,)
 
-        # -2 <k_Z(·, Z_i), mu_hat> = -2 sum_j omega_j k_Z(Z_i, z_j)
-        cross_term = -2.0 * (omega_batch * K_batch).sum(dim=1)  # (B,)
+    # term3: β_j^T K_grid_grid β_j, vectorized over j
+    K_beta = K_grid_grid @ Beta.T           # (m_Z, m)
+    term3 = torch.sum(Beta * K_beta.T, dim=1)  # (m,)
 
-        # L_i = k_Z(Z_i,Z_i) + cross_term + ||mu_hat||^2_H = sigma^2 + ...
-        loss_batch = self_term + cross_term + mu_norm_sq        # (B,)
-        total_loss += loss_batch.sum().item()
+    risk_per_sample = term1 - term2 + term3   # (m,)
+    R_hat = risk_per_sample.mean()            # scalar
 
-    risk_hat = total_loss / float(N_test)
-    return risk_hat
-
+    return R_hat
 
 ###==================================
 # # From KE-DRL run:
