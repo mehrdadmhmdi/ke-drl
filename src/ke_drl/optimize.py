@@ -5,6 +5,7 @@ from torch import optim
 from torch.nn.utils import clip_grad_norm_
 from scipy.sparse.linalg import eigsh, LinearOperator
 from scipy.linalg import cho_factor, cho_solve, eigh
+from numpy.linalg import LinAlgError
 
 class RKDRL_Optimizer:
     """
