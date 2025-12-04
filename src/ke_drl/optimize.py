@@ -82,7 +82,7 @@ class RKDRL_Optimizer:
                                           check_finite=False)
                     return cho_solve((L, lower), eye, check_finite=False)
                 except LinAlgError:
-                    jitter *= 10.0  # increase jitter and retry
+                    jitter *= 20.0  # increase jitter and retry
         
             # last resort: pseudo-inverse
             print("[WARN] chol_inverse: using np.linalg.pinv fallback after failed Cholesky.")
@@ -367,6 +367,7 @@ class RKDRL_Optimizer:
         history_obj = [math.log(x) for x in history_obj]
 
         return B.detach().cpu(), history_obj, history_be
+
 
 
 
