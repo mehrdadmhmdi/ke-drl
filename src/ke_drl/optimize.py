@@ -5,6 +5,7 @@ from torch import optim
 from torch.nn.utils import clip_grad_norm_
 from scipy.sparse.linalg import eigsh, LinearOperator
 from scipy.linalg import cho_factor, cho_solve, eigh
+from scipy.linalg import LinAlgError
 
 
 class RKDRL_Optimizer:
@@ -69,12 +70,24 @@ class RKDRL_Optimizer:
         """
 
         # helper to get a stable inverse via Cholesky + jitter
-        def chol_inverse(A, jitter=1e-8):
-            n = A.shape[0]
-            # add tiny jitter to diagonal to ensure PD
-            L, lower = cho_factor(A + jitter * np.eye(n), lower=True, check_finite=False)
-            # solve A X = I for X
-            return cho_solve((L, lower), np.eye(n), check_finite=False)
+        
+        def chol_inverse(A, jitter=1e-8, max_tries=6):
+            n   = A.shape[0]
+            eye = np.eye(n)
+        
+            for _ in range(max_tries):
+                try:
+                    L, lower = cho_factor(A + jitter * eye,
+                                          lower=True,
+                                          check_finite=False)
+                    return cho_solve((L, lower), eye, check_finite=False)
+                except LinAlgError:
+                    jitter *= 10.0  # increase jitter and retry
+        
+            # last resort: pseudo-inverse
+            print("[WARN] chol_inverse: using np.linalg.pinv fallback after failed Cholesky.")
+            return np.linalg.pinv(A)
+
 
         # compute inverses of K_Z and G safely
         KZ_inv = chol_inverse(K_Z)
@@ -354,6 +367,7 @@ class RKDRL_Optimizer:
         history_obj = [math.log(x) for x in history_obj]
 
         return B.detach().cpu(), history_obj, history_be
+
 
 
 
