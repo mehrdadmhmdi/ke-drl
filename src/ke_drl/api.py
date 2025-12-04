@@ -17,12 +17,12 @@ def estimate_embedding(
     gamma_val, lambda_reg,
     num_grid_points,
     # passthrough options identical to KE_DRL defaults
-    hull_expand_factor: float = 1.8,
+    hull_expand_factor: float = 1.0,
     lr: float = 1e-3, weight_decay: float = 0.0, num_steps: int = 5000,
     FP_penalty_lambda: float = 1e2,
     use_low_rank: bool = False, rank_for_low_rank: Optional[int] = None,
     B_positive: bool = False, fixed_point_constraint: bool = True, exact_projection: bool = False,
-    ortho_lambda: float = 1e1, B_conv: bool = False, Sum_one_W: bool = False, NonNeg_W: bool = False,
+    ortho_lambda: float = 0.0, B_conv: bool = False, Sum_one_W: bool = False, NonNeg_W: bool = False,
     mass_anchor_lambda: float = 10.0, target_mass: float = 1.0,
     B_ridge_penalty: bool = False,
     H_batch_size: int = 10,
@@ -180,5 +180,6 @@ def cli():
                 cache, _ = mean_embedding_all(beta_full=beta, Z_grid=Zg, config=config)
                 if "op2d" in what:
                     plot_operator_check_2d(cache, r_obs=r_obs, gamma=config["gamma_val"])
+
 
 
