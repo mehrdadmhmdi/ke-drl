@@ -14,11 +14,31 @@ class ULSIFEstimator:
         self.alpha = None               # (n_beta, 1) torch tensor
         self._X_beta = None             # (n_beta, d_s + d_a) torch tensor
 
+    # def _sample_target(self, action_dim, s: torch.Tensor,
+    #                    target_p_choice: str, target_p_params: dict) -> torch.Tensor:
+    #     """
+    #     Torch version of target action sampling.
+    #     Keeps original logic: sample per (i, dim) from Probability_Densities_*.
+    #     """
+    #     if not target_p_params:
+    #         raise ValueError("target_p_params must be provided for Torch sampling.")
+    #     prob_density = Probability_Densities(**target_p_params)
+    #
+    #     n = s.shape[0]
+    #     a_pi = torch.empty((n, action_dim), device=s.device, dtype=s.dtype)
+    #     for dim in range(action_dim):
+    #         for i in range(n):
+    #             sample = prob_density.sample_pdf(target_p_choice, s[i, :])
+    #             if sample is None:
+    #                 raise RuntimeError("sample_pdf returned None; check target_p_choice/params.")
+    #             # sample may be shape (1,) — take scalar
+    #             a_pi[i, dim] = sample.reshape(-1)[0].to(device=s.device, dtype=s.dtype)
+    #     return a_pi
     def _sample_target(self, action_dim, s: torch.Tensor,
                        target_p_choice: str, target_p_params: dict) -> torch.Tensor:
         """
-        Torch version of target action sampling.
-        Keeps original logic: sample per (i, dim) from Probability_Densities_*.
+        Sample target actions a_pi for each state s[i].
+        Assumes sample_pdf returns an action vector of length action_dim.
         """
         if not target_p_params:
             raise ValueError("target_p_params must be provided for Torch sampling.")
@@ -26,13 +46,16 @@ class ULSIFEstimator:
 
         n = s.shape[0]
         a_pi = torch.empty((n, action_dim), device=s.device, dtype=s.dtype)
-        for dim in range(action_dim):
-            for i in range(n):
-                sample = prob_density.sample_pdf(target_p_choice, s[i, :])
-                if sample is None:
-                    raise RuntimeError("sample_pdf returned None; check target_p_choice/params.")
-                # sample may be shape (1,) — take scalar
-                a_pi[i, dim] = sample.reshape(-1)[0].to(device=s.device, dtype=s.dtype)
+
+        for i in range(n):
+            sample = prob_density.sample_pdf(target_p_choice, s[i, :])
+            if sample is None:
+                raise RuntimeError("sample_pdf returned None; check target_p_choice/params.")
+            sample = sample.reshape(-1)
+            if sample.numel() != action_dim:
+                raise RuntimeError(f"sample_pdf must return {action_dim} dims, got {sample.numel()}.")
+            a_pi[i, :] = sample.to(device=s.device, dtype=s.dtype)
+
         return a_pi
 
     def fit(self,
@@ -82,14 +105,22 @@ class ULSIFEstimator:
         alpha_direct = torch.linalg.solve(H + reg, h)                  # (n_beta,)
 
         # Cholesky solve (refinement, same as original)
-        L = torch.linalg.cholesky(H + reg)
+        # L = torch.linalg.cholesky(H + reg)
+        A = H + reg
+        jitter = 1e-6 * torch.trace(A) / A.shape[0]
+        L = torch.linalg.cholesky(A + jitter * torch.eye(n_beta, device=device, dtype=dtype))
         y = torch.cholesky_solve(h.unsqueeze(1), L).squeeze(1) * 0.0   # placeholder to keep flow identical
         # original code: y = solve(L, h); alpha = solve(L^T, y)
         y   = torch.linalg.solve(L, h)                                  # (n_beta,)
         alpha_chol = torch.linalg.solve(L.T, y)                         # (n_beta,)
 
         # match original: store the Cholesky version
-        self.alpha = alpha_chol.reshape(-1, 1)                          # (n_beta, 1)
+        # self.alpha = alpha_chol.reshape(-1, 1)                          # (n_beta, 1)
+        self.alpha = torch.clamp(alpha_chol, min=0).reshape(-1, 1)  # (n_beta, 1), enforce α≥0
+        with torch.no_grad():
+            eta_hat = (K_bb @ self.alpha).squeeze(1)
+            neg = (eta_hat < 0).float().mean().item()
+            print(f"[uLSIF] eta_hat min={eta_hat.min().item():.3e} max={eta_hat.max().item():.3e} neg%={100 * neg:.2f}")
 
         if plot:
             Path('plots').mkdir(parents=True, exist_ok=True)
@@ -120,28 +151,42 @@ class ULSIFEstimator:
         K_new = self.kernel_func(self._X_beta, X_new, **self.kernel_kwargs)          # (n_beta, n_new)
         return (K_new.T @ self.alpha).reshape(-1, 1)                                  # (n_new, 1)
 ##===================================
-    def compute_ess(self,
-                    S: torch.Tensor,
-                    A: torch.Tensor) -> float:
+    # def compute_ess(self,
+    #                 S: torch.Tensor,
+    #                 A: torch.Tensor) -> float:
+    #     """
+    #     Compute the effective sample size (ESS) of the importance weights
+    #     estimated by ULSIF fit, for the given (S,A) batch.
+    #     Returns a Python float.
+    #     """
+    #     # 1) get unnormalized weights w_i = eta_hat(s_i,a_i)
+    #     eta = self.predict(S, A).reshape(-1)   # (n,)
+    #
+    #     # 2) stabilize & normalize
+    #     #    Subtract max for numeric stability when exponentiating,
+    #     #    but here eta is already positive direct ratio estimate,
+    #     #    so we skip exp and just normalize directly.
+    #     w = eta
+    #     w_sum = torch.sum(w)
+    #     if w_sum <= 0:
+    #         raise RuntimeError("Sum of estimated weights is non-positive!")
+    #     w_norm = w / w_sum                     # sum_i w_norm = 1
+    #
+    #     # 3) ESS = 1 / sum_i w_norm[i]^2
+    #     ess = 1.0 / torch.sum(w_norm * w_norm)
+    #
+    #     return ess.item()
+    def compute_ess(self, S: torch.Tensor, A: torch.Tensor) -> float:
         """
-        Compute the effective sample size (ESS) of the importance weights
-        estimated by ULSIF fit, for the given (S,A) batch.
-        Returns a Python float.
+        ESS for nonnegative importance weights w_i.
+        ESS = (sum w)^2 / (sum w^2)
         """
-        # 1) get unnormalized weights w_i = eta_hat(s_i,a_i)
-        eta = self.predict(S, A).reshape(-1)   # (n,)
+        eta = self.predict(S, A).reshape(-1)  # (n,)
+        w = torch.clamp(eta, min=0)  # enforce nonnegativity
 
-        # 2) stabilize & normalize
-        #    Subtract max for numeric stability when exponentiating,
-        #    but here eta is already positive direct ratio estimate,
-        #    so we skip exp and just normalize directly.
-        w = eta
-        w_sum = torch.sum(w)
-        if w_sum <= 0:
-            raise RuntimeError("Sum of estimated weights is non-positive!")
-        w_norm = w / w_sum                     # sum_i w_norm = 1
+        sw = w.sum()
+        if sw <= 0:
+            return 0.0
 
-        # 3) ESS = 1 / sum_i w_norm[i]^2
-        ess = 1.0 / torch.sum(w_norm * w_norm)
-
+        ess = (sw * sw) / (w.pow(2).sum() + 1e-12)
         return ess.item()
