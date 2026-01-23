@@ -37,46 +37,37 @@ class ULSIFEstimator:
     def _sample_target(self, action_dim, s: torch.Tensor,
                        target_p_choice: str, target_p_params: dict) -> torch.Tensor:
         """
-        Torch version of target action sampling.
-        Compatibility goals:
-          - If sample_pdf returns a scalar: keep ORIGINAL behavior (resample per (i,dim)).
-          - If sample_pdf returns a vector of length action_dim: use that vector per i.
+        Compatible with Probability_Densities.sample_pdf returning scalar (or (n,) for batched).
+        If scalar per state, we repeat it across action_dim (same convention as synthetic_data_generation_torch).
         """
         if not target_p_params:
             raise ValueError("target_p_params must be provided for Torch sampling.")
+    
+        # IMPORTANT: use the same Probability_Densities class your ke_drl/IS_ULSIF.py imports
         prob_density = Probability_Densities(**target_p_params)
     
+        if s.ndim != 2:
+            raise ValueError("s must be (n, d_s).")
+    
         n = s.shape[0]
-        a_pi = torch.empty((n, action_dim), device=s.device, dtype=s.dtype)
     
-        # Probe output shape once
-        probe = prob_density.sample_pdf(target_p_choice, s[0, :])
-        if probe is None:
-            raise RuntimeError("sample_pdf returned None on probe; check target_p_choice/params.")
-        probe = torch.as_tensor(probe, device=s.device, dtype=s.dtype).reshape(-1)
+        sample = prob_density.sample_pdf(target_p_choice, s)  # expected: (n,) or (n,1) or (n,k)
+        if sample is None:
+            raise RuntimeError("sample_pdf returned None; check target_p_choice/params.")
     
-        if probe.numel() == 1:
-            # ORIGINAL behavior: sample independently per (i, dim)
-            for dim in range(action_dim):
-                for i in range(n):
-                    sample = prob_density.sample_pdf(target_p_choice, s[i, :])
-                    if sample is None:
-                        raise RuntimeError("sample_pdf returned None; check target_p_choice/params.")
-                    sample = torch.as_tensor(sample, device=s.device, dtype=s.dtype).reshape(-1)
-                    a_pi[i, dim] = sample[0]
-            return a_pi
+        sample = torch.as_tensor(sample, device=s.device, dtype=s.dtype)
+        sample = sample.reshape(n, -1)  # (n, k)
     
-        if probe.numel() == action_dim:
-            # Vector action: one call per state
-            for i in range(n):
-                sample = prob_density.sample_pdf(target_p_choice, s[i, :])
-                if sample is None:
-                    raise RuntimeError("sample_pdf returned None; check target_p_choice/params.")
-                sample = torch.as_tensor(sample, device=s.device, dtype=s.dtype).reshape(-1)
-                a_pi[i, :] = sample
-            return a_pi
+        k = sample.shape[1]
+        if k == action_dim:
+            return sample
+        if k == 1:
+            return sample.repeat(1, action_dim)
     
-        raise RuntimeError(f"sample_pdf returned {probe.numel()} values; expected 1 or {action_dim}.")
+        # generic fallback: tile then truncate
+        reps = (action_dim + k - 1) // k
+        return sample.repeat(1, reps)[:, :action_dim]
+
 
 
     def fit(self,
@@ -211,4 +202,5 @@ class ULSIFEstimator:
 
         ess = (sw * sw) / (w.pow(2).sum() + 1e-12)
         return ess.item()
+
 
