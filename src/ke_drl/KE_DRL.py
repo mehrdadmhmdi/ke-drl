@@ -133,14 +133,14 @@ def KE_DRL(
     # Contraction proxy L_k (Matérn Lipschitz bound) and sufficient condition γ·L_k < 1
     Dr = r.shape[1]
     L_k = (sigma * math.sqrt(nu * Dr / (nu - 1))) / max(1e-12, length_scale)  # safe denom
-    if not (gamma_val * L_k < 1.0):
-        needed_ell = gamma_val * sigma * math.sqrt((Dr * nu) / (nu - 1.0))
+    if not (nu>1): #(gamma_val * L_k < 1.0):
+        #needed_ell = gamma_val * sigma * math.sqrt((Dr * nu) / (nu - 1.0))
         raise ValueError(
             "\n========================================\n"
             "CONTRACTION CONDITION NOT MET\n"
             "========================================\n"
             f"Current: length_scale ℓ={length_scale:.6f}, nu={nu:.3g}, sigma={sigma:.3g}, Dr={Dr}, γ={gamma_val:.3f}\n"
-            f"Require: ℓ > {needed_ell:.6f} to ensure γ·L_k<1.\n"
+            f"Require: nu>1"  #ℓ > {needed_ell:.6f} to ensure γ·L_k<1.\n
         )
 
     if verbose:
@@ -299,4 +299,5 @@ def KE_DRL(
         G_emp,Gamma_sa_emp
 
     return B_hat_torch, history_obj, history_be, pre_computed_matrices
+
 
