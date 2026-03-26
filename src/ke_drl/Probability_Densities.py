@@ -67,7 +67,7 @@ class Probability_Densities:
             self.distributions[pdf_choice] = {
                 "params": cleaned_params,
                 "epsilon": epsilon_params,
-                "apply_sigmoid": bool(cfg.get("apply_sigmoid", True)),
+                "apply_sigmoid": bool(cfg.get("apply_sigmoid", False)),
                 "log_scale_min": float(cfg.get("log_scale_min", -12.0)),
                 "log_scale_max": float(cfg.get("log_scale_max", 8.0)),
             }
