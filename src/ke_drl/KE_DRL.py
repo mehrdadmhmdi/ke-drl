@@ -27,6 +27,7 @@ def KE_DRL(
     s_star: torch.Tensor,           # (N* or 1, Ds) eval state(s)
     a_star: torch.Tensor,           # (N* or 1, Da) eval action(s)
     r: torch.Tensor,                # (n_rewards, Dr) reward samples (for Z grid, G/H)
+    discrete_dims: list[int] | None = None #reward's discrete dim
     # --- policy + kernel/alg params (required) ---
     target_p_choice: str,
     target_p_params: dict,
@@ -58,6 +59,7 @@ def KE_DRL(
     device: str | torch.device | None = None,
     dtype: torch.dtype = torch.float64,
     verbose: bool = True,                 # new: control printing without changing defaults
+    
 ):
     """
     End-to-end RKHS-based DRL pipeline (Torch).
@@ -183,6 +185,10 @@ def KE_DRL(
     # 4) Z-grid via k-means + hull expansion
     # ------------------------------------------------------------------------------
     Z = ZGrid.Z_kmeans(r, n_clusters=int(num_grid_points), constant_factor=float(hull_expand_factor))
+    if discrete_dims is not None:
+        Z[:, discrete_dims] = torch.round(Z[:, discrete_dims])
+        Z = torch.unique(Z, dim=0)
+        print(f"{discrete_dims} are discrete. Rounded to the nearest integer for the Z-grid.")
     if verbose:
         print("Z_grid shape:", tuple(Z.shape))
 
