@@ -187,7 +187,6 @@ def KE_DRL(
     Z = ZGrid.Z_kmeans(r, n_clusters=int(num_grid_points), constant_factor=float(hull_expand_factor))
     if discrete_dims is not None:
         Z[:, discrete_dims] = torch.round(Z[:, discrete_dims])
-        Z = torch.unique(Z, dim=0)
         print(f"{discrete_dims} are discrete. Rounded to the nearest integer for the Z-grid.")
     if verbose:
         print("Z_grid shape:", tuple(Z.shape))
