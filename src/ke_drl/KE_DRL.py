@@ -27,7 +27,7 @@ def KE_DRL(
     s_star: torch.Tensor,           # (N* or 1, Ds) eval state(s)
     a_star: torch.Tensor,           # (N* or 1, Da) eval action(s)
     r: torch.Tensor,                # (n_rewards, Dr) reward samples (for Z grid, G/H)
-    discrete_dims: list[int] | None = None #reward's discrete dim
+    discrete_dims: list[int] | None = None, #reward's discrete dim
     # --- policy + kernel/alg params (required) ---
     target_p_choice: str,
     target_p_params: dict,
