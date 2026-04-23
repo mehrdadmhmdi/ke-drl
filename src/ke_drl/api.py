@@ -12,6 +12,7 @@ from .evaluation_metric import embedding_test_risk
 # ----------------- FIT -----------------
 def estimate_embedding(
     *, s0, s1, a0, a1, s_star, a_star, r,
+    discrete_dims=None,
     target_p_choice, target_p_params,
     nu, length_scale, sigma,
     gamma_val, lambda_reg,
@@ -31,7 +32,7 @@ def estimate_embedding(
 ) -> Tuple[torch.Tensor, list, list, Dict[str, torch.Tensor]]:
     return KE_DRL(
         s0=s0, s1=s1, a0=a0, a1=a1,
-        s_star=s_star, a_star=a_star, r=r,
+        s_star=s_star, a_star=a_star, r=r, discrete_dims=discrete_dims,
         target_p_choice=target_p_choice, target_p_params=target_p_params,
         nu=nu, length_scale=length_scale, sigma=sigma,
         gamma_val=gamma_val, lambda_reg=lambda_reg,
