@@ -1,6 +1,4 @@
 import torch
-import matplotlib.pyplot as plt
-import seaborn as sns  # only for plotting
 from .Probability_Densities import Probability_Densities
 from .matern_kernel import matern_kernel
 from pathlib import Path
@@ -128,13 +126,16 @@ class ULSIFEstimator:
 
         # match original: store the Cholesky version
         # self.alpha = alpha_chol.reshape(-1, 1)                          # (n_beta, 1)
-        self.alpha = torch.clamp(alpha_chol, min=0).reshape(-1, 1)  # (n_beta, 1), enforce α≥0
+        self.alpha = alpha_chol.reshape(-1, 1)
         with torch.no_grad():
             eta_hat = (K_bb @ self.alpha).squeeze(1)
             neg = (eta_hat < 0).float().mean().item()
             print(f"[uLSIF] eta_hat min={eta_hat.min().item():.3e} max={eta_hat.max().item():.3e} neg%={100 * neg:.2f}")
 
         if plot:
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+
             Path('plots').mkdir(parents=True, exist_ok=True)
             with torch.no_grad():
                 eta_hat = (K_bb @ self.alpha).squeeze(1)                # (n_beta,)

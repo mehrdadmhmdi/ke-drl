@@ -5,9 +5,17 @@ from typing import Any, Dict, Optional, Tuple
 import torch
 
 from .KE_DRL import KE_DRL
-from .density_recovery import RecoverAndPlot
 from .get_dataset import get_dataset
-from .evaluation_metric import embedding_test_risk
+from .evaluation_metric import (
+    embedding_test_risk,
+    embedding_test_risk_from_inputs,
+    predict_embedding_weights,
+)
+
+
+def _recover_tool(config: Dict[str, Any] | None = None):
+    from .density_recovery import RecoverAndPlot
+    return RecoverAndPlot(config or {})
 
 # ----------------- FIT -----------------
 def estimate_embedding(
@@ -16,15 +24,26 @@ def estimate_embedding(
     target_p_choice, target_p_params,
     nu, length_scale, sigma,
     gamma_val, lambda_reg,
-    num_grid_points,
+    lambda_B: float = 0.0,
+    ratio_lambda_reg: Optional[float] = None,
+    x_nu: Optional[float] = None,
+    x_length_scale: Optional[float] = None,
+    x_sigma: Optional[float] = None,
+    ratio_nu: Optional[float] = None,
+    ratio_length_scale: Optional[float] = None,
+    ratio_sigma: Optional[float] = None,
+    num_grid_points: int = 200,
     # passthrough options identical to KE_DRL defaults
     hull_expand_factor: float = 1.0,
     lr: float = 1e-3, weight_decay: float = 0.0, num_steps: int = 5000,
-    FP_penalty_lambda: float = 1e2,
+    target_batch_size: Optional[int] = None,
+    random_seed: Optional[int] = None,
+    initial_scale: float = 1e-3,
+    FP_penalty_lambda: float = 0.0,
     use_low_rank: bool = False, rank_for_low_rank: Optional[int] = None,
-    B_positive: bool = False, fixed_point_constraint: bool = True, exact_projection: bool = False,
+    B_positive: bool = False, fixed_point_constraint: bool = False, exact_projection: bool = False,
     ortho_lambda: float = 0.0, B_conv: bool = False, Sum_one_W: bool = False, NonNeg_W: bool = False,
-    mass_anchor_lambda: float = 10.0, target_mass: float = 1.0,
+    mass_anchor_lambda: float = 0.0, target_mass: float = 1.0,
     B_ridge_penalty: bool = False,
     H_batch_size: int = 10,
     device: Optional[str] = None, dtype: torch.dtype = torch.float64,
@@ -36,9 +55,13 @@ def estimate_embedding(
         target_p_choice=target_p_choice, target_p_params=target_p_params,
         nu=nu, length_scale=length_scale, sigma=sigma,
         gamma_val=gamma_val, lambda_reg=lambda_reg,
+        lambda_B=lambda_B, ratio_lambda_reg=ratio_lambda_reg,
+        x_nu=x_nu, x_length_scale=x_length_scale, x_sigma=x_sigma,
+        ratio_nu=ratio_nu, ratio_length_scale=ratio_length_scale, ratio_sigma=ratio_sigma,
         num_grid_points=num_grid_points,
         hull_expand_factor=hull_expand_factor,
         lr=lr, weight_decay=weight_decay, num_steps=num_steps,
+        target_batch_size=target_batch_size, random_seed=random_seed, initial_scale=initial_scale,
         FP_penalty_lambda=FP_penalty_lambda,
         use_low_rank=use_low_rank, rank_for_low_rank=rank_for_low_rank,
         B_positive=B_positive, fixed_point_constraint=fixed_point_constraint, exact_projection=exact_projection,
@@ -74,12 +97,12 @@ def build_plot_config(
 
 # ------------- SIMPLE PLOTS -------------
 def plot_bellman_error(history_be: list, *, config: Dict[str, Any] | None = None, outdir: str = "./plots/"):
-    tool = RecoverAndPlot(config or {})
+    tool = _recover_tool(config)
     os.makedirs(outdir, exist_ok=True)
     tool.plot_bellman_error(history_be, outdir=outdir)
 
 def plot_total_loss(history_obj: list, *, config: Dict[str, Any] | None = None, outdir: str = "./plots/"):
-    tool = RecoverAndPlot(config or {})
+    tool = _recover_tool(config)
     os.makedirs(outdir, exist_ok=True)
     tool.plot_total_loss(history_obj, outdir=outdir)
 
@@ -89,7 +112,7 @@ def recover_joint_beta(
     *, B: torch.Tensor, k_sa: torch.Tensor, Z_grid: torch.Tensor, Phi: torch.Tensor, K_sa: torch.Tensor,
     config: Dict[str, Any],
 ):
-    tool = RecoverAndPlot(config or {})
+    tool = _recover_tool(config)
     return tool.recover_joint_beta(
         B, k_sa, Z_grid, Phi, K_sa,
         nu=config["nu"], length_scale=config["length_scale"], sigma_k=config["sigma_k"],
@@ -100,7 +123,7 @@ def compute_marginals_from_beta(
     *, beta_full: torch.Tensor, Z_grid: torch.Tensor, config: Dict[str, Any],
     n_grid: int = 400, margin_factor: float = 0.25
 ):
-    tool = RecoverAndPlot(config or {})
+    tool = _recover_tool(config)
     return tool.marginals_from_beta(
         beta_full, Z_grid, reward_dim=config["reward_dim"],
         nu=config["nu"], length_scale=config["length_scale"], sigma_k=config["sigma_k"],
@@ -111,7 +134,7 @@ def compute_marginals_from_beta(
 def plot_densities(
     *, fz: torch.Tensor, grid_dict: Dict[str, Any], config: Dict[str, Any], outdir: str = "./plots/"
 ):
-    tool = RecoverAndPlot(config or {})
+    tool = _recover_tool(config)
     os.makedirs(outdir, exist_ok=True)
     tool.plot_densities(fz, grid_dict, outdir=outdir)
 
@@ -119,7 +142,7 @@ def mean_embedding_all(
     *, beta_full: torch.Tensor, Z_grid: torch.Tensor, config: Dict[str, Any],
     do_joint_dims=(0, 1), n1: int = 120, n2: int = 120, outdir: str = "./plots/"
 ):
-    tool = RecoverAndPlot(config or {})
+    tool = _recover_tool(config)
     return tool.mean_embedding_all(
         beta_full, Z_grid,
         nu=config["nu"], length_scale=config["length_scale"], sigma_k=config["sigma_k"],
@@ -129,7 +152,7 @@ def mean_embedding_all(
 def plot_operator_check_2d(cache: Dict[str, Any], *, r_obs: torch.Tensor | None,
                            gamma: float, dims=(0,1), outdir: str = "./plots/",
                            config: Dict[str, Any] | None = None):
-    tool = RecoverAndPlot(config or {})
+    tool = _recover_tool(config)
     tool.plot_operator_check_2d(cache, R=r_obs, gamma=gamma, dims=dims, outdir=outdir)
 
 def save_weights_and_grid(beta_full: torch.Tensor, Z_grid: torch.Tensor, run_id: int, mu_dir="./mu", data_dir="./data"):

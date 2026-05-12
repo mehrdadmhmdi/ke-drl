@@ -100,10 +100,17 @@ class RecoverAndPlot:
     @staticmethod
     @torch.no_grad()
     def _beta_full(B, k_sa, phi, Z_grid, K_sa, *, method, nu, length_scale, sigma_k, lambda_reg):
+        def apply_map(features):
+            if features.ndim == 1:
+                return (B.T @ features.view(-1)).contiguous()
+            if features.ndim == 2:
+                return (features.T @ B).contiguous()
+            raise ValueError("features must have shape (N,) or (N,L).")
+
         if method == "song":
-            return (B.T @ k_sa.view(-1)).contiguous()
+            return apply_map(k_sa)
         if method == "bellman":
-            return (B.T @ phi.view(-1)).contiguous()
+            return apply_map(phi)
         if method == "Schuster":
             # NOTE: left as-is; untouched
             L = torch.linalg.cholesky(A)
@@ -487,8 +494,8 @@ class RecoverAndPlot:
 
         fig, axs = plt.subplots(1,3, figsize=(14,4))
         im0 = axs[0].pcolormesh(Xn, Yn, A, cmap="Blues", shading="auto"); fig.colorbar(im0, ax=axs[0]); axs[0].set(title=rf"$\widehat \mu$ (slice)")
-        im1 = axs[1].pcolormesh(Xn, Yn, B, cmap="Greens", shading="auto"); fig.colorbar(im1, ax=axs[1]); axs[1].set(title="$T\widehat \mu$  (slice)")
-        im2 = axs[2].pcolormesh(Xn, Yn, np.abs(RZ), cmap="magma", shading="auto"); fig.colorbar(im2, ax=axs[2]); axs[2].set(title="|$\widehat \mu-T\widehat \mu$|")
+        im1 = axs[1].pcolormesh(Xn, Yn, B, cmap="Greens", shading="auto"); fig.colorbar(im1, ax=axs[1]); axs[1].set(title=r"$T\widehat \mu$  (slice)")
+        im2 = axs[2].pcolormesh(Xn, Yn, np.abs(RZ), cmap="magma", shading="auto"); fig.colorbar(im2, ax=axs[2]); axs[2].set(title=r"|$\widehat \mu-T\widehat \mu$|")
         for ax in axs: ax.set(xlabel=f"Z[{dims[0]+1}]", ylabel=f"Z[{dims[1]+1}]")
         plt.subplots_adjust(bottom=0.35)
         plt.figtext(0.5, 0.02, self._footer(), ha="center", fontsize=10, wrap=True)

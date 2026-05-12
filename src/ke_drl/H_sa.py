@@ -45,12 +45,14 @@ def compute_H_rows(i_batch, Gamma_sa, gamma, R, Z, kernel):
     return i_batch, chunk_result
 
 
-def H_sa(Gamma_sa, gamma, R, Z, nu, length_scale, sigma, batch_size=10):
+def H_sa(Gamma_sa, gamma, R, Z, nu, length_scale, sigma, batch_size=10, check_props=False):
     """
     Build H of shape (m,m) where:
       R: shape (n, d)
       Z: shape (m, d)
-    H[i,j] = sum_{p=0..n-1} Gamma_sa[p] * k( R[p],  Z[i] - gamma*Z[j] ).
+      H[i,j] = sum_{p=0..n-1} Gamma_sa[p] * k( R[p],  Z[i] - gamma*Z[j] ).
+
+    If Gamma_sa has shape (n, L), returns a stack with shape (L, m, m).
 
     - Chunked over i in [0..(m-1)]
     - Time complexity: O(n * m^2)
@@ -59,12 +61,27 @@ def H_sa(Gamma_sa, gamma, R, Z, nu, length_scale, sigma, batch_size=10):
     # ensure Torch tensors
     R        = torch.as_tensor(R)
     Z        = torch.as_tensor(Z)
-    Gamma_sa = torch.as_tensor(Gamma_sa).reshape(-1)
+    Gamma_sa = torch.as_tensor(Gamma_sa)
 
     device, dtype = Z.device, Z.dtype
     nR = R.shape[0]
     d  = R.shape[1]
     mZ = Z.shape[0]  # m
+
+    if Gamma_sa.ndim == 2:
+        if Gamma_sa.shape[0] != nR:
+            raise ValueError(f"Gamma_sa rows {Gamma_sa.shape[0]} must equal R rows {nR}.")
+        mats = [
+            H_sa(
+                Gamma_sa[:, ell], gamma, R, Z, nu, length_scale, sigma,
+                batch_size=batch_size, check_props=check_props,
+            )
+            for ell in range(Gamma_sa.shape[1])
+        ]
+        return torch.stack(mats, dim=0)
+    Gamma_sa = Gamma_sa.reshape(-1)
+    if Gamma_sa.numel() != nR:
+        raise ValueError(f"Gamma_sa length {Gamma_sa.numel()} must equal R rows {nR}.")
 
     # kernel closure to match original call pattern kernel(R, shift)
     kernel = lambda x1, x2: matern_kernel(x1, x2, length_scale=length_scale, nu=nu, sigma=sigma)
@@ -80,12 +97,9 @@ def H_sa(Gamma_sa, gamma, R, Z, nu, length_scale, sigma, batch_size=10):
         _, chunk_mat = compute_H_rows(i_batch, Gamma_sa, gamma, R, Z, kernel)  # (len, m)
         H.index_copy_(0, i_batch.to(dtype=torch.long), chunk_mat)
 
-    # Optional checks (Torch)
-    is_symmetric = torch.allclose(H, H.T, atol=1e-8)
-    evals = torch.linalg.eigvalsh((H + H.T) * 0.5)  # symmetrize for safety
-    is_spd = bool(torch.all(evals >= -1e-8))
-    print(f"H is SPD: {is_spd}")
-    print(f"H is symmetric: {is_symmetric}")
+    if check_props:
+        finite = bool(torch.isfinite(H).all())
+        print(f"H finite: {finite}")
     return H
 
 #=================================

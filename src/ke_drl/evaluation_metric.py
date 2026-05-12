@@ -1,6 +1,29 @@
 import torch
 from .matern_kernel import matern_kernel
 
+
+@torch.no_grad()
+def predict_embedding_weights(
+        X_train: torch.Tensor,
+        X_query: torch.Tensor,
+        B_hat_torch: torch.Tensor,
+        nu: float,
+        length_scale: float,
+        sigma: float = 1.0,
+) -> torch.Tensor:
+    """
+    Compute omega_hat(x; B) = B^T k_X(x) for each query input.
+
+    Returns a matrix with shape (n_query, m_Z).
+    """
+    device = B_hat_torch.device
+    dtype = B_hat_torch.dtype
+    X_train = X_train.to(device=device, dtype=dtype)
+    X_query = X_query.to(device=device, dtype=dtype)
+    K_train_query = matern_kernel(X_train, X_query, nu=nu, length_scale=length_scale, sigma=sigma)
+    return K_train_query.T @ B_hat_torch
+
+
 @torch.no_grad()
 def embedding_test_risk(
         Z_test: torch.Tensor,        # (m, d_z) Monte Carlo Z_j
@@ -59,6 +82,44 @@ def embedding_test_risk(
     R_hat = risk_per_sample.mean()            # scalar
 
     return R_hat
+
+
+@torch.no_grad()
+def embedding_test_risk_from_inputs(
+        Z_test: torch.Tensor,
+        X_train: torch.Tensor,
+        X_test: torch.Tensor,
+        B_hat_torch: torch.Tensor,
+        Z_grid: torch.Tensor,
+        *,
+        x_nu: float,
+        x_length_scale: float,
+        z_nu: float,
+        z_length_scale: float,
+        x_sigma: float = 1.0,
+        z_sigma: float = 1.0,
+) -> torch.Tensor:
+    """
+    Held-out prediction risk using the global map B^T k_X(x_test).
+    """
+    device = B_hat_torch.device
+    dtype = B_hat_torch.dtype
+    X_train = X_train.to(device=device, dtype=dtype)
+    X_test = X_test.to(device=device, dtype=dtype)
+    if Z_test.shape[0] != X_test.shape[0]:
+        raise ValueError("Z_test and X_test must have the same number of rows.")
+    k_test_train = matern_kernel(
+        X_train, X_test, nu=x_nu, length_scale=x_length_scale, sigma=x_sigma
+    ).T
+    return embedding_test_risk(
+        Z_test=Z_test,
+        k_sa_test=k_test_train,
+        B_hat_torch=B_hat_torch,
+        Z_grid=Z_grid,
+        nu=z_nu,
+        length_scale=z_length_scale,
+        sigma=z_sigma,
+    )
 
 ###==================================
 # # From KE-DRL run:

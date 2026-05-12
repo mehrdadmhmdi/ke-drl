@@ -46,11 +46,25 @@ def compute_G_pytorch_batched(transformed: torch.Tensor,Gamma_sa: torch.Tensor,n
 
       G[i,j] = sum_{u,v} Gamma_sa[u] * k(trans[i,u], trans[j,v]) * Gamma_sa[v]
 
+    If Gamma_sa has shape (n, L), returns a stack with shape (L, m, m).
+
     Defaults:
       block_i = 1
       block_j = 1000 * n
     """
     m, n, d = transformed.shape
+    if Gamma_sa.ndim == 2:
+        if Gamma_sa.shape[0] != n:
+            raise ValueError(f"Gamma_sa rows {Gamma_sa.shape[0]} must equal transformed.shape[1] {n}.")
+        mats = [
+            compute_G_pytorch_batched(
+                transformed, Gamma_sa[:, ell],
+                nu=nu, length_scale=length_scale, sigma=sigma,
+                block_i=block_i, block_j=block_j, check_props=check_props,
+            )
+            for ell in range(Gamma_sa.shape[1])
+        ]
+        return torch.stack(mats, dim=0)
     if Gamma_sa.numel() != n:
         raise ValueError(f"Gamma_sa length {Gamma_sa.numel()} must equal transformed.shape[1] {n}.")
 
