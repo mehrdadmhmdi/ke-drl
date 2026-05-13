@@ -1,0 +1,39 @@
+#!/bin/bash
+#SBATCH --account=bfez-dtai-gh
+#SBATCH --job-name=GU_data
+#SBATCH --output=logs/data_%A_%a.log
+#SBATCH --time=00:05:00
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --mem=8g
+#SBATCH --cpus-per-task=4
+#SBATCH --partition=ghx4
+#SBATCH --mail-type=ALL
+#SBATCH --mail-user=mehrdad3@illinois.edu
+#SBATCH --array=0-100
+
+set -euo pipefail
+
+# Access exported variables:
+cd ${OUTDIR:-$PWD}
+echo "Running in folder: $(pwd)"
+mkdir -p logs data
+
+echo "Job ID:    ${SLURM_JOB_ID}"
+echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
+echo "CPUs/node: ${SLURM_CPUS_ON_NODE}"
+echo "Mem/node:  ${SLURM_MEM_PER_NODE}"
+
+## load modules/env
+module load python/miniforge3_pytorch/2.7.0
+
+if [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../src" ]; then
+  export KEDRL_SRC="$PWD/../src"
+elif [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../kedrl_git/src" ]; then
+  export KEDRL_SRC="$PWD/../kedrl_git/src"
+fi
+if [ -n "${KEDRL_SRC:-}" ]; then
+  export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"
+fi
+
+python3  main_offlinedata.py

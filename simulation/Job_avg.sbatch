@@ -1,0 +1,43 @@
+#!/bin/bash
+#SBATCH --account=bfez-dtai-gh
+#SBATCH --partition=ghx4
+##SBATCH --account=bfez-delta-gpu       ## Delta
+##SBATCH --partition=gpuA100x8
+#SBATCH --job-name=avg_metrics
+#SBATCH --output=logs/avg_metrics_%A_%a.log
+#SBATCH --time=00:3:00
+#SBATCH --nodes=1
+#SBATCH --gres=gpu:1
+#SBATCH --mem=1g
+#SBATCH --cpus-per-task=4
+#SBATCH --mail-type=NONE
+#SBATCH --mail-user=mehrdad3@illinois.edu
+
+set -euo pipefail
+
+cd ${OUTDIR:-${BASE:-$PWD}}
+mkdir -p logs mu plots metrics
+
+echo "Job ID:    ${SLURM_JOB_ID}"
+echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
+echo "CPUs/node: ${SLURM_CPUS_ON_NODE}"
+echo "Mem/node:  ${SLURM_MEM_PER_NODE}"
+
+## load modules/env -- delta ai
+module load python/miniforge3_pytorch/2.7.0
+
+if [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../kedrl_git/src" ]; then
+  export KEDRL_SRC="$PWD/../kedrl_git/src"
+fi
+if [ -n "${KEDRL_SRC:-}" ]; then
+  export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"
+fi
+
+## load modules/env -- delta
+#module load cuda/12.3.0
+#source /sw/external/python/anaconda3_gpu/etc/profile.d/conda.sh
+#conda activate /u/mehrdad3/.conda/envs/delta_env
+#echo "Using Python from: $(which python)"
+#python -m pip show pot
+
+python3 mu_plot.py

@@ -1,0 +1,110 @@
+#====================================#
+#  PARAMETERS FOR SIMULATION RK-DRL #
+#==================================#
+# params.yaml
+# --------------------------------
+n_ids: 1000
+n_timepoints: 3
+state_dim: 5
+reward_dim: 3
+action_dim: 1
+num_grid_points: 300
+random_seed: 20260512
+#===========================
+gamma_val: 0.8
+lambda_reg: 0.0002
+lambda_B: 0.0002
+hull_expand_factor: 1
+H_batch_size: 50
+d_r_method: song  #song, bellman, Schuster
+bandwidth: 1.5
+lambda_rec: 0.02
+# Target set for the global X objective. Use mode: all for the full
+# training support; train_subset is the cheaper default for array reruns.
+target_set:
+  mode: train_subset
+  num_points: 128
+  seed_offset: 7919
+#===========================
+optimization:
+  lr: 1e-3
+  weight_decay: 1e-4
+  FP_penalty_lambda: 0.0
+  num_steps: 5000
+  target_batch_size: 32
+  initial_scale: 1e-3
+  use_low_rank: False
+  B_positive: False
+  fixed_point_constraint: False
+  exact_projection: False
+  ortho_lambda: 0.0
+  B_conv: False
+  Sum_one_W: False
+  NonNeg_W: False
+  B_ridge_penalty: False
+  mass_anchor_lambda: 0.0
+  target_mass: 1.0  #desired 1^T w for the anchor
+#===========================
+kernel:
+  type: matern
+  nu: 7.50
+  length_scale: 2
+  sigma: 0.9
+#==========================
+policy:
+  evaluation_Target_policy: logistic    # choose one:  #"uniform" or "gaussian" or "logistic"
+  Behvaioral_policy: uniform
+
+  uniform:
+    name: uniform
+    theta_lower: [0, -0.2, -0.2, -0.8, -0.6]
+    theta_upper: [ 0.2,  0.0,  0.5, -0.1,  0.6]
+    epsilon_lower: [0.0]
+    epsilon_upper: [0.05]
+
+
+  gaussian:
+    name: gaussian
+    theta_mean: [0.8, 0.4, 0.2, 0.3, 0.0]
+    theta_std: [0.4, 0.3, 0.3, 0.5, 0.1]
+    epsilon_mean: [0.0]
+    epsilon_std: [0.05]
+
+  logistic:
+    name: logistic
+    theta_loc: [0.0, 0.3, -0.1, 0.1, 0.0]
+    theta_scale: [1.0, 0.8, 0.8, 1.2, 1.0]
+    epsilon_loc: [0.0]
+    epsilon_scale: [0.05]
+
+#===========================
+MDP:
+  # (state_dim, state_dim + action_dim) = (5, 6)
+  W_s:
+    - [0.4,  -0.2, 0.1,  0.5,  0.3, -0.1]
+    - [0.03,  0.3, -0.2, 0.15, 0.5,  0.1]
+    - [0.15, -0.05, 0.2, 0.6,  0.5, -0.2]
+    - [0.2,   0.05, -0.1, 0.3, -0.15, 0.2]
+    - [0.1,  -0.3, 0.25, -0.2, 0.4,  0.15]
+  b_s: [0, 0, 0, 0, 0]               # (5,)
+  sigma_s:
+    - [0.1, 0.05, 0.02, 0.01, 0.03]
+    - [0.05, 0.2, 0.03, 0.02, 0.04]
+    - [0.02, 0.03, 0.3, 0.05, 0.01]
+    - [0.01, 0.02, 0.05, 0.25, 0.02]
+    - [0.03, 0.04, 0.01, 0.02, 0.35]
+
+  # (reward_dim, state_dim + action_dim) = (3, 6)
+  W_r:
+    - [0.02, 0.1,  -0.5, 0.3,  -0.1, 0.2]
+    - [0.1, -0.3,   0.2, 0.25, -0.2, 0.4]
+    - [0.15, 0.1,  -0.1, 0.35,  0.1, -0.05]
+  b_r: [0, 0, 0]                     # (3,)
+  sigma_r:
+    - [0.2, 0.01, 0.03]
+    - [0.01, 0.25, 0.02]
+    - [0.03, 0.02, 0.3]
+#===========================
+Z_sim:
+  n_ids: 10000
+  n_timepoints: 300

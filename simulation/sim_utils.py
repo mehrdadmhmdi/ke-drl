@@ -1,0 +1,253 @@
+from __future__ import annotations
+
+import importlib.util
+import os
+import sys
+from pathlib import Path
+from typing import Iterable
+
+import torch
+
+
+def bootstrap_kedrl() -> None:
+    """Make the sibling installable package importable in local and Slurm runs."""
+    if importlib.util.find_spec("ke_drl") is not None:
+        return
+
+    candidates: list[Path] = []
+    env_src = os.environ.get("KEDRL_SRC")
+    if env_src:
+        candidates.append(Path(env_src))
+
+    here = Path(__file__).resolve().parent
+    cwd = Path.cwd().resolve()
+    for base in (here, cwd, *here.parents, *cwd.parents):
+        candidates.extend(
+            [
+                base / "src",
+                base / "kedrl_git" / "src",
+                base / ".." / "kedrl_git" / "src",
+                base / ".." / ".." / "kedrl_git" / "src",
+            ]
+        )
+
+    for cand in candidates:
+        src = cand.resolve()
+        if (src / "ke_drl").is_dir():
+            sys.path.insert(0, str(src))
+            return
+
+
+bootstrap_kedrl()
+
+from ke_drl.Probability_Densities import Probability_Densities
+
+
+def seed_from_array(base_seed: int, array_id: str | int | None) -> int:
+    try:
+        offset = int(array_id) if array_id is not None else 0
+    except (TypeError, ValueError):
+        offset = 0
+    seed = int(base_seed) + offset
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    return seed
+
+
+def clean_policy_params(policy: str, params: dict) -> dict:
+    """Return params in the nested shape expected by Probability_Densities."""
+    if policy in params and isinstance(params[policy], dict):
+        raw = dict(params[policy])
+    else:
+        raw = dict(params)
+    raw.pop("name", None)
+    return {policy: raw}
+
+
+def sample_policy_actions(policy: str, params: dict, states: torch.Tensor, action_dim: int) -> torch.Tensor:
+    sampler = Probability_Densities(**clean_policy_params(policy, params))
+    actions = sampler.sample_pdf(policy, states)
+    if actions is None:
+        raise RuntimeError(f"Policy sampler returned None for policy={policy!r}.")
+    actions = torch.as_tensor(actions, dtype=states.dtype, device=states.device).reshape(states.shape[0], -1)
+    if actions.shape[1] == action_dim:
+        return actions
+    if actions.shape[1] == 1:
+        return actions.repeat(1, action_dim)
+    reps = (action_dim + actions.shape[1] - 1) // actions.shape[1]
+    return actions.repeat(1, reps)[:, :action_dim]
+
+
+def _mvn_noise(n: int, cov: torch.Tensor, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+    cov = cov.to(device=device, dtype=dtype)
+    dim = cov.shape[0]
+    eye = torch.eye(dim, dtype=dtype, device=device)
+    try:
+        dist = torch.distributions.MultivariateNormal(
+            torch.zeros(dim, dtype=dtype, device=device), covariance_matrix=cov
+        )
+    except ValueError:
+        jitter = 1e-6 * torch.trace(cov).clamp_min(1.0) / float(dim)
+        dist = torch.distributions.MultivariateNormal(
+            torch.zeros(dim, dtype=dtype, device=device), covariance_matrix=cov + jitter * eye
+        )
+    return dist.sample((n,))
+
+
+def _linear_gaussian(
+    states: torch.Tensor,
+    actions: torch.Tensor,
+    W: torch.Tensor,
+    b: torch.Tensor,
+    cov: torch.Tensor,
+) -> torch.Tensor:
+    x = torch.cat([states, actions], dim=1)
+    mean = x @ W.to(device=x.device, dtype=x.dtype).T + b.to(device=x.device, dtype=x.dtype)
+    return mean + _mvn_noise(mean.shape[0], cov, device=mean.device, dtype=mean.dtype)
+
+
+def synthetic_data_generation_torch(
+    n_ids: int,
+    n_timepoints: int,
+    state_dim: int,
+    reward_dim: int,
+    action_dim: int,
+    policy: str,
+    policy_params: dict,
+    W_s: torch.Tensor,
+    b_s: torch.Tensor,
+    sigma_s: torch.Tensor,
+    W_r: torch.Tensor,
+    b_r: torch.Tensor,
+    sigma_r: torch.Tensor,
+    *,
+    dtype: torch.dtype = torch.float64,
+    device: str | torch.device | None = None,
+) -> tuple[torch.Tensor, ...]:
+    """Generate pooled offline transitions for the linear-Gaussian MDP."""
+    dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    n_ids = int(n_ids)
+    n_timepoints = int(n_timepoints)
+    state_dim = int(state_dim)
+    reward_dim = int(reward_dim)
+    action_dim = int(action_dim)
+    if n_timepoints < 2:
+        raise ValueError("n_timepoints must be at least 2.")
+
+    states = torch.empty(n_ids, n_timepoints, state_dim, dtype=dtype, device=dev)
+    actions = torch.empty(n_ids, n_timepoints, action_dim, dtype=dtype, device=dev)
+    rewards = torch.empty(n_ids, n_timepoints, reward_dim, dtype=dtype, device=dev)
+
+    states[:, 0, :] = torch.randn(n_ids, state_dim, dtype=dtype, device=dev)
+    actions[:, 0, :] = sample_policy_actions(policy, policy_params, states[:, 0, :], action_dim)
+
+    for t in range(n_timepoints):
+        rewards[:, t, :] = _linear_gaussian(states[:, t, :], actions[:, t, :], W_r, b_r, sigma_r)
+        if t + 1 < n_timepoints:
+            states[:, t + 1, :] = _linear_gaussian(states[:, t, :], actions[:, t, :], W_s, b_s, sigma_s)
+            actions[:, t + 1, :] = sample_policy_actions(policy, policy_params, states[:, t + 1, :], action_dim)
+
+    s0 = states[:, :-1, :].reshape(-1, state_dim)
+    s1 = states[:, 1:, :].reshape(-1, state_dim)
+    a0 = actions[:, :-1, :].reshape(-1, action_dim)
+    a1 = actions[:, 1:, :].reshape(-1, action_dim)
+    r0 = rewards[:, :-1, :].reshape(-1, reward_dim)
+    r1 = rewards[:, 1:, :].reshape(-1, reward_dim)
+    r = rewards.reshape(-1, reward_dim)
+    return tuple(x.detach().cpu() for x in (s0, s1, a0, a1, r0, r1, r))
+
+
+def monte_carlo_Z(
+    n_ids: int,
+    n_timepoints: int,
+    gamma_val: float,
+    s_star: torch.Tensor,
+    a_star: torch.Tensor,
+    reward_dim: int,
+    policy: str,
+    policy_params: dict,
+    W_s: torch.Tensor,
+    b_s: torch.Tensor,
+    sigma_s: torch.Tensor,
+    W_r: torch.Tensor,
+    b_r: torch.Tensor,
+    sigma_r: torch.Tensor,
+    *,
+    plot: bool = False,
+    dtype: torch.dtype = torch.float64,
+    device: str | torch.device | None = None,
+) -> list[torch.Tensor]:
+    """Monte Carlo discounted return samples from one or more initial (s,a) pairs."""
+    del plot
+    dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
+    n_ids = int(n_ids)
+    n_timepoints = int(n_timepoints)
+    reward_dim = int(reward_dim)
+    gamma_val = float(gamma_val)
+
+    s_star = torch.as_tensor(s_star, dtype=dtype, device=dev)
+    a_star = torch.as_tensor(a_star, dtype=dtype, device=dev)
+    if s_star.ndim == 1:
+        s_star = s_star.unsqueeze(0)
+    if a_star.ndim == 1:
+        a_star = a_star.unsqueeze(0)
+    if s_star.shape[0] != a_star.shape[0]:
+        raise ValueError("s_star and a_star must have the same number of rows.")
+
+    out: list[torch.Tensor] = []
+    discounts = torch.pow(
+        torch.as_tensor(gamma_val, dtype=dtype, device=dev),
+        torch.arange(n_timepoints, dtype=dtype, device=dev),
+    )
+
+    for ell in range(s_star.shape[0]):
+        states = s_star[ell : ell + 1, :].repeat(n_ids, 1)
+        actions = a_star[ell : ell + 1, :].repeat(n_ids, 1)
+        returns = torch.zeros(n_ids, reward_dim, dtype=dtype, device=dev)
+
+        for t in range(n_timepoints):
+            reward_t = _linear_gaussian(states, actions, W_r, b_r, sigma_r)
+            returns += discounts[t] * reward_t
+            if t + 1 < n_timepoints:
+                states = _linear_gaussian(states, actions, W_s, b_s, sigma_s)
+                actions = sample_policy_actions(policy, policy_params, states, actions.shape[1])
+
+        out.append(returns.detach().cpu())
+    return out
+
+
+def select_target_set(
+    s0: torch.Tensor,
+    a0: torch.Tensor,
+    cfg: dict | None,
+    *,
+    seed: int,
+    fallback_eval_s: torch.Tensor | None = None,
+    fallback_eval_a: torch.Tensor | None = None,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+    """Choose the target X set used by the global objective."""
+    cfg = dict(cfg or {})
+    mode = str(cfg.get("mode", "train_subset")).lower()
+    n = s0.shape[0]
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(int(seed) + int(cfg.get("seed_offset", 7919)))
+
+    if mode in {"mc_point", "point", "single"}:
+        if fallback_eval_s is None or fallback_eval_a is None:
+            raise ValueError("mc_point target mode requires the Monte Carlo evaluation point.")
+        return fallback_eval_s.reshape(1, -1), fallback_eval_a.reshape(1, -1), None
+
+    if mode in {"all", "train_all"}:
+        idx = torch.arange(n)
+        return s0, a0, idx
+
+    num_points = int(cfg.get("num_points", min(128, n)))
+    num_points = max(1, min(num_points, n))
+    if mode in {"first", "head"}:
+        idx = torch.arange(num_points)
+    elif mode in {"train_subset", "subset", "random"}:
+        idx = torch.randperm(n, generator=generator)[:num_points]
+    else:
+        raise ValueError(f"Unknown target_set.mode={mode!r}.")
+    return s0[idx], a0[idx], idx
