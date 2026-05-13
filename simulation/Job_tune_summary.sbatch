@@ -1,23 +1,15 @@
 #!/bin/bash
-#####----------
-### Generates one benchmark true-Z file for each offline replicate.
-####--------------
 #SBATCH --account=bfez-delta-gpu
-#SBATCH --job-name=GU_Z
-#SBATCH --output=logs/Z_true_%A_%a.log
-#SBATCH --time=01:00:00
+#SBATCH --job-name=KEDRL_TUNE_SUM
+#SBATCH --output=logs/tune_summary.%j.log
+#SBATCH --time=00:05:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
-#SBATCH --mem=4g
-#SBATCH --cpus-per-task=4
+#SBATCH --mem=2g
+#SBATCH --cpus-per-task=1
 #SBATCH --partition=gpuA40x4-preempt
-#SBATCH --mail-type=NONE
+#SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-49
-
-cd ${OUTDIR:-$PWD}
-echo "Running in folder: $(pwd)"
-mkdir -p logs data
 
 echo "Job ID:    ${SLURM_JOB_ID}"
 echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
@@ -42,13 +34,4 @@ echo $CUDA_VISIBLE_DEVICES
 
 set -euo pipefail
 
-if [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../src" ]; then
-  export KEDRL_SRC="$PWD/../src"
-elif [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../kedrl_git/src" ]; then
-  export KEDRL_SRC="$PWD/../kedrl_git/src"
-fi
-if [ -n "${KEDRL_SRC:-}" ]; then
-  export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"
-fi
-
-python3 main_MonteCarloZ.py
+python3 summarize_tuning.py

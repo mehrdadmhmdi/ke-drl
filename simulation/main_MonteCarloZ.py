@@ -19,22 +19,20 @@ start = time.time()
 job_id = os.environ.get("SLURM_JOB_ID")
 array_id = os.environ.get("SLURM_ARRAY_TASK_ID", "0")
 print(f"Slurm Job ID: {job_id}")
-print(f"Slurm Array ID: {array_id} -- used as the evaluation-point id")
+print(f"Slurm Array ID: {array_id} -- used as the offline-replicate id")
 
 with open("./params.yaml", "r", encoding="utf-8") as f:
     P = yaml.safe_load(f)
 
-eval_id = int(array_id)
-eval_cfg = dict(P.get("evaluation") or {})
-offline_data_id = int(eval_cfg.get("offline_data_id", 0))
-num_eval_points = int(eval_cfg.get("num_points", P.get("target_set", {}).get("num_points", 30)))
-if eval_id < 0 or eval_id >= num_eval_points:
-    raise ValueError(f"Evaluation-point id {eval_id} is outside 0,...,{num_eval_points - 1}.")
+offline_data_id = int(os.environ.get("OFFLINE_DATA_ID", array_id))
+num_replicates = int(P.get("experiment", {}).get("num_replicates", 1))
+if offline_data_id < 0 or offline_data_id >= num_replicates:
+    raise ValueError(f"Offline replicate id {offline_data_id} is outside 0,...,{num_replicates - 1}.")
 
-seed = seed_from_array(int(P.get("random_seed", 20260512)) + 100000, eval_id)
+seed = seed_from_array(int(P.get("random_seed", 20260512)) + 100000, offline_data_id)
 print(f"Random seed: {seed}")
 print(f"Offline data id: {offline_data_id}")
-print(f"Number of evaluation points: {num_eval_points}")
+print(f"Number of offline replicates: {num_replicates}")
 
 to_t = lambda x: torch.as_tensor(x, dtype=torch.float64)
 W_s, b_s, sigma_s = map(to_t, (P["MDP"]["W_s"], P["MDP"]["b_s"], P["MDP"]["sigma_s"]))
@@ -51,20 +49,19 @@ saved = torch.load(offline_path, map_location="cpu")
 s0 = torch.as_tensor(saved["s0"], dtype=torch.float64)
 a0 = torch.as_tensor(saved["a0"], dtype=torch.float64)
 
-design_seed = int(P.get("random_seed", 20260512)) + 110000 + offline_data_id
+bench_cfg = dict(P.get("benchmark") or {})
+design_seed = int(P.get("random_seed", 20260512)) + int(bench_cfg.get("seed_offset", 110000)) + offline_data_id
 generator = torch.Generator(device="cpu")
 generator.manual_seed(design_seed)
-if num_eval_points > s0.size(0):
-    raise ValueError(f"Requested {num_eval_points} evaluation points but offline data has only {s0.size(0)} rows.")
-idx = torch.randperm(s0.size(0), generator=generator)[:num_eval_points][eval_id].item()
+idx = torch.randperm(s0.size(0), generator=generator)[0].item()
 s_star = s0[idx]
 a_star = a0[idx]
 print(f"Selected MC benchmark row: {idx}")
 
-csv = Path("./data") / f"sa_star_{eval_id}.csv"
+csv = Path("./data") / f"benchmark_point_{offline_data_id}.csv"
 csv.parent.mkdir(parents=True, exist_ok=True)
 row = {
-    "Point ID": eval_id,
+    "offline_data_id": offline_data_id,
     "offline_row": idx,
     **{f"s{i}": v for i, v in enumerate(s_star.detach().cpu().flatten().tolist())},
     **{f"a{i}": v for i, v in enumerate(a_star.detach().cpu().flatten().tolist())},
@@ -93,7 +90,7 @@ print("len(Z_true) =", len(Z_true), "shape each =", tuple(Z_true[0].shape))
 
 out_dir = Path("data")
 out_dir.mkdir(parents=True, exist_ok=True)
-out_path = out_dir / f"Z_true_{eval_id}.pt"
+out_path = out_dir / f"Z_true_{offline_data_id}.pt"
 
 torch.save(
     {
@@ -103,11 +100,11 @@ torch.save(
             "a_star": a_star,
             "offline_row": idx,
             "offline_data_id": offline_data_id,
-            "eval_id": eval_id,
+            "benchmark_id": 0,
             "policy": target_policy,
             "policy_params": {target_policy: target_policy_params},
             "params_file": "params.yaml",
-            "stamp": str(eval_id),
+            "stamp": str(offline_data_id),
             "random_seed": seed,
             "design_seed": design_seed,
         },

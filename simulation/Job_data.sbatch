@@ -2,7 +2,7 @@
 #SBATCH --account=bfez-delta-gpu
 #SBATCH --job-name=GU_data
 #SBATCH --output=logs/data_%A_%a.log
-#SBATCH --time=00:05:00
+#SBATCH --time=00:15:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
 #SBATCH --mem=8g
@@ -10,7 +10,7 @@
 #SBATCH --partition=gpuA40x4-preempt
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-0
+#SBATCH --array=0-49
 
 # Access exported variables:
 cd ${OUTDIR:-$PWD}
@@ -49,4 +49,6 @@ if [ -n "${KEDRL_SRC:-}" ]; then
   export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"
 fi
 
-python3  main_offlinedata.py
+python3 validate_sim_config.py --params params.yaml
+python3 main_offlinedata.py
+python3 validate_sim_config.py --params params.yaml --data "data/offline_data_${SLURM_ARRAY_TASK_ID}.pt"

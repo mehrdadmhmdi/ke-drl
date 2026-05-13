@@ -10,26 +10,29 @@ reward_dim: 3
 action_dim: 1
 num_grid_points: 300
 random_seed: 20260512
-# One offline dataset is generated, then 30 evaluation points are selected
-# from it. Each evaluation point has its own Monte Carlo truth file, while
-# estimation fits one global B using all 30 points.
-evaluation:
-  offline_data_id: 0
-  num_points: 30
+# Main consistency experiment: 50 independent offline datasets. For each
+# dataset, one benchmark point gets Monte Carlo true Z, while 30 separate
+# target points define the global empirical Bellman loss for B.
+experiment:
+  num_replicates: 50
+benchmark:
+  num_points: 1
+  seed_offset: 110000
 #===========================
 gamma_val: 0.8
 lambda_reg: 0.0002
 lambda_B: 0.0002
-hull_expand_factor: 1
+hull_expand_factor: 1.8
 H_batch_size: 50
 d_r_method: song  #song, bellman, Schuster
 bandwidth: 1.5
 lambda_rec: 0.02
-# Target set for the global X objective. In this simulation wrapper, these
-# are the evaluation points loaded from data/Z_true_0.pt, ..., Z_true_29.pt.
+# Target set for the global X objective in each offline replicate.
 target_set:
-  mode: evaluation_points
+  mode: train_subset
   num_points: 30
+  seed_offset: 7919
+  exclude_benchmark: True
 #===========================
 optimization:
   lr: 1e-3
@@ -77,10 +80,12 @@ policy:
 
   logistic:
     name: logistic
-    theta_loc: [0.0, 0.3, -0.1, 0.1, 0.0]
-    theta_scale: [1.0, 0.8, 0.8, 1.2, 1.0]
-    epsilon_loc: [0.0]
-    epsilon_scale: [0.05]
+    # Probability_Densities treats theta_scale as log-scale coefficients.
+    # Keep the target policy inside the behavior-policy support for overlap.
+    theta_loc: [0.0, -0.2, -0.2, -0.8, -0.6]
+    theta_scale: [0.0, 0.0, 0.0, 0.0, 0.0]
+    epsilon_loc: [0.1]
+    epsilon_scale: [-3.0]
 
 #===========================
 MDP:

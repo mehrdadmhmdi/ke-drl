@@ -225,6 +225,7 @@ def select_target_set(
     seed: int,
     fallback_eval_s: torch.Tensor | None = None,
     fallback_eval_a: torch.Tensor | None = None,
+    exclude_idx: int | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
     """Choose the target X set used by the global objective."""
     cfg = dict(cfg or {})
@@ -238,16 +239,22 @@ def select_target_set(
             raise ValueError("mc_point target mode requires the Monte Carlo evaluation point.")
         return fallback_eval_s.reshape(1, -1), fallback_eval_a.reshape(1, -1), None
 
-    if mode in {"all", "train_all"}:
-        idx = torch.arange(n)
-        return s0, a0, idx
+    candidates = torch.arange(n)
+    if bool(cfg.get("exclude_benchmark", False)) and exclude_idx is not None and n > 1:
+        candidates = candidates[candidates != int(exclude_idx)]
+    if candidates.numel() == 0:
+        raise ValueError("No candidate target points remain after applying target_set exclusions.")
 
-    num_points = int(cfg.get("num_points", min(128, n)))
-    num_points = max(1, min(num_points, n))
+    if mode in {"all", "train_all"}:
+        idx = candidates
+        return s0[idx], a0[idx], idx
+
+    num_points = int(cfg.get("num_points", min(128, candidates.numel())))
+    num_points = max(1, min(num_points, int(candidates.numel())))
     if mode in {"first", "head"}:
-        idx = torch.arange(num_points)
+        idx = candidates[:num_points]
     elif mode in {"train_subset", "subset", "random"}:
-        idx = torch.randperm(n, generator=generator)[:num_points]
+        idx = candidates[torch.randperm(candidates.numel(), generator=generator)[:num_points]]
     else:
         raise ValueError(f"Unknown target_set.mode={mode!r}.")
     return s0[idx], a0[idx], idx

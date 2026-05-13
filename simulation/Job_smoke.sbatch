@@ -62,6 +62,7 @@ cp "$BASE/main_est.py" "$RUN/"
 cp "$BASE/mu_plot.py" "$RUN/"
 cp "$BASE/sim_utils.py" "$RUN/"
 cp "$BASE/sim_eval.py" "$RUN/"
+cp "$BASE/validate_sim_config.py" "$RUN/"
 cp "$BASE/params_smoke.yaml" "$RUN/params.yaml"
 
 cd "$RUN"
@@ -74,36 +75,56 @@ with open("params.yaml", "r", encoding="utf-8") as f:
 print({
     "n_ids": p["n_ids"],
     "Z_sim": p["Z_sim"],
-    "evaluation": p["evaluation"],
+    "experiment": p["experiment"],
+    "benchmark": p["benchmark"],
+    "target_set": p["target_set"],
     "num_grid_points": p["num_grid_points"],
     "num_steps": p["optimization"]["num_steps"],
 })
 PY
 
-echo "===== SMOKE 1/4: offline data ====="
-python3 main_offlinedata.py
+echo "===== SMOKE 0/4: config validation ====="
+python3 validate_sim_config.py --params params.yaml
 
-N_EVAL=$(python3 - <<'PY'
+N_REP=$(python3 - <<'PY'
 import yaml
 with open("params.yaml", "r", encoding="utf-8") as f:
     p = yaml.safe_load(f)
-print(int((p.get("evaluation") or {}).get("num_points", 3)))
+print(int((p.get("experiment") or {}).get("num_replicates", 1)))
 PY
 )
 
-echo "===== SMOKE 2/4: Monte Carlo true Z for ${N_EVAL} points ====="
-for ((j=0; j<N_EVAL; j++)); do
-  export SLURM_ARRAY_TASK_ID="$j"
+echo "===== SMOKE 1/4: offline data for ${N_REP} replicates ====="
+for ((r=0; r<N_REP; r++)); do
+  export SLURM_ARRAY_TASK_ID="$r"
+  export OFFLINE_DATA_ID="$r"
+  python3 main_offlinedata.py
+  python3 validate_sim_config.py --params params.yaml --data "data/offline_data_${r}.pt"
+done
+unset SLURM_ARRAY_TASK_ID
+unset OFFLINE_DATA_ID
+
+echo "===== SMOKE 2/4: one Monte Carlo benchmark true Z per replicate ====="
+for ((r=0; r<N_REP; r++)); do
+  export SLURM_ARRAY_TASK_ID="$r"
+  export OFFLINE_DATA_ID="$r"
   python3 main_MonteCarloZ.py
 done
 unset SLURM_ARRAY_TASK_ID
+unset OFFLINE_DATA_ID
 
-echo "===== SMOKE 3/4: one global B fit ====="
-python3 main_est.py
+echo "===== SMOKE 3/4: one global B fit per replicate ====="
+for ((r=0; r<N_REP; r++)); do
+  export SLURM_ARRAY_TASK_ID="$r"
+  export OFFLINE_DATA_ID="$r"
+  python3 main_est.py
+done
+unset SLURM_ARRAY_TASK_ID
+unset OFFLINE_DATA_ID
 
 echo "===== SMOKE 4/4: aggregate plots/metrics ====="
 python3 mu_plot.py
 
 echo "Smoke outputs:"
-ls -lh data/fit_global.pt data/Zeval_global.pt metrics/global_eval_metrics.csv plots/mu_summary_UG.png
+ls -lh data/fit_0.pt data/Zeval_0.pt metrics/per_run_metrics.csv plots/mu_summary_UG.png
 echo "SMOKE TEST DONE"

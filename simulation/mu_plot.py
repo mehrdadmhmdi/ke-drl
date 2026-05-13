@@ -32,11 +32,12 @@ with open(args.params, "r", encoding="utf-8") as f:
 print(
     "Aggregation params:",
     {
-        "evaluation": P.get("evaluation"),
+        "experiment": P.get("experiment"),
+        "benchmark": P.get("benchmark"),
         "lambda_reg": P.get("lambda_reg"),
         "lambda_B": P.get("lambda_B", P.get("optimization", {}).get("lambda_B")),
         "kernel": P.get("kernel"),
-        "target_set": P.get("target_set", P.get("x_star", {})),
+        "target_set": P.get("target_set", {}),
     },
 )
 
@@ -48,7 +49,7 @@ if not summary_path.exists():
         f"Expected {summary_path} was not created. Check that matplotlib is installed in the cluster environment."
     )
 
-print(f"Aggregated {len(df)} evaluation points")
+print(f"Aggregated {len(df)} offline replicates")
 print("ALL DONE!")
 elapsed = time.time() - start
 print(f"Plotting time: {int(elapsed // 60)} minutes and {int(elapsed % 60)} seconds")

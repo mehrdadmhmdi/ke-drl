@@ -39,7 +39,7 @@ set -euo pipefail
 # ============================================================ #
 BASE=$PWD
 OUTBASE=$BASE/runs
-RUN="$OUTBASE/global_eval_${SLURM_JOB_ID}"
+RUN="$OUTBASE/main_${SLURM_JOB_ID}"
 mkdir -p "$OUTBASE" logs
 
 if [ -z "${KEDRL_SRC:-}" ] && [ -d "$BASE/../src" ]; then
@@ -54,28 +54,49 @@ else
   echo "Warning: KEDRL_SRC=${KEDRL_SRC:-unset} not found; relying on installed ke_drl package." >&2
 fi
 
-read -r OFFLINE_DATA_ID N_EVAL < <(python3 - <<'PY'
+N_REP=$(python3 - <<'PY'
 import yaml
 with open("params.yaml", "r", encoding="utf-8") as f:
     p = yaml.safe_load(f)
-cfg = p.get("evaluation") or {}
-target = p.get("target_set") or {}
-print(int(cfg.get("offline_data_id", 0)), int(cfg.get("num_points", target.get("num_points", 30))))
+print(int((p.get("experiment") or {}).get("num_replicates", 1)))
 PY
 )
 
 DATA_DIR="$BASE/data"
-if [ ! -f "$DATA_DIR/offline_data_${OFFLINE_DATA_ID}.pt" ]; then
-  echo "Missing $DATA_DIR/offline_data_${OFFLINE_DATA_ID}.pt. Run Job_data.sbatch first." >&2
-  exit 1
-fi
-
-for ((j=0; j<N_EVAL; j++)); do
+for ((j=0; j<N_REP; j++)); do
+  if [ ! -f "$DATA_DIR/offline_data_${j}.pt" ]; then
+    echo "Missing $DATA_DIR/offline_data_${j}.pt. Run Job_data.sbatch and wait for all ${N_REP} array tasks." >&2
+    exit 1
+  fi
   if [ ! -f "$DATA_DIR/Z_true_${j}.pt" ]; then
-    echo "Missing $DATA_DIR/Z_true_${j}.pt. Run Job_Z.sbatch and wait for all ${N_EVAL} array tasks." >&2
+    echo "Missing $DATA_DIR/Z_true_${j}.pt. Run Job_Z.sbatch and wait for all ${N_REP} array tasks." >&2
     exit 1
   fi
 done
+python3 validate_sim_config.py --params "$BASE/params.yaml" --data "$DATA_DIR/offline_data_0.pt"
+N_REP_ENV="$N_REP" DATA_DIR_ENV="$DATA_DIR" python3 - <<'PY'
+import os
+from pathlib import Path
+
+import torch
+
+n_rep = int(os.environ["N_REP_ENV"])
+data_dir = Path(os.environ["DATA_DIR_ENV"])
+for j in range(n_rep):
+    z_path = data_dir / f"Z_true_{j}.pt"
+    blob = torch.load(z_path, map_location="cpu")
+    meta = blob.get("metadata", {})
+    offline_id = int(meta.get("offline_data_id", -999999))
+    if offline_id != j:
+        raise SystemExit(
+            f"{z_path} has metadata offline_data_id={offline_id}, expected {j}. "
+            "This usually means stale true-Z files are mixed with the current run."
+        )
+    if "s_star" not in meta or "a_star" not in meta:
+        raise SystemExit(f"{z_path} is missing benchmark s_star/a_star metadata.")
+print(f"Benchmark true-Z metadata OK for {n_rep} replicates.")
+PY
+echo "Found ${N_REP} offline datasets and benchmark true-Z files."
 
 mkdir -p "$RUN" "$RUN/logs"
 
@@ -86,6 +107,7 @@ cp "$BASE/main_est.py"       "$RUN/"
 cp "$BASE/mu_plot.py"        "$RUN/"
 cp "$BASE/sim_utils.py"      "$RUN/"
 cp "$BASE/sim_eval.py"       "$RUN/"
+cp "$BASE/validate_sim_config.py" "$RUN/"
 cp "$BASE/Job_est.sbatch"    "$RUN/"
 cp "$BASE/Job_plot.sbatch"   "$RUN/"
 cp "$BASE/params.yaml"       "$RUN/"
@@ -99,7 +121,8 @@ cd "$RUN"
 outdir="$RUN"
 
 jid_est=$(sbatch --parsable \
-    --output=${outdir}/logs/Job_est.%j.log \
+    --array=0-$((N_REP-1)) \
+    --output=${outdir}/logs/Job_est.%A_%a.log \
     --export=ALL,OUTDIR=${outdir},KEDRL_SRC="${KEDRL_SRC:-}" \
     Job_est.sbatch)
 

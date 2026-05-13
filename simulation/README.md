@@ -1,286 +1,248 @@
-# KE-DRL Simulation Pipeline
+# KE-DRL Simulation Workflow
 
-This folder contains the cluster workflow for the current global-`B`
-simulation. The design follows the formulation in `rz_new_version.tex`: one
-policy-specific coefficient matrix `B^pi` is fitted globally, and the Bellman
-loss is averaged over a set of evaluation/target points.
+This folder runs the global-`B` simulation for the revised KE-DRL objective.
+The important point is that the Monte Carlo truth is used only as a benchmark,
+while the global coefficient matrix is fit from an empirical Bellman loss
+summed over multiple target state-action points.
 
-Most scientific settings are controlled by `params.yaml`. The `.sbatch` files
-control Slurm logistics: account, partition, memory, time limits, dependency
-submission, and the Delta Python/PyTorch environment.
+## Architecture
 
-## Current Architecture
+The main consistency experiment repeats the following pipeline 50 times.
 
-The intended simulation has one offline dataset, 30 evaluation points, 30 Monte
-Carlo truth files, and one global estimator fit.
+1. Generate one offline dataset under the behavior policy.
+2. Choose one benchmark state-action point from that offline dataset.
+3. Generate one Monte Carlo true return sample `Z_true_i.pt` for that benchmark.
+4. Choose 30 separate target state-action points from the same offline dataset.
+5. Fit one global coefficient matrix `B_hat` by averaging the Bellman loss over
+   those 30 target points.
+6. Evaluate that fitted global `B_hat` at the one benchmark point and compare
+   the estimated mean embedding against the Monte Carlo truth.
 
-```text
-params.yaml
+The replicate index is `i = 0,...,49`. Each replicate has its own offline data,
+benchmark true-Z file, target-point set, fitted `B_hat`, and benchmark metrics.
+
+```
+Job_data.sbatch --array=0-49
    |
-   v
-Job_data.sbatch
+   +--> data/offline_data_i.pt
+
+Job_Z.sbatch --array=0-49
    |
-   +--> data/offline_data_0.pt
-   |
-   v
-Job_Z.sbatch --array=0-29
-   |
-   +--> data/Z_true_0.pt
-   +--> ...
-   +--> data/Z_true_29.pt
-   |
-   v
+   +--> data/Z_true_i.pt
+   +--> data/benchmark_point_i.csv
+
 Job_E_P_sa.sbatch
    |
-   +--> runs/global_eval_<master_job_id>/
+   +--> runs/main_<master_job_id>/
           |
-          +--> Job_est.sbatch
+          +--> Job_est.sbatch --array=0-49
           |      |
-          |      +--> main_est.py
-          |             load offline_data_0.pt
-          |             load all 30 Z_true_j.pt files
-          |             fit one global B over the 30 target points
-          |             evaluate the fitted map at each point
-          |             save mu_hat_j, mu_true_j, metrics, B, and grids
+          |      +--> data/target_points_i.csv
+          |      +--> data/fit_i.pt
+          |      +--> data/Zgrid_i.pt
+          |      +--> data/Zeval_i.pt
+          |      +--> mu/mu_hat_i.csv
+          |      +--> mu/mu_true_i.csv
+          |      +--> metrics/run_metrics_i.csv
           |
           +--> Job_plot.sbatch
                  |
-                 +--> mu_plot.py
-                        aggregate the 30 evaluation-point outputs
-                        draw plots/mu_summary_UG.png
+                 +--> metrics/per_run_metrics.csv
+                 +--> metrics/aggregate_metrics.csv
+                 +--> metrics/calibration_deming.csv
+                 +--> plots/mu_summary_UG.png
 ```
 
-## Parameters
+## Parameter Files
 
-The global simulation controls are:
+The production settings are in `params.yaml`.
 
 ```yaml
-evaluation:
-  offline_data_id: 0
-  num_points: 30
+experiment:
+  num_replicates: 50
+
+benchmark:
+  num_points: 1
 
 target_set:
-  mode: evaluation_points
+  mode: train_subset
   num_points: 30
+  exclude_benchmark: True
 ```
 
-`evaluation.offline_data_id` tells every stage to use `offline_data_0.pt`.
-`evaluation.num_points` sets the number of benchmark state-action points and
-therefore the number of true-Z files required before estimation can start.
+`benchmark.num_points` is intentionally fixed at 1. The 30 points in
+`target_set.num_points` are not 30 Monte Carlo benchmarks; they are the points
+over which the empirical global Bellman loss is averaged.
 
-The main scientific settings are also in `params.yaml`:
+Other important tuning parameters are:
 
-- `n_ids`, `n_timepoints`: offline data size
-- `Z_sim.n_ids`, `Z_sim.n_timepoints`: Monte Carlo benchmark size
-- `state_dim`, `reward_dim`, `action_dim`: problem dimensions
-- `MDP`: state-transition and reward matrices
-- `policy`: behavior and target policy parameters
-- `gamma_val`: discount factor
-- `lambda_reg`: conditional embedding regularization
-- `lambda_B`: global coefficient-matrix regularization
-- `kernel`: Matern kernel parameters
-- `optimization`: optimizer settings
+- `n_ids`, `n_timepoints`: offline data size.
+- `Z_sim.n_ids`, `Z_sim.n_timepoints`: Monte Carlo benchmark size.
+- `num_grid_points`, `hull_expand_factor`: return-grid resolution and support.
+- `lambda_reg`: Gamma/ridge regularization for conditional embedding weights.
+- `lambda_B`: ridge regularization on the global coefficient matrix.
+- `kernel.length_scale`, `kernel.sigma`, `kernel.nu`: Matern kernel settings.
+- `optimization.lr`, `optimization.weight_decay`, `optimization.num_steps`.
+- `optimization.target_batch_size`: number of target points used per optimizer
+  step. With 30 target points, `30` means full target-batch optimization.
 
-## Stage 1: Offline Data
+## Policy Alignment
 
-`main_offlinedata.py` generates the single offline dataset under the behavior
-policy specified in `params.yaml`.
+The current behavior policy is uniform and the target policy is logistic.
+The target logistic parameters were set to keep target actions inside the
+behavior support.
 
-```text
-data/offline_data_0.pt
+```yaml
+policy:
+  evaluation_Target_policy: logistic
+  Behvaioral_policy: uniform
+
+  logistic:
+    theta_loc: [0.0, -0.2, -0.2, -0.8, -0.6]
+    theta_scale: [0.0, 0.0, 0.0, 0.0, 0.0]
+    epsilon_loc: [0.1]
+    epsilon_scale: [-3.0]
 ```
 
-The file contains pooled transition tensors:
+`validate_sim_config.py` checks policy dimensions and, when given an offline
+data file, checks target-policy overlap with the behavior-policy support.
 
-```text
-s0, a0, s1, a1, r0, r1, r, metadata
-```
+## Smoke Test
 
-Run this stage with:
-
-```bash
-sbatch Job_data.sbatch
-```
-
-`Job_data.sbatch` is intentionally `--array=0-0`.
-
-## Stage 2: Monte Carlo True Z
-
-`main_MonteCarloZ.py` always loads `data/offline_data_0.pt`. The Slurm array
-index is the evaluation-point id, not an offline-data replicate id.
-
-For each `j = 0,...,29`, it selects a deterministic row from the single offline
-dataset and simulates many target-policy discounted returns:
-
-```text
-data/Z_true_j.pt
-data/sa_star_j.csv
-```
-
-Each `Z_true_j.pt` stores the Monte Carlo samples and the metadata for that
-evaluation point, including `s_star`, `a_star`, `offline_row`, and `eval_id`.
-
-Run this stage with:
-
-```bash
-sbatch Job_Z.sbatch
-```
-
-`Job_Z.sbatch` is intentionally `--array=0-29`.
-
-## Stage 3: One Global B
-
-`main_est.py` now requires all 30 true-Z files. If any are missing, it stops
-with a clear error before fitting.
-
-It loads:
-
-```text
-data/offline_data_0.pt
-data/Z_true_0.pt
-...
-data/Z_true_29.pt
-```
-
-Then it constructs:
-
-```text
-s_star = [s_star_0; ...; s_star_29]
-a_star = [a_star_0; ...; a_star_29]
-```
-
-and calls `KE_DRL(...)` once. The package optimizer already averages the
-Bellman embedding residual over the rows of this target set, so this produces
-one global `B_hat`, not 30 separate pointwise fits.
-
-Important outputs from the estimator are:
-
-```text
-data/fit_global.pt
-data/Zgrid_global.pt
-data/Zeval_global.pt
-data/evaluation_points.csv
-mu/mu_hat_0.csv, ..., mu/mu_hat_29.csv
-mu/mu_true_0.csv, ..., mu/mu_true_29.csv
-metrics/global_eval_metrics.csv
-```
-
-## Aggregation and Visualization
-
-`Job_E_P_sa.sbatch` does not draw the final figure directly. It submits
-`Job_est.sbatch`, then submits `Job_plot.sbatch` after successful estimation.
-`Job_plot.sbatch` runs:
-
-```bash
-python3 mu_plot.py
-```
-
-`mu_plot.py` aggregates the paired mean-embedding curves:
-
-```text
-mu/mu_hat_j.csv
-mu/mu_true_j.csv
-```
-
-where `j` indexes the 30 evaluation points. These curves are evaluated on
-`data/Zeval_global.pt`, a common deterministic grid drawn from the combined
-Monte Carlo truth samples. This makes the figure a comparison over the same
-return-space locations for every evaluation point.
-
-The main outputs are:
-
-```text
-plots/mu_summary_UG.png
-plots/mu_summary.png
-plots/mu_calibration.png
-metrics/per_point_metrics.csv
-metrics/aggregate_metrics.csv
-metrics/calibration_deming.csv
-```
-
-`plots/mu_summary_UG.png` summarizes whether the one fitted global `B_hat`
-produces consistent embeddings across the 30 evaluation points. The four panels
-show:
-
-- average estimated and Monte Carlo mean embeddings across evaluation points
-- quantile calibration of estimated vs. true embedding values
-- per-point `|Bias|`, `MAE`, and `RMSE`
-- empirical CDF of pointwise absolute embedding error
-
-This is the correct visualization for the current global-`B` design: the
-variation is across evaluation points after fitting one shared coefficient
-matrix, not across separately fitted offline-data replicates.
-
-`mu_plot.py` now fails explicitly if `plots/mu_summary_UG.png` is not created,
-so a missing `matplotlib` installation will show up as a plotting-job error
-instead of a silent success.
-
-## Cluster Commands
-
-Run from the simulation folder on Delta:
-
-```bash
-cd /path/to/ke-drl/simulation
-mkdir -p logs
-```
-
-For a small smoke test, run one self-contained job:
+Use this before any large run:
 
 ```bash
 sbatch Job_smoke.sbatch
 ```
 
-This uses `params_smoke.yaml`, not the production `params.yaml`. It creates a
-fresh folder:
+The smoke test uses `params_smoke.yaml`:
+
+- 3 offline replicates.
+- 1 benchmark true-Z per replicate.
+- 5 target points per replicate for the global loss.
+- 20 return-grid points and only 20 optimizer steps.
+
+Expected output is under:
 
 ```text
 runs/smoke_<job_id>/
 ```
 
-The smoke test uses 1 offline dataset, 3 evaluation points, 20 return-grid
-points, 20 optimizer steps, and small Monte Carlo truth samples. It should only
-be used to check that files, paths, imports, global-`B` fitting, metrics, and
-plotting work end-to-end.
+The key success files are:
 
-Submit the full dependency chain:
+```text
+runs/smoke_<job_id>/data/fit_0.pt
+runs/smoke_<job_id>/metrics/per_run_metrics.csv
+runs/smoke_<job_id>/plots/mu_summary_UG.png
+```
+
+## Tuning Run
+
+Before the full 50-replicate run, use the small tuning sweep:
+
+```bash
+jid_tune=$(sbatch --parsable Job_tune_global.sbatch)
+jid_sum=$(sbatch --parsable --dependency=afterok:${jid_tune} Job_tune_summary.sbatch)
+```
+
+Each tuning array task uses `params_tune.yaml`, applies one override from
+`tuning_grid.yaml`, and runs the same architecture on 5 replicates. The summary
+job writes:
+
+```text
+runs/tuning_summary.csv
+logs/tune_summary.<job_id>.log
+```
+
+The tuning score combines RMSE, MAE, sup-norm error, and calibration slope. Use
+the best stable setting to update `params.yaml` before the production run.
+
+Good first knobs:
+
+- Increase `lambda_B` if `B_hat` looks unstable across replicates.
+- Increase `lambda_reg` if Gamma/importance-weight behavior is noisy.
+- Compare `kernel.length_scale` values around `1.0`, `2.0`, and `4.0`.
+- Increase `num_grid_points` only after the small run is stable.
+- Increase `n_ids` and `Z_sim.n_ids` when the estimator is stable but noisy.
+
+## Production Run
+
+Run from the `simulation/` directory.
+
+If the `data/` folder contains old files from the previous workflow, clear the
+generated simulation artifacts first:
+
+```bash
+rm -f data/offline_data_*.pt data/Z_true_*.pt data/benchmark_point_*.csv
+rm -f data/target_points_*.csv data/fit_*.pt data/Zgrid_*.pt data/Zeval_*.pt
+rm -f mu/mu_hat_*.csv mu/mu_true_*.csv mu/weights_*.csv
+rm -f metrics/run_metrics_*.csv metrics/global_eval_metrics_*.csv
+```
 
 ```bash
 jid_data=$(sbatch --parsable Job_data.sbatch)
 jid_z=$(sbatch --parsable --dependency=afterok:${jid_data} Job_Z.sbatch)
 jid_run=$(sbatch --parsable --dependency=afterok:${jid_z} Job_E_P_sa.sbatch)
-echo "data=$jid_data z=$jid_z run=$jid_run"
 ```
 
-After it finishes, inspect the master log to find the run folder:
+`Job_E_P_sa.sbatch` checks that all `offline_data_i.pt` and `Z_true_i.pt` files
+exist before launching the estimator array.
 
-```bash
-ls -ltr logs/master-launch.*.log
-```
-
-The estimator and plot logs will be inside:
+Production outputs go under:
 
 ```text
-runs/global_eval_<master_job_id>/logs/
+runs/main_<master_job_id>/
 ```
 
-## Main Files
+The final figure is:
 
 ```text
-params.yaml              simulation, MDP, policy, and estimator settings
-sim_utils.py             synthetic MDP, policy sampling, and MC simulation
-sim_eval.py              embedding metrics and aggregation helpers
-main_offlinedata.py      generate offline_data_0.pt
-main_MonteCarloZ.py      generate Z_true_0.pt through Z_true_29.pt
-main_est.py              fit one global B and evaluate all points
-mu_plot.py               aggregate metrics and plots
-params_smoke.yaml        tiny smoke-test settings
-Job_data.sbatch          offline data job, array 0-0
-Job_Z.sbatch             true-Z job, array 0-29
-Job_smoke.sbatch         one-job end-to-end smoke test, 3 points
-Job_E_P_sa.sbatch        master global-fit launcher
-Job_est.sbatch           estimator job, no array
-Job_plot.sbatch          aggregation/plotting job, no array
+runs/main_<master_job_id>/plots/mu_summary_UG.png
 ```
 
-Generated data, logs, runs, plots, and metrics are ignored by Git and should
-remain local to the cluster run.
+## Visualization Meaning
+
+`mu_summary_UG.png` aggregates across offline replicates. It is appropriate for
+checking consistency of the estimated global `B` because each curve is produced
+from a fresh offline dataset, a fresh benchmark point, and a fresh global fit.
+
+The four panels show:
+
+- Mean estimated and Monte Carlo benchmark embeddings across replicates.
+- Quantile calibration of estimated versus true benchmark mean embeddings.
+- Per-replicate error summaries.
+- ECDF of absolute mean-embedding error.
+
+This is different from aggregating across the 30 target points. The 30 target
+points are used inside the global loss; they are not the evaluation objects in
+the final consistency plot.
+
+## File Map
+
+```text
+params.yaml              production simulation settings
+params_smoke.yaml        small smoke-test settings
+params_tune.yaml         small tuning baseline
+tuning_grid.yaml         tuning overrides
+
+main_offlinedata.py      generates offline_data_i.pt
+main_MonteCarloZ.py      generates benchmark Z_true_i.pt
+main_est.py             fits one global B for replicate i and evaluates it
+mu_plot.py              aggregates replicate metrics and plots
+sim_utils.py            data generation, policy sampling, target-set selection
+sim_eval.py             mean-embedding metrics and plots
+validate_sim_config.py  policy and run-shape validation
+
+Job_data.sbatch          offline data array, 0-49
+Job_Z.sbatch             benchmark true-Z array, 0-49
+Job_E_P_sa.sbatch        master launcher for estimator and plotting
+Job_est.sbatch           global-B estimator array, 0-49
+Job_plot.sbatch          aggregation and plotting job
+Job_smoke.sbatch         end-to-end small smoke test
+Job_tune_global.sbatch   tuning array over combo ids
+Job_tune_summary.sbatch  tuning-result aggregation
+```
+
+The older `Job_tuning*.sbatch` scripts are legacy scripts from the previous
+pointwise/evaluation-point workflow. Use `Job_tune_global.sbatch` for the
+current global-`B` architecture.

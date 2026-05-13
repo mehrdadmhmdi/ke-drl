@@ -10,7 +10,7 @@ import pandas as pd
 import torch
 import yaml
 
-from sim_utils import bootstrap_kedrl, clean_policy_params, seed_from_array
+from sim_utils import bootstrap_kedrl, clean_policy_params, seed_from_array, select_target_set
 from sim_eval import common_eval_grid, mean_embedding_hat, mean_embedding_true, save_mu_outputs
 
 
@@ -30,7 +30,7 @@ except ModuleNotFoundError as exc:
 
 
 print("# ================================================================ #")
-print("#   Global KE-DRL estimation over all evaluation target points      #")
+print("#   Global KE-DRL estimation for one offline replicate              #")
 print("# ================================================================ #")
 
 
@@ -50,62 +50,69 @@ def as_int(x: Any) -> int:
     return int(float(x.item() if isinstance(x, torch.Tensor) else x))
 
 
-def evaluation_config(P: dict[str, Any]) -> dict[str, int]:
-    cfg = dict(P.get("evaluation") or {})
-    target_cfg = dict(P.get("target_set") or {})
+def maybe_int(x: Any) -> int | None:
+    if x is None:
+        return None
+    return as_int(x)
+
+
+def load_benchmark_truth(data_dir: Path, offline_data_id: int) -> dict[str, Any]:
+    path = data_dir / f"Z_true_{offline_data_id}.pt"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Missing benchmark true-Z file: {path}. Run Job_Z.sbatch after Job_data.sbatch."
+        )
+    blob = torch.load(path, map_location="cpu")
+    Z_list = blob.get("Z_true")
+    if not Z_list:
+        raise ValueError(f"{path} does not contain a nonempty Z_true list.")
+    meta = blob.get("metadata", {})
+    if "s_star" not in meta or "a_star" not in meta:
+        raise ValueError(f"{path} metadata must contain the benchmark s_star and a_star.")
+    truth_offline_id = maybe_int(meta.get("offline_data_id"))
+    if truth_offline_id is not None and truth_offline_id != offline_data_id:
+        raise ValueError(
+            f"{path} was generated for offline_data_id={truth_offline_id}, "
+            f"but this estimation job is offline_data_id={offline_data_id}."
+        )
     return {
-        "offline_data_id": as_int(cfg.get("offline_data_id", 0)),
-        "num_points": as_int(cfg.get("num_points", target_cfg.get("num_points", 30))),
+        "path": path,
+        "Z_true": torch.as_tensor(Z_list[0], dtype=torch.float64),
+        "metadata": meta,
+        "s_eval": torch.as_tensor(meta["s_star"], dtype=torch.float64).reshape(1, -1),
+        "a_eval": torch.as_tensor(meta["a_star"], dtype=torch.float64).reshape(1, -1),
     }
 
 
-def load_z_truths(data_dir: Path, expected_count: int) -> list[dict[str, Any]]:
-    truths: list[dict[str, Any]] = []
-    missing = []
-    for eval_id in range(expected_count):
-        path = data_dir / f"Z_true_{eval_id}.pt"
-        if not path.exists():
-            missing.append(str(path))
-            continue
-        blob = torch.load(path, map_location="cpu")
-        Z_list = blob.get("Z_true")
-        if not Z_list:
-            raise ValueError(f"{path} does not contain a nonempty Z_true list.")
-        Z_tensor = torch.as_tensor(Z_list[0], dtype=torch.float64)
-        meta = blob.get("metadata", {})
-        truths.append(
+def write_target_point_table(
+    *,
+    out_path: Path,
+    offline_data_id: int,
+    s_star: torch.Tensor,
+    a_star: torch.Tensor,
+    target_idx: torch.Tensor | None,
+    benchmark_row: int | None,
+) -> None:
+    rows = []
+    if target_idx is None:
+        idx_values = [None] * int(s_star.shape[0])
+    else:
+        idx_values = [int(x) for x in target_idx.detach().cpu().reshape(-1).tolist()]
+    for j, idx in enumerate(idx_values):
+        s = s_star[j].detach().cpu().reshape(-1).tolist()
+        a = a_star[j].detach().cpu().reshape(-1).tolist()
+        rows.append(
             {
-                "eval_id": eval_id,
-                "path": path,
-                "Z_true": Z_tensor,
-                "metadata": meta,
-                "s_star": torch.as_tensor(meta["s_star"], dtype=torch.float64).reshape(1, -1),
-                "a_star": torch.as_tensor(meta["a_star"], dtype=torch.float64).reshape(1, -1),
+                "offline_data_id": offline_data_id,
+                "target_id": j,
+                "offline_row": idx,
+                "is_benchmark_row": bool(idx is not None and benchmark_row is not None and idx == benchmark_row),
+                **{f"s{i}": value for i, value in enumerate(s)},
+                **{f"a{i}": value for i, value in enumerate(a)},
             }
         )
-    if missing:
-        preview = "\n  ".join(missing[:10])
-        more = "" if len(missing) <= 10 else f"\n  ... and {len(missing) - 10} more"
-        raise FileNotFoundError(
-            "The global estimator needs one Monte Carlo truth file per evaluation point. "
-            f"Expected {expected_count} files named data/Z_true_0.pt through "
-            f"data/Z_true_{expected_count - 1}.pt, but these are missing:\n  {preview}{more}"
-        )
-    return truths
-
-
-def check_truth_policy_consistency(truths: list[dict[str, Any]]) -> tuple[str, dict[str, Any]]:
-    first = truths[0]["metadata"]
-    target_policy = first["policy"]
-    target_policy_params = first["policy_params"][target_policy]
-    for item in truths[1:]:
-        meta = item["metadata"]
-        if meta.get("policy") != target_policy:
-            raise ValueError(
-                f"Inconsistent target policy in {item['path']}: "
-                f"{meta.get('policy')!r} != {target_policy!r}"
-            )
-    return target_policy, clean_policy_params(target_policy, target_policy_params)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    pd.DataFrame(rows).to_csv(out_path, index=False)
 
 
 @torch.no_grad()
@@ -132,45 +139,29 @@ def beta_for_evaluation_point(
         phi_eval = Phi_sa(pre["K_plus"], gamma_eval, pre["eta_plus"])
         return (phi_eval.T @ B_hat).reshape(-1)
 
-    print(f"Warning: method={method!r} is not supported in the global simulation wrapper; using song weights.")
+    print(f"Warning: method={method!r} is not supported in the simulation wrapper; using song weights.")
     return predict_embedding_weights(pre["X_train"], x_eval, B_hat, **pre["x_kernel_params"]).reshape(-1)
-
-
-def write_evaluation_point_table(truths: list[dict[str, Any]], out_path: Path) -> None:
-    rows = []
-    for item in truths:
-        meta = item["metadata"]
-        s = item["s_star"].reshape(-1).tolist()
-        a = item["a_star"].reshape(-1).tolist()
-        rows.append(
-            {
-                "eval_id": item["eval_id"],
-                "offline_row": meta.get("offline_row"),
-                "z_path": str(item["path"]),
-                **{f"s{i}": value for i, value in enumerate(s)},
-                **{f"a{i}": value for i, value in enumerate(a)},
-            }
-        )
-    pd.DataFrame(rows).to_csv(out_path, index=False)
 
 
 start = time.time()
 job_id = os.environ.get("SLURM_JOB_ID")
-array_id = os.environ.get("SLURM_ARRAY_TASK_ID")
+array_id = os.environ.get("SLURM_ARRAY_TASK_ID", "0")
+offline_data_id = int(os.environ.get("OFFLINE_DATA_ID", array_id))
 print(f"Slurm Job ID: {job_id}")
-print(f"Slurm Array ID: {array_id} -- ignored; this job fits one global B")
+print(f"Slurm Array ID: {array_id} -- used as the offline-replicate id")
+print(f"Offline data id: {offline_data_id}")
 
 with open("./params.yaml", "r", encoding="utf-8") as f:
     P = yaml.safe_load(f)
 
-eval_cfg = evaluation_config(P)
-offline_data_id = eval_cfg["offline_data_id"]
-expected_eval_points = eval_cfg["num_points"]
+num_replicates = as_int(P.get("experiment", {}).get("num_replicates", 1))
+if offline_data_id < 0 or offline_data_id >= num_replicates:
+    raise ValueError(f"Offline replicate id {offline_data_id} is outside 0,...,{num_replicates - 1}.")
 
 seed = seed_from_array(int(P.get("random_seed", 20260512)) + 200000, offline_data_id)
+target_seed = int(P.get("random_seed", 20260512)) + offline_data_id
 print(f"Random seed: {seed}")
-print(f"Offline data id: {offline_data_id}")
-print(f"Expected evaluation points: {expected_eval_points}")
+print(f"Number of offline replicates: {num_replicates}")
 
 data_dir = Path("data")
 df_path = data_dir / f"offline_data_{offline_data_id}.pt"
@@ -186,12 +177,43 @@ r0 = torch.as_tensor(blob["r0"], dtype=torch.float64)
 
 meta = blob["metadata"]
 beh_policy = meta["policy"]
+truth = load_benchmark_truth(data_dir, offline_data_id)
+meta_z = truth["metadata"]
+benchmark_row = maybe_int(meta_z.get("offline_row"))
+s_eval = truth["s_eval"]
+a_eval = truth["a_eval"]
 
-truths = load_z_truths(data_dir, expected_eval_points)
-target_policy, target_policy_params = check_truth_policy_consistency(truths)
-s_star = torch.cat([item["s_star"] for item in truths], dim=0)
-a_star = torch.cat([item["a_star"] for item in truths], dim=0)
-write_evaluation_point_table(truths, data_dir / "evaluation_points.csv")
+target_policy = meta_z.get("policy")
+if not target_policy:
+    target_policy_name = P["policy"]["evaluation_Target_policy"]
+    target_policy = P["policy"][target_policy_name]["name"]
+policy_params_blob = dict(meta_z.get("policy_params") or {})
+if target_policy in policy_params_blob:
+    target_policy_params = clean_policy_params(target_policy, policy_params_blob[target_policy])
+else:
+    target_policy_params = clean_policy_params(target_policy, P["policy"][P["policy"]["evaluation_Target_policy"]])
+
+s_star, a_star, target_idx = select_target_set(
+    s0,
+    a0,
+    P.get("target_set"),
+    seed=target_seed,
+    fallback_eval_s=s_eval,
+    fallback_eval_a=a_eval,
+    exclude_idx=benchmark_row,
+)
+write_target_point_table(
+    out_path=data_dir / f"target_points_{offline_data_id}.csv",
+    offline_data_id=offline_data_id,
+    s_star=s_star,
+    a_star=a_star,
+    target_idx=target_idx,
+    benchmark_row=benchmark_row,
+)
+
+requested_targets = int((P.get("target_set") or {}).get("num_points", s_star.shape[0]))
+if s_star.shape[0] != requested_targets and str((P.get("target_set") or {}).get("mode", "")).lower() != "all":
+    print(f"Warning: requested {requested_targets} target points but selected {s_star.shape[0]}.")
 
 nu = as_float(P["kernel"]["nu"])
 length_scale = as_float(P["kernel"]["length_scale"])
@@ -228,9 +250,11 @@ target_mass = as_float(opt.get("target_mass", 1.0))
 
 print("Data and parameters loaded.")
 print(f"offline path: {df_path}")
+print(f"benchmark true-Z path: {truth['path']}")
 print(f"offline shapes: s0={tuple(s0.shape)}, a0={tuple(a0.shape)}, r0={tuple(r0.shape)}")
-print(f"evaluation target set shape: s_star={tuple(s_star.shape)}, a_star={tuple(a_star.shape)}")
-print(f"first true-Z shape: {tuple(truths[0]['Z_true'].shape)} from {truths[0]['path']}")
+print(f"benchmark row: {benchmark_row}")
+print(f"global loss target set shape: s_star={tuple(s_star.shape)}, a_star={tuple(a_star.shape)}")
+print(f"benchmark true-Z shape: {tuple(truth['Z_true'].shape)}")
 print(f"target policy: {target_policy}")
 print(f"behavior policy: {beh_policy}")
 print(f"lambda_Gamma={lambda_reg}, lambda_B={lambda_B}, d_r_method={d_r_method}")
@@ -282,18 +306,21 @@ print("KE-DRL global estimation is done.")
 print("B_hat shape:", tuple(B_hat.shape))
 
 Z_grid = pre["Z_grid"]
-torch.save(Z_grid.detach().cpu(), data_dir / "Zgrid_global.pt")
+torch.save(Z_grid.detach().cpu(), data_dir / f"Zgrid_{offline_data_id}.pt")
 torch.save(
     {
         "B_hat": B_hat.detach().cpu(),
         "history_obj": history_obj,
         "history_be": history_be,
         "offline_data_id": offline_data_id,
-        "eval_ids": [item["eval_id"] for item in truths],
+        "benchmark_row": benchmark_row,
+        "benchmark_z_path": str(truth["path"]),
         "target_set_size": int(s_star.shape[0]),
-        "z_paths": [str(item["path"]) for item in truths],
+        "target_indices": None if target_idx is None else [int(x) for x in target_idx.detach().cpu().reshape(-1).tolist()],
+        "target_policy": target_policy,
+        "target_policy_params": target_policy_params,
     },
-    data_dir / "fit_global.pt",
+    data_dir / f"fit_{offline_data_id}.pt",
 )
 print("Return dictionary Z_grid shape:", tuple(Z_grid.shape))
 
@@ -329,92 +356,94 @@ config = {
     "target_set_size": int(s_star.shape[0]),
 }
 
-all_truth_samples = torch.cat([item["Z_true"][:, : config["reward_dim"]] for item in truths], dim=0)
-Z_eval = common_eval_grid(all_truth_samples, as_int(P["num_grid_points"])).to(device=Z_grid.device, dtype=Z_grid.dtype)
-torch.save(Z_eval.detach().cpu(), data_dir / "Zeval_global.pt")
-print("Common evaluation grid shape:", tuple(Z_eval.shape))
+Z_true_tensor = truth["Z_true"][:, : config["reward_dim"]].to(device=Z_grid.device, dtype=Z_grid.dtype)
+Z_eval = common_eval_grid(Z_true_tensor, as_int(P["num_grid_points"])).to(device=Z_grid.device, dtype=Z_grid.dtype)
+torch.save(Z_eval.detach().cpu(), data_dir / f"Zeval_{offline_data_id}.pt")
+print("Benchmark evaluation grid shape:", tuple(Z_eval.shape))
 
-tool = RecoverAndPlot(config) if RecoverAndPlot is not None else None
+tool = RecoverAndPlot(config) if RecoverAndPlot is not None and offline_data_id == 0 else None
 if tool is not None and history_be:
     tool.plot_bellman_error(history_be, outdir="plots")
 if tool is not None and history_obj:
     tool.plot_total_loss(history_obj, outdir="plots")
 
-metrics_rows = []
-for item in truths:
-    eval_id = item["eval_id"]
-    s_eval = item["s_star"].reshape(-1)
-    a_eval = item["a_star"].reshape(-1)
-    Z_true_tensor = item["Z_true"][:, : config["reward_dim"]].to(device=Z_grid.device, dtype=Z_grid.dtype)
-    beta_eval = beta_for_evaluation_point(
-        method=d_r_method,
-        B_hat=B_hat,
-        pre=pre,
-        s_eval=s_eval,
-        a_eval=a_eval,
-        lambda_reg=lambda_reg,
+beta_eval = beta_for_evaluation_point(
+    method=d_r_method,
+    B_hat=B_hat,
+    pre=pre,
+    s_eval=s_eval,
+    a_eval=a_eval,
+    lambda_reg=lambda_reg,
+)
+mu_hat = mean_embedding_hat(
+    beta_eval,
+    Z_grid,
+    nu=nu,
+    length_scale=length_scale,
+    sigma=sigma_k,
+    eval_grid=Z_eval,
+)
+mu_true = mean_embedding_true(
+    Z_eval,
+    Z_true_tensor,
+    nu=nu,
+    length_scale=length_scale,
+    sigma=sigma_k,
+)
+metrics = save_mu_outputs(run_id=offline_data_id, mu_hat=mu_hat, mu_true=mu_true, beta=beta_eval)
+metrics.update(
+    {
+        "offline_data_id": offline_data_id,
+        "benchmark_row": benchmark_row,
+        "target_set_size": int(s_star.shape[0]),
+        "benchmark_z_path": str(truth["path"]),
+    }
+)
+Path("metrics").mkdir(parents=True, exist_ok=True)
+pd.DataFrame([metrics]).to_csv(f"metrics/global_eval_metrics_{offline_data_id}.csv", index=False)
+print(f"Replicate {offline_data_id} benchmark metrics:", metrics)
+
+if tool is not None:
+    plot_dir = Path("plots") / f"replicate_{offline_data_id}"
+    fz, grid_dict = tool.marginals_from_beta(
+        beta_eval,
+        Z_grid,
+        reward_dim=config["reward_dim"],
+        nu=nu,
+        length_scale=length_scale,
+        sigma_k=sigma_k,
+        lambda_rec=lambda_rec,
+        bandwidth=bandwidth,
+        n_grid=400,
+        margin_factor=0.25,
     )
-    mu_hat = mean_embedding_hat(
+    tool.plot_densities(fz, grid_dict, outdir=str(plot_dir))
+    cache, _ = tool.mean_embedding_all(
         beta_eval,
         Z_grid,
         nu=nu,
         length_scale=length_scale,
-        sigma=sigma_k,
-        eval_grid=Z_eval,
+        sigma_k=sigma_k,
+        do_joint_dims=(0, 1),
+        n1=120,
+        n2=120,
+        outdir=str(plot_dir / "ind_plots"),
     )
-    mu_true = mean_embedding_true(
-        Z_eval,
-        Z_true_tensor,
-        nu=nu,
-        length_scale=length_scale,
-        sigma=sigma_k,
-    )
-    metrics = save_mu_outputs(run_id=eval_id, mu_hat=mu_hat, mu_true=mu_true, beta=beta_eval)
-    metrics["offline_data_id"] = offline_data_id
-    metrics_rows.append(metrics)
-    print(f"Evaluation point {eval_id} metrics:", metrics)
-
-    if tool is not None and eval_id == 0:
-        plot_dir = Path("plots") / f"eval_{eval_id}"
-        fz, grid_dict = tool.marginals_from_beta(
-            beta_eval,
-            Z_grid,
-            reward_dim=config["reward_dim"],
-            nu=nu,
-            length_scale=length_scale,
-            sigma_k=sigma_k,
-            lambda_rec=lambda_rec,
-            bandwidth=bandwidth,
-            n_grid=400,
-            margin_factor=0.25,
+    try:
+        tool.plot_operator_check_2d(
+            cache,
+            R=r0.to(device=Z_grid.device, dtype=Z_grid.dtype),
+            gamma=gamma_val,
+            dims=(0, 1),
+            outdir=str(plot_dir),
         )
-        tool.plot_densities(fz, grid_dict, outdir=str(plot_dir))
-        cache, _ = tool.mean_embedding_all(
-            beta_eval,
-            Z_grid,
-            nu=nu,
-            length_scale=length_scale,
-            sigma_k=sigma_k,
-            do_joint_dims=(0, 1),
-            n1=120,
-            n2=120,
-            outdir=str(plot_dir / "ind_plots"),
-        )
-        try:
-            tool.plot_operator_check_2d(
-                cache,
-                R=r0.to(device=Z_grid.device, dtype=Z_grid.dtype),
-                gamma=gamma_val,
-                dims=(0, 1),
-                outdir=str(plot_dir),
-            )
-        except Exception as exc:
-            print(f"Operator-check plot skipped for eval point {eval_id}: {exc!r}")
-        del cache
-if tool is None:
+    except Exception as exc:
+        print(f"Operator-check plot skipped for replicate {offline_data_id}: {exc!r}")
+    del cache
+elif RecoverAndPlot is None:
     print("Density and loss plots skipped; mean-embedding metrics were still saved.")
-
-pd.DataFrame(metrics_rows).to_csv("metrics/global_eval_metrics.csv", index=False)
+else:
+    print("Density and loss plots are only generated for offline replicate 0.")
 
 del pre
 gc.collect()

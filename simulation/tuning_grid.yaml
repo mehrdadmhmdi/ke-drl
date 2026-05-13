@@ -1,0 +1,50 @@
+# Small global-B tuning grid. Run with Job_tune_global.sbatch.
+# Keep this short until the pipeline is stable.
+combos:
+  - name: base
+    overrides: {}
+
+  - name: weak_regularization
+    overrides:
+      lambda_reg: 0.0001
+      lambda_B: 0.0001
+
+  - name: stronger_B_ridge
+    overrides:
+      lambda_B: 0.001
+
+  - name: stronger_gamma_reg
+    overrides:
+      lambda_reg: 0.001
+
+  - name: shorter_kernel
+    overrides:
+      kernel:
+        length_scale: 1.0
+        sigma: 0.9
+
+  - name: wider_kernel
+    overrides:
+      kernel:
+        length_scale: 4.0
+        sigma: 0.9
+
+  - name: wider_return_hull
+    overrides:
+      hull_expand_factor: 2.5
+
+  - name: more_grid_and_steps
+    overrides:
+      num_grid_points: 60
+      optimization:
+        num_steps: 300
+      H_batch_size: 16
+
+  - name: larger_sample
+    overrides:
+      n_ids: 300
+      Z_sim:
+        n_ids: 1000
+        n_timepoints: 80
+      optimization:
+        num_steps: 200
