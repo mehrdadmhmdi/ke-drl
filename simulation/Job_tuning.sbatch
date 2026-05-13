@@ -28,7 +28,11 @@ export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:64,ga
 
 BASE="${SLURM_SUBMIT_DIR:-$PWD}"
 echo "SUBMIT_DIR: $BASE"
-KEDRL_SRC="${KEDRL_SRC:-$BASE/../kedrl_git/src}"
+if [ -z "${KEDRL_SRC:-}" ] && [ -d "$BASE/../src" ]; then
+  KEDRL_SRC="$BASE/../src"
+elif [ -z "${KEDRL_SRC:-}" ]; then
+  KEDRL_SRC="$BASE/../kedrl_git/src"
+fi
 if [ -d "$KEDRL_SRC" ]; then
   export KEDRL_SRC
   export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"

@@ -30,7 +30,9 @@ echo "Mem/node:  ${SLURM_MEM_PER_NODE}"
 ## load modules/env
 module load python/miniforge3_pytorch/2.7.0
 
-if [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../kedrl_git/src" ]; then
+if [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../src" ]; then
+  export KEDRL_SRC="$PWD/../src"
+elif [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../kedrl_git/src" ]; then
   export KEDRL_SRC="$PWD/../kedrl_git/src"
 fi
 if [ -n "${KEDRL_SRC:-}" ]; then

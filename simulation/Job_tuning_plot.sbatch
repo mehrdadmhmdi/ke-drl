@@ -19,7 +19,11 @@ module load python/miniforge3_pytorch/2.7.0 || true
 
 BASE="${SLURM_SUBMIT_DIR:-$PWD}"
 mkdir -p "$BASE/logs" "$BASE/tunning"
-KEDRL_SRC="${KEDRL_SRC:-$BASE/../kedrl_git/src}"
+if [ -z "${KEDRL_SRC:-}" ] && [ -d "$BASE/../src" ]; then
+  KEDRL_SRC="$BASE/../src"
+elif [ -z "${KEDRL_SRC:-}" ]; then
+  KEDRL_SRC="$BASE/../kedrl_git/src"
+fi
 if [ -d "$KEDRL_SRC" ]; then
   export KEDRL_SRC
   export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"

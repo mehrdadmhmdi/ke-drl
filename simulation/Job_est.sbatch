@@ -32,7 +32,9 @@ export QT_QPA_PLATFORM=offscreen
 export MPLBACKEND=Agg
 export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:64,garbage_collection_threshold:0.8"
 
-if [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../kedrl_git/src" ]; then
+if [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../src" ]; then
+  export KEDRL_SRC="$PWD/../src"
+elif [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../kedrl_git/src" ]; then
   export KEDRL_SRC="$PWD/../kedrl_git/src"
 fi
 if [ -n "${KEDRL_SRC:-}" ]; then
