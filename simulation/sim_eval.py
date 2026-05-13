@@ -42,9 +42,22 @@ def mean_embedding_hat(
     nu: float,
     length_scale: float,
     sigma: float,
+    eval_grid: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    Kzz = matern_kernel(Z_grid, Z_grid, nu=nu, length_scale=length_scale, sigma=sigma)
+    if eval_grid is None:
+        eval_grid = Z_grid
+    eval_grid = torch.as_tensor(eval_grid, dtype=Z_grid.dtype, device=Z_grid.device)
+    Kzz = matern_kernel(eval_grid, Z_grid, nu=nu, length_scale=length_scale, sigma=sigma)
     return (Kzz @ beta.reshape(-1)).contiguous()
+
+
+def common_eval_grid(Z_true: torch.Tensor, n_points: int) -> torch.Tensor:
+    """Deterministic benchmark grid shared by all offline replicates in one run."""
+    Z_true = torch.as_tensor(Z_true)
+    n = min(int(n_points), Z_true.shape[0])
+    order = torch.argsort(Z_true[:, 0])
+    idx = torch.linspace(0, Z_true.shape[0] - 1, n, device=Z_true.device).round().long()
+    return Z_true[order[idx]].contiguous()
 
 
 def _deming(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
@@ -182,6 +195,8 @@ def plot_mu_summary(
     h_mean, h_sd = H.mean(axis=0), H.std(axis=0, ddof=1) if H.shape[0] > 1 else np.zeros(H.shape[1])
     t_mean, t_sd = T.mean(axis=0), T.std(axis=0, ddof=1) if T.shape[0] > 1 else np.zeros(T.shape[1])
 
+    _plot_four_panel_summary(H, T, outdir=outdir, plt=plt)
+
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(x, t_mean, lw=1.7, color="black", label="MC truth")
     ax.fill_between(x, t_mean - 1.96 * t_sd, t_mean + 1.96 * t_sd, color="black", alpha=0.08)
@@ -205,4 +220,94 @@ def plot_mu_summary(
     ax.grid(alpha=0.25)
     fig.tight_layout()
     fig.savefig(outdir / "mu_calibration.png", dpi=300)
+    plt.close(fig)
+
+
+def _binned_means(x: np.ndarray, y: np.ndarray, n_bins: int = 10):
+    order = np.argsort(x)
+    xs = np.asarray(x, dtype=float).reshape(-1)[order]
+    ys = np.asarray(y, dtype=float).reshape(-1)[order]
+    bins = np.array_split(np.arange(xs.size), min(n_bins, xs.size))
+    bx, by, se = [], [], []
+    for b in bins:
+        if b.size == 0:
+            continue
+        vals = ys[b]
+        bx.append(float(xs[b].mean()))
+        by.append(float(vals.mean()))
+        se.append(float(vals.std(ddof=1) / math.sqrt(vals.size)) if vals.size > 1 else 0.0)
+    return np.asarray(bx), np.asarray(by), np.asarray(se)
+
+
+def _plot_four_panel_summary(H: np.ndarray, T: np.ndarray, *, outdir: Path, plt) -> None:
+    x = np.arange(H.shape[1])
+    h_mean = H.mean(axis=0)
+    t_mean = T.mean(axis=0)
+    h_sd = H.std(axis=0, ddof=1) if H.shape[0] > 1 else np.zeros(H.shape[1])
+    t_sd = T.std(axis=0, ddof=1) if T.shape[0] > 1 else np.zeros(T.shape[1])
+    diff = H - T
+
+    fig, axs = plt.subplots(2, 2, figsize=(13, 9))
+    ax = axs[0, 0]
+    for row in T:
+        ax.plot(x, row, color="0.72", lw=0.7, alpha=0.45)
+    ax.fill_between(x, t_mean - 1.96 * t_sd, t_mean + 1.96 * t_sd, color="#0b2a50", alpha=0.10)
+    ax.fill_between(x, h_mean - 1.96 * h_sd, h_mean + 1.96 * h_sd, color="#ff5f05", alpha=0.20)
+    ax.plot(x, h_mean, color="#ff5f05", lw=2.0, label=r"$\hat{\mu}$")
+    ax.plot(x, t_mean, color="#0b2a50", lw=2.0, label=r"$\mu$")
+    ax.set_title("(a) Mean +/- 1.96 SD Across Runs")
+    ax.set_xlabel("Index on common Z grid")
+    ax.set_ylabel("Mean embedding")
+    ax.grid(alpha=0.25)
+    ax.legend()
+
+    ax = axs[0, 1]
+    for tr, hr in zip(T, H):
+        bx, by, _ = _binned_means(tr, hr, n_bins=10)
+        ax.plot(bx, by, color="0.6", lw=0.8, alpha=0.25)
+    bx, by, se = _binned_means(T.reshape(-1), H.reshape(-1), n_bins=10)
+    slope, intercept = _deming(T.reshape(-1), H.reshape(-1))
+    lo = min(float(np.nanmin(T)), float(np.nanmin(H)))
+    hi = max(float(np.nanmax(T)), float(np.nanmax(H)))
+    ax.plot([lo, hi], [lo, hi], "--", color="#0b2a50", lw=1.5, label="ideal")
+    ax.errorbar(
+        bx,
+        by,
+        yerr=1.96 * se,
+        color="#ff5f05",
+        marker="o",
+        lw=2.0,
+        capsize=3,
+        label="binned means +/- 95% CI",
+    )
+    ax.text(0.04, 0.94, f"Deming slope={slope:.3f}, int={intercept:.3f}", transform=ax.transAxes, va="top")
+    ax.set_title("(b) Quantile Calibration")
+    ax.set_xlabel("True mean embedding (bin mean)")
+    ax.set_ylabel("Estimated mean embedding (bin mean)")
+    ax.grid(alpha=0.25)
+    ax.legend()
+
+    per_run = pd.DataFrame(
+        {
+            "|Bias|": np.abs(diff.mean(axis=1)),
+            "MAE": np.mean(np.abs(diff), axis=1),
+            "RMSE": np.sqrt(np.mean(diff * diff, axis=1)),
+        }
+    )
+    ax = axs[1, 0]
+    ax.boxplot([per_run[c].to_numpy() for c in per_run.columns], labels=list(per_run.columns), showmeans=True)
+    ax.set_title("(c) Per-run Error Summaries")
+    ax.grid(axis="y", alpha=0.25)
+
+    ax = axs[1, 1]
+    abs_err = np.sort(np.abs(diff).reshape(-1))
+    ecdf = np.arange(1, abs_err.size + 1) / abs_err.size
+    ax.plot(abs_err, ecdf, color="#ff5f05", lw=2.2)
+    ax.set_title(r"(d) Empirical CDF of $|\hat{\mu}-\mu|$")
+    ax.set_xlabel(r"$|\hat{\mu}-\mu|$")
+    ax.set_ylabel("ECDF")
+    ax.grid(alpha=0.25)
+
+    fig.tight_layout()
+    fig.savefig(outdir / "mu_summary_UG.png", dpi=300)
     plt.close(fig)

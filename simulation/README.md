@@ -209,6 +209,53 @@ Job_est.sbatch           estimator array
 Job_plot.sbatch          aggregation/plotting job
 ```
 
+## Aggregation Figure
+
+Each estimator array job writes paired mean-embedding curves:
+
+```text
+mu/mu_hat_<offline_id>.csv
+mu/mu_true_<offline_id>.csv
+```
+
+These curves are evaluated on a common deterministic Monte Carlo grid for the
+fixed benchmark point in the current `run_j`. This is important: it means the
+across-run mean and standard-deviation bands compare the same evaluation
+locations across offline replicates, rather than averaging unrelated
+per-replicate training grids.
+
+`Job_E_P_sa.sbatch` does not draw the figure itself. It launches
+`Job_plot.sbatch` after the estimator array finishes. `Job_plot.sbatch` runs:
+
+```bash
+python3 mu_plot.py
+```
+
+`mu_plot.py` calls `sim_eval.plot_mu_summary`, which creates:
+
+```text
+plots/mu_summary_UG.png
+plots/mu_summary.png
+plots/mu_calibration.png
+metrics/per_run_metrics.csv
+metrics/aggregate_metrics.csv
+metrics/calibration_deming.csv
+```
+
+The main summary figure `mu_summary_UG.png` contains:
+
+- mean +/- 1.96 SD of estimated and Monte Carlo truth embeddings across offline replicates
+- quantile calibration with Deming regression
+- per-run error summaries for `|Bias|`, `MAE`, and `RMSE`
+- empirical CDF of pointwise absolute embedding error
+
+This visualization is appropriate for the global-X KE-DRL estimator because
+the global matrix `B^pi` is fitted once using the target set, and then the
+conditional embedding is evaluated at the fixed benchmark point `(s*, a*)`.
+The plot therefore summarizes benchmark-point prediction error across offline
+data replicates, not an average over the target-set points used to train
+`B^pi`.
+
 ## Cluster Usage
 
 Run from this folder:

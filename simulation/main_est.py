@@ -10,7 +10,7 @@ import torch
 import yaml
 
 from sim_utils import bootstrap_kedrl, clean_policy_params, seed_from_array, select_target_set
-from sim_eval import mean_embedding_hat, mean_embedding_true, save_mu_outputs
+from sim_eval import common_eval_grid, mean_embedding_hat, mean_embedding_true, save_mu_outputs
 
 
 bootstrap_kedrl()
@@ -303,8 +303,10 @@ if tool is not None:
 else:
     print("Density and loss plots skipped; mean-embedding metrics will still be saved.")
 
-mu_hat = mean_embedding_hat(beta_eval, Z_grid, nu=nu, length_scale=length_scale, sigma=sigma_k)
-mu_true = mean_embedding_true(Z_grid, Z_true_tensor.to(device=Z_grid.device, dtype=Z_grid.dtype), nu=nu, length_scale=length_scale, sigma=sigma_k)
+Z_eval = common_eval_grid(Z_true_tensor, as_int(P["num_grid_points"])).to(device=Z_grid.device, dtype=Z_grid.dtype)
+torch.save(Z_eval.detach().cpu(), data_dir / f"Zeval_{array_id}.pt")
+mu_hat = mean_embedding_hat(beta_eval, Z_grid, nu=nu, length_scale=length_scale, sigma=sigma_k, eval_grid=Z_eval)
+mu_true = mean_embedding_true(Z_eval, Z_true_tensor.to(device=Z_grid.device, dtype=Z_grid.dtype), nu=nu, length_scale=length_scale, sigma=sigma_k)
 metrics = save_mu_outputs(run_id=array_id, mu_hat=mu_hat, mu_true=mu_true, beta=beta_eval)
 print("Run metrics:", metrics)
 
