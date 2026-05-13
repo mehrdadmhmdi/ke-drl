@@ -1,8 +1,6 @@
 #!/bin/bash
-#SBATCH --account=bfez-dtai-gh     #Delta AI
-#SBATCH --partition=ghx4           #Delta AI
-##SBATCH --partition=gpuA100x4-preempt
-##SBATCH --account=bfez-delta-gpu   #Delta
+#SBATCH --account=bfez-delta-gpu
+#SBATCH --partition=gpuA40x4-preempt
 #SBATCH --job-name=UL_Score
 #SBATCH --output=logs/data_%A_%a.log
 #SBATCH --time=00:20:00
@@ -13,14 +11,28 @@
 #SBATCH --mail-type=END
 #SBATCH --mail-user=mehrdad3@illinois.edu
 
-set -euo pipefail
-
 echo "Job ID:    ${SLURM_JOB_ID}"
-echo "Array idx: ${SLURM_ARRAY_TASK_ID:-NA}"
+echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
 echo "CPUs/node: ${SLURM_CPUS_ON_NODE}"
 echo "Mem/node:  ${SLURM_MEM_PER_NODE}"
 
-module load python/miniforge3_pytorch/2.7.0 || true
+## load modules/env -- delta ai
+#module purge
+#module load cuda/12.6.1
+#module load craype-accel-nvidia90
+#module load python/miniforge3_pytorch/2.7.0
+
+##load module/env -- delta
+module load slurm-env/0.1
+module load cudatoolkit/25.3_12.8
+module load pytorch-conda/2.8
+eval "$(conda shell.bash hook)"   # IMPORTANT
+conda activate delta_env
+
+echo $SLURM_JOB_PARTITION
+echo $CUDA_VISIBLE_DEVICES
+
+set -euo pipefail
 
 BASE="${SLURM_SUBMIT_DIR:-$PWD}"
 echo "BASE: $BASE"

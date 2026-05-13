@@ -3,7 +3,7 @@
 ### jid0=$(sbatch --array=0-0 Job_Z.sbatch | awk '{print $4}')
 ### sbatch --array=1-20 --dependency=afterok:$jid0 Job_Z.sbatch 
 ####--------------
-#SBATCH --account=bfez-dtai-gh
+#SBATCH --account=bfez-delta-gpu
 #SBATCH --job-name=GU_Z
 #SBATCH --output=logs/Z_true_%A_%a.log
 #SBATCH --time=00:20:00
@@ -11,12 +11,10 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=4g
 #SBATCH --cpus-per-task=4
-#SBATCH --partition=ghx4
+#SBATCH --partition=gpuA40x4-preempt
 #SBATCH --mail-type=NONE
 #SBATCH --mail-user=mehrdad3@illinois.edu
 #SBATCH --array=0-30
-
-set -euo pipefail
 
 cd ${OUTDIR:-$PWD}
 echo "Running in folder: $(pwd)"
@@ -27,8 +25,23 @@ echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
 echo "CPUs/node: ${SLURM_CPUS_ON_NODE}"
 echo "Mem/node:  ${SLURM_MEM_PER_NODE}"
 
-## load modules/env
-module load python/miniforge3_pytorch/2.7.0
+## load modules/env -- delta ai
+#module purge
+#module load cuda/12.6.1
+#module load craype-accel-nvidia90
+#module load python/miniforge3_pytorch/2.7.0
+
+##load module/env -- delta
+module load slurm-env/0.1
+module load cudatoolkit/25.3_12.8
+module load pytorch-conda/2.8
+eval "$(conda shell.bash hook)"   # IMPORTANT
+conda activate delta_env
+
+echo $SLURM_JOB_PARTITION
+echo $CUDA_VISIBLE_DEVICES
+
+set -euo pipefail
 
 if [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../src" ]; then
   export KEDRL_SRC="$PWD/../src"

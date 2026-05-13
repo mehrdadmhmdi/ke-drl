@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --account=bfez-dtai-gh
+#SBATCH --account=bfez-delta-gpu
 #SBATCH --job-name=GU_data
 #SBATCH --output=logs/data_%A_%a.log
 #SBATCH --time=00:05:00
@@ -7,12 +7,10 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=8g
 #SBATCH --cpus-per-task=4
-#SBATCH --partition=ghx4
+#SBATCH --partition=gpuA40x4-preempt
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=mehrdad3@illinois.edu
 #SBATCH --array=0-100
-
-set -euo pipefail
 
 # Access exported variables:
 cd ${OUTDIR:-$PWD}
@@ -24,8 +22,23 @@ echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
 echo "CPUs/node: ${SLURM_CPUS_ON_NODE}"
 echo "Mem/node:  ${SLURM_MEM_PER_NODE}"
 
-## load modules/env
-module load python/miniforge3_pytorch/2.7.0
+## load modules/env -- delta ai
+#module purge
+#module load cuda/12.6.1
+#module load craype-accel-nvidia90
+#module load python/miniforge3_pytorch/2.7.0
+
+##load module/env -- delta
+module load slurm-env/0.1
+module load cudatoolkit/25.3_12.8
+module load pytorch-conda/2.8
+eval "$(conda shell.bash hook)"   # IMPORTANT
+conda activate delta_env
+
+echo $SLURM_JOB_PARTITION
+echo $CUDA_VISIBLE_DEVICES
+
+set -euo pipefail
 
 if [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../src" ]; then
   export KEDRL_SRC="$PWD/../src"

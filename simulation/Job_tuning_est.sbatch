@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --account=bfez-dtai-gh
+#SBATCH --account=bfez-delta-gpu
 #SBATCH --job-name=UL_est_tuning
 #SBATCH --output=logs/tune_%j.log
 #SBATCH --time=30:08:00
@@ -7,18 +7,32 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64g
 #SBATCH --cpus-per-task=4
-#SBATCH --partition=ghx4
+#SBATCH --partition=gpuA40x4-preempt
 #SBATCH --mail-type=NONE
 #SBATCH --mail-user=mehrdad3@illinois.edu
 
-set -euo pipefail
-
 echo "Job ID:    ${SLURM_JOB_ID}"
-echo "Array idx: ${SLURM_ARRAY_TASK_ID:-NA}"
+echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
 echo "CPUs/node: ${SLURM_CPUS_ON_NODE}"
 echo "Mem/node:  ${SLURM_MEM_PER_NODE}"
 
-module load python/miniforge3_pytorch/2.7.0
+## load modules/env -- delta ai
+#module purge
+#module load cuda/12.6.1
+#module load craype-accel-nvidia90
+#module load python/miniforge3_pytorch/2.7.0
+
+##load module/env -- delta
+module load slurm-env/0.1
+module load cudatoolkit/25.3_12.8
+module load pytorch-conda/2.8
+eval "$(conda shell.bash hook)"   # IMPORTANT
+conda activate delta_env
+
+echo $SLURM_JOB_PARTITION
+echo $CUDA_VISIBLE_DEVICES
+
+set -euo pipefail
 
 export VISPY_GL_BACKEND=egl
 export VISPY_USE_APP=headless
@@ -133,7 +147,7 @@ while read -r CFG; do
 
   echo "Submitting estimation array job"
   EST_OUTPUT=$(submit_with_retry \
-    "sbatch --job-name=UL_EST_RUN --parsable --account=bfez-dtai-gh \
+    "sbatch --job-name=UL_EST_RUN --parsable --account=bfez-delta-gpu \
      --export=ALL,BASE=\"$RUN\",KEDRL_SRC=\"$KEDRL_SRC\" --array=0-100 --chdir=\"$RUN\" \"$RUN/Job_est.sbatch\"")
   EST="${EST_OUTPUT##* }"
   [[ "$EST" =~ ^[0-9]+$ ]] || { echo "Failed to parse EST job ID: $EST_OUTPUT" >&2; exit 1; }
