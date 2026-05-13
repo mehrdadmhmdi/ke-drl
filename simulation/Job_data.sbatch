@@ -10,7 +10,7 @@
 #SBATCH --partition=gpuA40x4-preempt
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-100
+#SBATCH --array=0-0
 
 # Access exported variables:
 cd ${OUTDIR:-$PWD}

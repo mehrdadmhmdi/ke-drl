@@ -52,7 +52,7 @@ def mean_embedding_hat(
 
 
 def common_eval_grid(Z_true: torch.Tensor, n_points: int) -> torch.Tensor:
-    """Deterministic benchmark grid shared by all offline replicates in one run."""
+    """Deterministic benchmark grid shared by all evaluation points in one global fit."""
     Z_true = torch.as_tensor(Z_true)
     n = min(int(n_points), Z_true.shape[0])
     order = torch.argsort(Z_true[:, 0])
@@ -144,7 +144,8 @@ def export_metrics_tables(
     if df.empty:
         raise FileNotFoundError(f"No matched mu_hat_*.csv/mu_true_*.csv pairs in {mu_dir}")
 
-    df.to_csv(metrics_dir / "per_run_metrics.csv", index=False)
+    df.to_csv(metrics_dir / "per_point_metrics.csv", index=False)
+    df.to_csv(metrics_dir / "per_run_metrics.csv", index=False)  # backward-compatible name
     agg = {}
     for col in ["RMSE", "MAE", "SupNorm", "Bias", "Corr"]:
         agg[f"{col}_mean"] = float(df[col].mean())
@@ -202,7 +203,7 @@ def plot_mu_summary(
     ax.fill_between(x, t_mean - 1.96 * t_sd, t_mean + 1.96 * t_sd, color="black", alpha=0.08)
     ax.plot(x, h_mean, lw=1.7, color="#1f77b4", label="KE-DRL")
     ax.fill_between(x, h_mean - 1.96 * h_sd, h_mean + 1.96 * h_sd, color="#1f77b4", alpha=0.16)
-    ax.set_xlabel("Z-grid index")
+    ax.set_xlabel("Index on common evaluation Z grid")
     ax.set_ylabel("Mean embedding")
     ax.grid(alpha=0.25)
     ax.legend()
@@ -255,8 +256,8 @@ def _plot_four_panel_summary(H: np.ndarray, T: np.ndarray, *, outdir: Path, plt)
     ax.fill_between(x, h_mean - 1.96 * h_sd, h_mean + 1.96 * h_sd, color="#ff5f05", alpha=0.20)
     ax.plot(x, h_mean, color="#ff5f05", lw=2.0, label=r"$\hat{\mu}$")
     ax.plot(x, t_mean, color="#0b2a50", lw=2.0, label=r"$\mu$")
-    ax.set_title("(a) Mean +/- 1.96 SD Across Runs")
-    ax.set_xlabel("Index on common Z grid")
+    ax.set_title("(a) Mean +/- 1.96 SD Across Evaluation Points")
+    ax.set_xlabel("Index on common evaluation Z grid")
     ax.set_ylabel("Mean embedding")
     ax.grid(alpha=0.25)
     ax.legend()
@@ -296,7 +297,7 @@ def _plot_four_panel_summary(H: np.ndarray, T: np.ndarray, *, outdir: Path, plt)
     )
     ax = axs[1, 0]
     ax.boxplot([per_run[c].to_numpy() for c in per_run.columns], labels=list(per_run.columns), showmeans=True)
-    ax.set_title("(c) Per-run Error Summaries")
+    ax.set_title("(c) Per-point Error Summaries")
     ax.grid(axis="y", alpha=0.25)
 
     ax = axs[1, 1]

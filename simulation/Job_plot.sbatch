@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --account=bfez-delta-gpu
 #SBATCH --job-name=UL_plot
-#SBATCH --output=logs/plot_%A_%a.log
+#SBATCH --output=logs/plot_%j.log
 #SBATCH --time=01:00:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1

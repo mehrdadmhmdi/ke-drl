@@ -1,42 +1,38 @@
 #====================================#
-#  PARAMETERS FOR SIMULATION RK-DRL #
-#==================================#
-# params.yaml
-# --------------------------------
-n_ids: 1000
+#  SMALL SMOKE TEST PARAMETERS       #
+#====================================#
+# This file is intentionally tiny. Job_smoke.sbatch copies it to params.yaml
+# inside runs/smoke_<jobid>/ so the full production params.yaml stays at 30
+# evaluation points.
+n_ids: 50
 n_timepoints: 3
 state_dim: 5
 reward_dim: 3
 action_dim: 1
-num_grid_points: 300
+num_grid_points: 20
 random_seed: 20260512
-# One offline dataset is generated, then 30 evaluation points are selected
-# from it. Each evaluation point has its own Monte Carlo truth file, while
-# estimation fits one global B using all 30 points.
 evaluation:
   offline_data_id: 0
-  num_points: 30
+  num_points: 3
 #===========================
 gamma_val: 0.8
 lambda_reg: 0.0002
 lambda_B: 0.0002
 hull_expand_factor: 1
-H_batch_size: 50
+H_batch_size: 8
 d_r_method: song  #song, bellman, Schuster
 bandwidth: 1.5
 lambda_rec: 0.02
-# Target set for the global X objective. In this simulation wrapper, these
-# are the evaluation points loaded from data/Z_true_0.pt, ..., Z_true_29.pt.
 target_set:
   mode: evaluation_points
-  num_points: 30
+  num_points: 3
 #===========================
 optimization:
   lr: 1e-3
   weight_decay: 1e-4
   FP_penalty_lambda: 0.0
-  num_steps: 5000
-  target_batch_size: 32
+  num_steps: 20
+  target_batch_size: 3
   initial_scale: 1e-3
   use_low_rank: False
   B_positive: False
@@ -48,7 +44,7 @@ optimization:
   NonNeg_W: False
   B_ridge_penalty: False
   mass_anchor_lambda: 0.0
-  target_mass: 1.0  #desired 1^T w for the anchor
+  target_mass: 1.0
 #===========================
 kernel:
   type: matern
@@ -57,16 +53,15 @@ kernel:
   sigma: 0.9
 #==========================
 policy:
-  evaluation_Target_policy: logistic    # choose one:  #"uniform" or "gaussian" or "logistic"
+  evaluation_Target_policy: logistic
   Behvaioral_policy: uniform
 
   uniform:
     name: uniform
     theta_lower: [0, -0.2, -0.2, -0.8, -0.6]
-    theta_upper: [ 0.2,  0.0,  0.5, -0.1,  0.6]
+    theta_upper: [0.2, 0.0, 0.5, -0.1, 0.6]
     epsilon_lower: [0.0]
     epsilon_upper: [0.05]
-
 
   gaussian:
     name: gaussian
@@ -84,14 +79,13 @@ policy:
 
 #===========================
 MDP:
-  # (state_dim, state_dim + action_dim) = (5, 6)
   W_s:
-    - [0.4,  -0.2, 0.1,  0.5,  0.3, -0.1]
-    - [0.03,  0.3, -0.2, 0.15, 0.5,  0.1]
-    - [0.15, -0.05, 0.2, 0.6,  0.5, -0.2]
-    - [0.2,   0.05, -0.1, 0.3, -0.15, 0.2]
-    - [0.1,  -0.3, 0.25, -0.2, 0.4,  0.15]
-  b_s: [0, 0, 0, 0, 0]               # (5,)
+    - [0.4, -0.2, 0.1, 0.5, 0.3, -0.1]
+    - [0.03, 0.3, -0.2, 0.15, 0.5, 0.1]
+    - [0.15, -0.05, 0.2, 0.6, 0.5, -0.2]
+    - [0.2, 0.05, -0.1, 0.3, -0.15, 0.2]
+    - [0.1, -0.3, 0.25, -0.2, 0.4, 0.15]
+  b_s: [0, 0, 0, 0, 0]
   sigma_s:
     - [0.1, 0.05, 0.02, 0.01, 0.03]
     - [0.05, 0.2, 0.03, 0.02, 0.04]
@@ -99,17 +93,16 @@ MDP:
     - [0.01, 0.02, 0.05, 0.25, 0.02]
     - [0.03, 0.04, 0.01, 0.02, 0.35]
 
-  # (reward_dim, state_dim + action_dim) = (3, 6)
   W_r:
-    - [0.02, 0.1,  -0.5, 0.3,  -0.1, 0.2]
-    - [0.1, -0.3,   0.2, 0.25, -0.2, 0.4]
-    - [0.15, 0.1,  -0.1, 0.35,  0.1, -0.05]
-  b_r: [0, 0, 0]                     # (3,)
+    - [0.02, 0.1, -0.5, 0.3, -0.1, 0.2]
+    - [0.1, -0.3, 0.2, 0.25, -0.2, 0.4]
+    - [0.15, 0.1, -0.1, 0.35, 0.1, -0.05]
+  b_r: [0, 0, 0]
   sigma_r:
     - [0.2, 0.01, 0.03]
     - [0.01, 0.25, 0.02]
     - [0.03, 0.02, 0.3]
 #===========================
 Z_sim:
-  n_ids: 10000
-  n_timepoints: 300
+  n_ids: 200
+  n_timepoints: 50

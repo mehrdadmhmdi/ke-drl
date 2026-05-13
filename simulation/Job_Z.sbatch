@@ -1,7 +1,6 @@
 #!/bin/bash
 #####----------
-### jid0=$(sbatch --array=0-0 Job_Z.sbatch | awk '{print $4}')
-### sbatch --array=1-20 --dependency=afterok:$jid0 Job_Z.sbatch 
+### Generates one true-Z benchmark for each evaluation point.
 ####--------------
 #SBATCH --account=bfez-delta-gpu
 #SBATCH --job-name=GU_Z
@@ -14,7 +13,7 @@
 #SBATCH --partition=gpuA40x4-preempt
 #SBATCH --mail-type=NONE
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-30
+#SBATCH --array=0-29
 
 cd ${OUTDIR:-$PWD}
 echo "Running in folder: $(pwd)"
