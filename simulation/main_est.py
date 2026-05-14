@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import math
 import os
 import time
 from pathlib import Path
@@ -54,6 +55,54 @@ def maybe_int(x: Any) -> int | None:
     if x is None:
         return None
     return as_int(x)
+
+
+def _exp_safe(x: float) -> float:
+    return float(math.exp(max(min(float(x), 700.0), -700.0)))
+
+
+def summarize_risk_history(history_obj: list[float], history_be: list[float]) -> dict[str, float]:
+    """Summarize optimizer risks from the full-target history.
+
+    `history_obj` stores log regularized objective values. `history_be` stores
+    log square-root Bellman-risk values, so squaring its exponential returns the
+    empirical Bellman risk.
+    """
+    out: dict[str, float] = {"risk_n_steps_recorded": float(len(history_obj))}
+    if history_obj:
+        first = float(history_obj[0])
+        final = float(history_obj[-1])
+        best = float(min(history_obj))
+        out.update(
+            {
+                "risk_log_obj_initial": first,
+                "risk_log_obj_final": final,
+                "risk_log_obj_min": best,
+                "risk_obj_initial": _exp_safe(first),
+                "risk_obj_final": _exp_safe(final),
+                "risk_obj_min": _exp_safe(best),
+                "risk_log_obj_drop": first - final,
+            }
+        )
+    if history_be:
+        first = float(history_be[0])
+        final = float(history_be[-1])
+        best = float(min(history_be))
+        out.update(
+            {
+                "risk_log_bellman_root_initial": first,
+                "risk_log_bellman_root_final": final,
+                "risk_log_bellman_root_min": best,
+                "risk_bellman_root_initial": _exp_safe(first),
+                "risk_bellman_root_final": _exp_safe(final),
+                "risk_bellman_root_min": _exp_safe(best),
+                "risk_bellman_initial": _exp_safe(2.0 * first),
+                "risk_bellman_final": _exp_safe(2.0 * final),
+                "risk_bellman_min": _exp_safe(2.0 * best),
+                "risk_log_bellman_root_drop": first - final,
+            }
+        )
+    return out
 
 
 def load_benchmark_truth(data_dir: Path, offline_data_id: int) -> dict[str, Any]:
@@ -324,6 +373,21 @@ torch.save(
 )
 print("Return dictionary Z_grid shape:", tuple(Z_grid.shape))
 
+Path("metrics").mkdir(parents=True, exist_ok=True)
+risk_metrics = summarize_risk_history(history_obj, history_be)
+risk_metrics.update(
+    {
+        "offline_data_id": offline_data_id,
+        "benchmark_row": benchmark_row,
+        "target_set_size": int(s_star.shape[0]),
+        "lambda_reg": lambda_reg,
+        "lambda_B": lambda_B,
+        "num_steps": num_steps,
+    }
+)
+pd.DataFrame([risk_metrics]).to_csv(f"metrics/risk_metrics_{offline_data_id}.csv", index=False)
+print(f"Replicate {offline_data_id} risk metrics:", risk_metrics)
+
 config = {
     "job_id": str(job_id),
     "offline_data_id": str(offline_data_id),
@@ -399,7 +463,6 @@ metrics.update(
         "benchmark_z_path": str(truth["path"]),
     }
 )
-Path("metrics").mkdir(parents=True, exist_ok=True)
 pd.DataFrame([metrics]).to_csv(f"metrics/global_eval_metrics_{offline_data_id}.csv", index=False)
 print(f"Replicate {offline_data_id} benchmark metrics:", metrics)
 

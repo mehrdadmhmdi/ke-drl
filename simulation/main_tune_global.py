@@ -37,23 +37,52 @@ def load_combo(grid_path: Path, combo_id: int) -> tuple[str, dict[str, Any]]:
     return str(combo.get("name", f"combo_{combo_id}")), dict(combo.get("overrides") or {})
 
 
+def aggregate_risk_metrics() -> dict[str, float]:
+    paths = sorted(Path("metrics").glob("risk_metrics_*.csv"))
+    if not paths:
+        return {}
+    df = pd.concat([pd.read_csv(path) for path in paths], ignore_index=True)
+    out: dict[str, float] = {"risk_n_replicates": float(len(df))}
+    for col in [
+        "risk_log_obj_final",
+        "risk_log_obj_min",
+        "risk_obj_final",
+        "risk_obj_min",
+        "risk_log_bellman_root_final",
+        "risk_log_bellman_root_min",
+        "risk_bellman_final",
+        "risk_bellman_min",
+        "risk_log_obj_drop",
+        "risk_log_bellman_root_drop",
+    ]:
+        if col in df:
+            out[f"{col}_mean"] = float(df[col].mean())
+            out[f"{col}_sd"] = float(df[col].std(ddof=1)) if len(df) > 1 else 0.0
+    return out
+
+
 def write_result(combo_id: int, combo_name: str, overrides: dict[str, Any], elapsed: float) -> None:
     agg = pd.read_csv("metrics/aggregate_metrics.csv").iloc[0].to_dict()
     cal = pd.read_csv("metrics/calibration_deming.csv").iloc[0].to_dict()
-    score = (
+    risk = aggregate_risk_metrics()
+    score_true_z = (
         float(agg["RMSE_mean"])
         + 0.25 * float(agg["MAE_mean"])
         + 0.05 * float(agg["SupNorm_mean"])
         + 0.02 * abs(float(cal["deming_slope"]) - 1.0)
     )
+    score_risk = float(risk.get("risk_log_obj_final_mean", float("nan")))
     row = {
         "combo_id": combo_id,
         "combo_name": combo_name,
-        "score": score,
+        "score": score_true_z,
+        "score_true_z": score_true_z,
+        "score_risk": score_risk,
         "elapsed_sec": elapsed,
         "overrides_json": json.dumps(overrides, sort_keys=True),
         **agg,
         **cal,
+        **risk,
     }
     Path("metrics").mkdir(exist_ok=True)
     pd.DataFrame([row]).to_csv("metrics/tuning_result.csv", index=False)

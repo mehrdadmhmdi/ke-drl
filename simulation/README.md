@@ -157,6 +157,19 @@ logs/tune_summary.<job_id>.log
 The tuning score combines RMSE, MAE, sup-norm error, and calibration slope. Use
 the best stable setting to update `params.yaml` before the production run.
 
+Each tuning run now records two benchmark families:
+
+- `score_true_z`: external accuracy against the Monte Carlo benchmark true-Z.
+- `score_risk`: internal empirical risk, using the final log regularized
+  Bellman objective from the optimizer history.
+
+`runs/tuning_summary.csv` also reports `true_z_rank`, `risk_rank`, and
+`combined_rank`. Prefer settings that are good on both ranks. The true-Z score
+is the main external validation target; the risk score checks whether the
+empirical objective from `rz_new_version.tex` is actually being minimized.
+Because kernel and grid changes can rescale the raw risk, inspect the two ranks
+together rather than trusting a raw risk value alone.
+
 Good first knobs:
 
 - Increase `lambda_B` if `B_hat` looks unstable across replicates.
