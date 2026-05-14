@@ -11,23 +11,23 @@ combos:
 
   - name: stronger_B_ridge
     overrides:
-      lambda_B: 0.001
+      lambda_B: 0.01
 
   - name: stronger_gamma_reg
     overrides:
-      lambda_reg: 0.001
+      lambda_reg: 0.01
 
   - name: shorter_kernel
     overrides:
       kernel:
-        length_scale: 1.0
-        sigma: 0.9
+        length_scale: 0.6
+        sigma: 0.5
 
   - name: wider_kernel
     overrides:
       kernel:
-        length_scale: 4.0
-        sigma: 0.9
+        length_scale: 2.0
+        sigma: 1.1
 
   - name: wider_return_hull
     overrides:
@@ -35,16 +35,16 @@ combos:
 
   - name: more_grid_and_steps
     overrides:
-      num_grid_points: 60
+      num_grid_points: 600
       optimization:
         num_steps: 300
       H_batch_size: 16
 
   - name: larger_sample
     overrides:
-      n_ids: 300
+      n_ids: 1000
       Z_sim:
-        n_ids: 1000
-        n_timepoints: 80
+        n_ids: 10000
+        n_timepoints: 300
       optimization:
         num_steps: 200
