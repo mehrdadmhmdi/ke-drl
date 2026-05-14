@@ -7,7 +7,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=34g
 #SBATCH --cpus-per-task=8
-#SBATCH --partition=gpuA40x4-preempt
+#SBATCH --partition=gpuA40x4
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=mehrdad3@illinois.edu
 

@@ -6,45 +6,47 @@ combos:
 
   - name: weak_regularization
     overrides:
-      lambda_reg: 0.0001
-      lambda_B: 0.0001
+      lambda_reg: 0.0005
+      lambda_B: 0.0005
 
   - name: stronger_B_ridge
     overrides:
-      lambda_B: 0.01
+      lambda_B: 0.003
 
   - name: stronger_gamma_reg
     overrides:
-      lambda_reg: 0.01
+      lambda_reg: 0.003
 
   - name: shorter_kernel
     overrides:
       kernel:
-        length_scale: 0.6
-        sigma: 0.5
+        length_scale: 0.7
+        sigma: 0.7
 
   - name: wider_kernel
     overrides:
       kernel:
-        length_scale: 2.0
-        sigma: 1.1
+        length_scale: 1.5
+        sigma: 0.7
 
   - name: wider_return_hull
     overrides:
-      hull_expand_factor: 2.5
+      hull_expand_factor: 1.5
 
   - name: more_grid_and_steps
     overrides:
-      num_grid_points: 600
+      num_grid_points: 160
       optimization:
-        num_steps: 300
+        num_steps: 180
       H_batch_size: 16
 
   - name: larger_sample
     overrides:
       n_ids: 1000
+      target_set:
+        num_points: 150
       Z_sim:
-        n_ids: 10000
-        n_timepoints: 300
+        n_ids: 2000
+        n_timepoints: 200
       optimization:
-        num_steps: 200
+        num_steps: 120

@@ -7,7 +7,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64g
 #SBATCH --cpus-per-task=4
-#SBATCH --partition=gpuA40x4-preempt
+#SBATCH --partition=gpuA40x4
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=mehrdad3@illinois.edu
 
@@ -185,7 +185,7 @@ while read -r CFG; do
   AGG_OUTPUT=$(submit_with_retry \
     "sbatch --job-name=PLOT_RUN --parsable --account=bfez-delta-gpu \
      --output=\"$RUN/logs/AGG_%j.log\" \
-     --time=00:08:00 --nodes=1 --gres=gpu:1 --mem=8g --cpus-per-task=4 --partition=gpuA40x4-preempt --mail-type=ALL \
+     --time=00:08:00 --nodes=1 --gres=gpu:1 --mem=8g --cpus-per-task=4 --partition=gpuA40x4 --mail-type=ALL \
      --mail-user=mehrdad3@illinois.edu --export=ALL,BASE=\"$RUN\",KEDRL_SRC=\"$KEDRL_SRC\" --dependency=afterany:$EST --chdir=\"$RUN\" \
      \"$RUN/Job_plot.sbatch\"")
   AGG_RET=$?
@@ -218,7 +218,7 @@ else
       --export=ALL,BASE="$BASE" \
       --job-name=TUNE_SCORE \
       --output=score_%j.log \
-      --time=00:15:00 --gres=gpu:1 --mem=2g --cpus-per-task=4 --partition=gpuA40x4-preempt \
+      --time=00:15:00 --gres=gpu:1 --mem=2g --cpus-per-task=4 --partition=gpuA40x4 \
       --wrap="python -u $BASE/score_combo.py" 2>&1
   )
   echo "sbatch SCORE output: $SCORE_OUTPUT"

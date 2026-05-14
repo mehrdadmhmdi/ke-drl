@@ -12,9 +12,9 @@ The main consistency experiment repeats the following pipeline 50 times.
 1. Generate one offline dataset under the behavior policy.
 2. Choose one benchmark state-action point from that offline dataset.
 3. Generate one Monte Carlo true return sample `Z_true_i.pt` for that benchmark.
-4. Choose 30 separate target state-action points from the same offline dataset.
+4. Choose 300 separate target state-action points from the same offline dataset.
 5. Fit one global coefficient matrix `B_hat` by averaging the Bellman loss over
-   those 30 target points.
+   those 300 target points.
 6. Evaluate that fitted global `B_hat` at the one benchmark point and compare
    the estimated mean embedding against the Monte Carlo truth.
 
@@ -66,12 +66,12 @@ benchmark:
 
 target_set:
   mode: train_subset
-  num_points: 30
+  num_points: 300
   exclude_benchmark: True
 ```
 
-`benchmark.num_points` is intentionally fixed at 1. The 30 points in
-`target_set.num_points` are not 30 Monte Carlo benchmarks; they are the points
+`benchmark.num_points` is intentionally fixed at 1. The target points in
+`target_set.num_points` are not Monte Carlo benchmarks; they are the points
 over which the empirical global Bellman loss is averaged.
 
 Other important tuning parameters are:
@@ -84,7 +84,7 @@ Other important tuning parameters are:
 - `kernel.length_scale`, `kernel.sigma`, `kernel.nu`: Matern kernel settings.
 - `optimization.lr`, `optimization.weight_decay`, `optimization.num_steps`.
 - `optimization.target_batch_size`: number of target points used per optimizer
-  step. With 30 target points, `30` means full target-batch optimization.
+  step. With 300 target points, `300` means full target-batch optimization.
 
 ## Policy Alignment
 
@@ -119,8 +119,8 @@ The smoke test uses `params_smoke.yaml`:
 
 - 3 offline replicates.
 - 1 benchmark true-Z per replicate.
-- 5 target points per replicate for the global loss.
-- 20 return-grid points and only 20 optimizer steps.
+- 20 target points per replicate for the global loss.
+- 30 return-grid points and only 30 optimizer steps.
 
 Expected output is under:
 
@@ -146,8 +146,8 @@ jid_sum=$(sbatch --parsable --dependency=afterok:${jid_tune} Job_tune_summary.sb
 ```
 
 Each tuning array task uses `params_tune.yaml`, applies one override from
-`tuning_grid.yaml`, and runs the same architecture on 5 replicates. The summary
-job writes:
+`tuning_grid.yaml`, and runs the same architecture on 5 smaller replicates with
+100 global-loss target points. The summary job writes:
 
 ```text
 runs/tuning_summary.csv
@@ -174,7 +174,7 @@ Good first knobs:
 
 - Increase `lambda_B` if `B_hat` looks unstable across replicates.
 - Increase `lambda_reg` if Gamma/importance-weight behavior is noisy.
-- Compare `kernel.length_scale` values around `1.0`, `2.0`, and `4.0`.
+- Compare `kernel.length_scale` values around `0.7`, `1.0`, and `1.5`.
 - Increase `num_grid_points` only after the small run is stable.
 - Increase `n_ids` and `Z_sim.n_ids` when the estimator is stable but noisy.
 
@@ -226,7 +226,7 @@ The four panels show:
 - Per-replicate error summaries.
 - ECDF of absolute mean-embedding error.
 
-This is different from aggregating across the 30 target points. The 30 target
+This is different from aggregating across the target points. The target
 points are used inside the global loss; they are not the evaluation objects in
 the final consistency plot.
 
