@@ -116,6 +116,16 @@ def save_mu_outputs(
     np.savetxt(mu_dir / f"weights_{rid}.csv", beta_np, delimiter=",", fmt="%.8e")
 
     metrics = metrics_from_mu(mu_hat_np, mu_true_np)
+    metrics.update(
+        {
+            "beta_sum": float(beta_np.sum()),
+            "beta_l1": float(np.abs(beta_np).sum()),
+            "beta_l2": float(np.sqrt(np.sum(beta_np * beta_np))),
+            "beta_min": float(beta_np.min()),
+            "beta_max": float(beta_np.max()),
+            "beta_neg_frac": float(np.mean(beta_np < 0.0)),
+        }
+    )
     row = {"run_id": rid, **metrics}
     pd.DataFrame([row]).to_csv(metrics_dir / f"run_metrics_{rid}.csv", index=False)
     return row

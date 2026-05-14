@@ -2,7 +2,7 @@
 #SBATCH --account=bfez-delta-gpu
 #SBATCH --job-name=KEDRL_SMOKE
 #SBATCH --output=logs/smoke.%j.log
-#SBATCH --time=00:20:00
+#SBATCH --time=00:40:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
 #SBATCH --mem=8g

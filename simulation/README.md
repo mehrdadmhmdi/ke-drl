@@ -81,6 +81,10 @@ Other important tuning parameters are:
 - `num_grid_points`, `hull_expand_factor`: return-grid resolution and support.
 - `lambda_reg`: Gamma/ridge regularization for conditional embedding weights.
 - `lambda_B`: ridge regularization on the global coefficient matrix.
+- `optimization.mass_anchor_lambda`: penalty enforcing learned target-point
+  coefficient masses near `optimization.target_mass`. Keep this positive; with
+  zero mass anchoring, the Bellman-only quadratic objective can collapse toward
+  a near-zero embedding.
 - `kernel.length_scale`, `kernel.sigma`, `kernel.nu`: Matern kernel settings.
 - `optimization.lr`, `optimization.weight_decay`, `optimization.num_steps`.
 - `optimization.target_batch_size`: number of target points used per optimizer
@@ -119,8 +123,8 @@ The smoke test uses `params_smoke.yaml`:
 
 - 3 offline replicates.
 - 1 benchmark true-Z per replicate.
-- 20 target points per replicate for the global loss.
-- 30 return-grid points and only 30 optimizer steps.
+- 60 target points per replicate for the global loss.
+- 50 return-grid points and 80 optimizer steps.
 
 Expected output is under:
 
@@ -174,6 +178,8 @@ Good first knobs:
 
 - Increase `lambda_B` if `B_hat` looks unstable across replicates.
 - Increase `lambda_reg` if Gamma/importance-weight behavior is noisy.
+- Compare `optimization.mass_anchor_lambda` values around `0.3`, `1.0`, and
+  `3.0` if the estimated embedding mass is too small or too rigid.
 - Compare `kernel.length_scale` values around `0.7`, `1.0`, and `1.5`.
 - Increase `num_grid_points` only after the small run is stable.
 - Increase `n_ids` and `Z_sim.n_ids` when the estimator is stable but noisy.

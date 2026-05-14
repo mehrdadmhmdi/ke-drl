@@ -71,6 +71,13 @@ class RKDRL_Optimizer:
         term3 = torch.einsum("bi,bij,bj->b", v, G_batch, v)
         return term1 + term2 + term3
 
+    @staticmethod
+    def _mass_anchor_penalty(B, k_batch, target_mass: float) -> torch.Tensor:
+        """Penalize target-point coefficient masses away from a probability mass."""
+        u = k_batch.transpose(0, 1) @ B
+        mass = u.sum(dim=1)
+        return torch.mean((mass - float(target_mass)) ** 2)
+
     def optimize(
             self,
             k_sa: torch.Tensor,
@@ -137,13 +144,13 @@ class RKDRL_Optimizer:
 
         legacy_active = any([
             fixed_point_constraint, exact_projection, B_conv, Sum_one_W, NonNeg_W,
-            B_positive, B_ridge_penalty, ortho_lambda > 0.0, mass_anchor_lambda > 0.0,
-            use_low_rank,
+            B_positive, B_ridge_penalty, ortho_lambda > 0.0, use_low_rank,
         ])
         if verbose and legacy_active:
             print(
                 "Ignoring legacy estimator constraints/penalties in the revised global objective: "
-                "fixed_point, projection, mass/simplex/nonnegativity, low-rank, and ad hoc ridge."
+                "fixed_point, projection, simplex/nonnegativity, low-rank, and ad hoc ridge. "
+                "The mass anchor is implemented separately when mass_anchor_lambda > 0."
             )
 
         if target_batch_size is None or target_batch_size <= 0 or target_batch_size > L:
@@ -176,7 +183,13 @@ class RKDRL_Optimizer:
             )
             bellman_loss = residuals.mean()
             ridge = float(lambda_B) * torch.trace(B.transpose(0, 1) @ K_X @ B)
-            loss = bellman_loss + ridge
+            mass_penalty = (
+                float(mass_anchor_lambda)
+                * self._mass_anchor_penalty(B, k_mat[:, idx], target_mass)
+                if mass_anchor_lambda > 0.0
+                else torch.zeros((), device=dev, dtype=dtype)
+            )
+            loss = bellman_loss + ridge + mass_penalty
 
             loss.backward()
             grad_norm = clip_grad_norm_([B], max_norm=1e2).item()
@@ -189,6 +202,12 @@ class RKDRL_Optimizer:
                 full_loss = (
                     full_bellman
                     + float(lambda_B) * torch.trace(B.transpose(0, 1) @ K_X @ B).clamp_min(0.0)
+                    + (
+                        float(mass_anchor_lambda)
+                        * self._mass_anchor_penalty(B, k_mat, target_mass).clamp_min(0.0)
+                        if mass_anchor_lambda > 0.0
+                        else torch.zeros((), device=dev, dtype=dtype)
+                    )
                 ).clamp_min(eps)
                 history_obj.append(math.log(float(full_loss.detach().cpu())))
                 history_be.append(math.log(float(torch.sqrt(full_bellman).detach().cpu())))
