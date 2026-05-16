@@ -47,8 +47,17 @@ if [ -d "$KEDRL_SRC" ]; then
   export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"
   echo "KEDRL_SRC: $KEDRL_SRC"
 else
-  echo "ERROR: KEDRL_SRC=$KEDRL_SRC not found. Run from the cloned repo so ../src exists, or export KEDRL_SRC=/path/to/kedrl_git/src." >&2
-  exit 1
+  echo "KEDRL_SRC=$KEDRL_SRC not found; using installed ke_drl package." >&2
+  if [ "${KEDRL_REINSTALL_FROM_GIT:-0}" = "1" ]; then
+    python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"
+  fi
+  python - <<'PY'
+import importlib.util
+spec = importlib.util.find_spec("ke_drl")
+if spec is None:
+    raise SystemExit('ke_drl is not installed. Run: python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"')
+print(f"Installed ke_drl source: {spec.origin}")
+PY
 fi
 :> "$BASE/tunning/agg_ids.txt"
 :> "$BASE/tunning/agg_map.tsv"

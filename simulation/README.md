@@ -135,7 +135,21 @@ The smoke test uses `params_smoke.yaml`:
 
 Every Slurm script prints `KEDRL_SRC` and every Python stage prints the
 resolved `ke_drl import source`. These should point to the cloned repository's
-`src/ke_drl`, not to a stale installed package.
+`src/ke_drl` when the full clone is present. If only the `simulation/` folder is
+on the cluster, the scripts fall back to the installed `ke_drl` package and
+print its import path.
+
+To force a reinstall from GitHub inside a Slurm job, submit with:
+
+```bash
+sbatch --export=ALL,KEDRL_REINSTALL_FROM_GIT=1 Job_smoke.sbatch
+```
+
+The reinstall command used by the scripts is:
+
+```bash
+python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"
+```
 
 Expected output is under:
 
