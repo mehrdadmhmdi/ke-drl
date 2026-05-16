@@ -1,19 +1,18 @@
 #!/bin/bash
 #####----------
-### Generates one benchmark true-Z file for each offline replicate.
+### Generates the single fixed benchmark true-Z file shared by all replicates.
 ####--------------
 #SBATCH --account=bfez-delta-gpu
 #SBATCH --job-name=GU_Z
-#SBATCH --output=logs/Z_true_%A_%a.log
-#SBATCH --time=01:00:00
+#SBATCH --output=logs/Z_true_%j.log
+#SBATCH --time=04:00:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
-#SBATCH --mem=4g
+#SBATCH --mem=16g
 #SBATCH --cpus-per-task=4
 #SBATCH --partition=gpuA40x4
 #SBATCH --mail-type=NONE
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-49
 
 cd ${OUTDIR:-$PWD}
 echo "Running in folder: $(pwd)"

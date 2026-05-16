@@ -7,35 +7,42 @@ summed over multiple target state-action points.
 
 ## Architecture
 
-The main consistency experiment repeats the following pipeline 50 times.
+The main consistency experiment repeats the estimation step over 100 independent
+offline datasets, but uses one fixed benchmark point for all of them.
 
-1. Generate one offline dataset under the behavior policy.
-2. Choose one benchmark state-action point from that offline dataset.
-3. Generate one Monte Carlo true return sample `Z_true_i.pt` for that benchmark.
-4. Choose 30 separate target state-action points from the same offline dataset.
-5. Fit one global coefficient matrix `B_hat` by averaging the Bellman loss over
-   those 30 target points.
-6. Evaluate that fitted global `B_hat` at the one benchmark point and compare
-   the estimated mean embedding against the Monte Carlo truth.
+1. Generate 100 offline datasets under the behavior policy:
+   `D_i`, `i = 1,...,100`.
+2. Fix one benchmark state-action point `(s*, a*)` independently of every
+   `D_i`. By default it is specified directly in `params.yaml` and stored in
+   `data/benchmark_point.csv`.
+3. Generate one high-precision Monte Carlo benchmark sample `data/Z_true.pt`
+   from `(s*, a*)` under the target policy, using `Z_sim.n_ids` independent
+   trajectories and `Z_sim.n_timepoints` time points.
+4. For each offline dataset `D_i`, choose 150 training target points
+   `(\tilde s_j, \tilde a_j)` from that same `D_i`.
+5. Fit one global coefficient matrix `B_i` by minimizing the empirical Bellman
+   loss averaged over those 150 training target points.
+6. Evaluate `B_i` only at the fixed benchmark point `(s*, a*)`, producing
+   `\hat\mu_i((s*,a*);B_i)`, and compare it against the shared Monte Carlo truth.
 
-The replicate index is `i = 0,...,49`. Each replicate has its own offline data,
-benchmark true-Z file, target-point set, fitted `B_hat`, and benchmark metrics.
+The replicate index in the code is zero-based: `offline_data_0.pt` corresponds
+to mathematical `D_1`.
 
 ```
-Job_data.sbatch --array=0-49
+Job_data.sbatch --array=0-99
    |
    +--> data/offline_data_i.pt
 
-Job_Z.sbatch --array=0-49
+Job_Z.sbatch
    |
-   +--> data/Z_true_i.pt
-   +--> data/benchmark_point_i.csv
+   +--> data/Z_true.pt
+   +--> data/benchmark_point.csv
 
 Job_E_P_sa.sbatch
    |
    +--> runs/main_<master_job_id>/
           |
-          +--> Job_est.sbatch --array=0-49
+          +--> Job_est.sbatch --array=0-99
           |      |
           |      +--> data/target_points_i.csv
           |      +--> data/fit_i.pt
@@ -59,20 +66,26 @@ The production settings are in `params.yaml`.
 
 ```yaml
 experiment:
-  num_replicates: 50
+  num_replicates: 100
 
 benchmark:
   num_points: 1
+  source: fixed_config
+  s_star: [0.6, -0.8, 0.7, -0.5, 0.9]
+  a_star: [0.75]
+  output: Z_true.pt
 
 target_set:
   mode: train_subset
-  num_points: 30
+  num_points: 150
   exclude_benchmark: True
 ```
 
-`benchmark.num_points` is intentionally fixed at 1. The target points in
-`target_set.num_points` are not Monte Carlo benchmarks; they are the points
-over which the empirical global Bellman loss is averaged.
+`benchmark.num_points` is intentionally fixed at 1. `Job_Z.sbatch` generates
+only one benchmark truth file, and this file does not depend on any `D_i`. The
+target points in `target_set.num_points` are not Monte Carlo benchmarks; they
+are the points over which the empirical global Bellman loss is averaged for
+each offline dataset.
 
 Other important tuning parameters are:
 
@@ -95,7 +108,7 @@ Other important tuning parameters are:
 - `kernel.length_scale`, `kernel.sigma`, `kernel.nu`: Matern kernel settings.
 - `optimization.lr`, `optimization.weight_decay`, `optimization.num_steps`.
 - `optimization.target_batch_size`: number of target points used per optimizer
-  step. With 30 target points, `30` means full target-batch optimization.
+  step. With 150 target points, `150` means full target-batch optimization.
 
 ## Policy Alignment
 
@@ -129,7 +142,7 @@ sbatch Job_smoke.sbatch
 The smoke test uses `params_smoke.yaml`:
 
 - 3 offline replicates.
-- 1 benchmark true-Z per replicate.
+- 1 fixed benchmark true-Z shared by all smoke replicates.
 - 10 target points per replicate for the global loss.
 - 50 return-grid points and 80 optimizer steps.
 
@@ -167,7 +180,7 @@ runs/smoke_<job_id>/plots/mu_summary_UG.png
 
 ## Tuning Run
 
-Before the full 50-replicate run, use the small tuning sweep:
+Before the full 100-replicate run, use the smaller tuning sweep:
 
 ```bash
 jid_tune=$(sbatch --parsable Job_tune_global.sbatch)
@@ -175,7 +188,7 @@ jid_sum=$(sbatch --parsable --dependency=afterok:${jid_tune} Job_tune_summary.sb
 ```
 
 Each tuning array task uses `params_tune.yaml`, applies one override from
-`tuning_grid.yaml`, and runs the same 30-target architecture on 5 smaller
+`tuning_grid.yaml`, and runs the same fixed-benchmark architecture on 5 smaller
 replicates. The summary job writes:
 
 ```text
@@ -191,7 +204,7 @@ Each tuning run now records two benchmark families:
 - `score_true_z`: external accuracy against the Monte Carlo benchmark true-Z.
 - `score_risk`: internal empirical risk, using the final log regularized
   Bellman objective from the optimizer history.
-- `score_mass`: mass-constraint RMSE for the 30 global-loss target points.
+- `score_mass`: mass-constraint RMSE for the global-loss target points.
 
 `runs/tuning_summary.csv` also reports `true_z_rank`, `risk_rank`, and
 `combined_rank`. Prefer settings that are good on both ranks. The true-Z score
@@ -220,7 +233,7 @@ If the `data/` folder contains old files from the previous workflow, clear the
 generated simulation artifacts first:
 
 ```bash
-rm -f data/offline_data_*.pt data/Z_true_*.pt data/benchmark_point_*.csv
+rm -f data/offline_data_*.pt data/Z_true.pt data/Z_true_*.pt data/benchmark_point.csv data/benchmark_point_*.csv
 rm -f data/target_points_*.csv data/fit_*.pt data/Zgrid_*.pt data/Zeval_*.pt
 rm -f mu/mu_hat_*.csv mu/mu_true_*.csv mu/weights_*.csv
 rm -f metrics/run_metrics_*.csv metrics/global_eval_metrics_*.csv
@@ -228,12 +241,12 @@ rm -f metrics/run_metrics_*.csv metrics/global_eval_metrics_*.csv
 
 ```bash
 jid_data=$(sbatch --parsable Job_data.sbatch)
-jid_z=$(sbatch --parsable --dependency=afterok:${jid_data} Job_Z.sbatch)
-jid_run=$(sbatch --parsable --dependency=afterok:${jid_z} Job_E_P_sa.sbatch)
+jid_z=$(sbatch --parsable Job_Z.sbatch)
+jid_run=$(sbatch --parsable --dependency=afterok:${jid_data}:${jid_z} Job_E_P_sa.sbatch)
 ```
 
-`Job_E_P_sa.sbatch` checks that all `offline_data_i.pt` and `Z_true_i.pt` files
-exist before launching the estimator array.
+`Job_E_P_sa.sbatch` checks that all `offline_data_i.pt` files and the shared
+`Z_true.pt` file exist before launching the estimator array.
 
 Production outputs go under:
 
@@ -251,13 +264,15 @@ runs/main_<master_job_id>/plots/mu_summary_UG.png
 
 `mu_summary_UG.png` aggregates across offline replicates. It is appropriate for
 checking consistency of the estimated global `B` because each curve is produced
-from a fresh offline dataset, a fresh benchmark point, and a fresh global fit.
+from a fresh offline dataset and a fresh global fit, but evaluated at the same
+fixed benchmark point.
 
 The four panels show:
 
-- Mean estimated and Monte Carlo benchmark embeddings across replicates.
-- Quantile calibration of estimated versus true benchmark mean embeddings.
-- Per-replicate error summaries.
+- Mean estimated embeddings across `D_i` against the fixed Monte Carlo truth.
+- Quantile calibration lines, one gray line per `D_i`, plus their mean line.
+- Per-replicate error summaries, including the final empirical Bellman risk
+  when available.
 - ECDF of absolute mean-embedding error.
 
 This is different from aggregating across the target points. The target
@@ -273,17 +288,17 @@ params_tune.yaml         small tuning baseline
 tuning_grid.yaml         tuning overrides
 
 main_offlinedata.py      generates offline_data_i.pt
-main_MonteCarloZ.py      generates benchmark Z_true_i.pt
+main_MonteCarloZ.py      generates the shared benchmark Z_true.pt
 main_est.py             fits one global B for replicate i and evaluates it
 mu_plot.py              aggregates replicate metrics and plots
 sim_utils.py            data generation, policy sampling, target-set selection
 sim_eval.py             mean-embedding metrics and plots
 validate_sim_config.py  policy and run-shape validation
 
-Job_data.sbatch          offline data array, 0-49
-Job_Z.sbatch             benchmark true-Z array, 0-49
+Job_data.sbatch          offline data array, 0-99
+Job_Z.sbatch             shared benchmark true-Z job
 Job_E_P_sa.sbatch        master launcher for estimator and plotting
-Job_est.sbatch           global-B estimator array, 0-49
+Job_est.sbatch           global-B estimator array, 0-99
 Job_plot.sbatch          aggregation and plotting job
 Job_smoke.sbatch         end-to-end small smoke test
 Job_tune_global.sbatch   tuning array over combo ids

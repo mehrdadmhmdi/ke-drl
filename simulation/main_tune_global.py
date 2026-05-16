@@ -136,11 +136,7 @@ def main() -> None:
             ]
         )
 
-    for rep_id in range(n_rep):
-        env = os.environ.copy()
-        env["SLURM_ARRAY_TASK_ID"] = str(rep_id)
-        env["OFFLINE_DATA_ID"] = str(rep_id)
-        run_step([sys.executable, "main_MonteCarloZ.py"], env=env)
+    run_step([sys.executable, "main_MonteCarloZ.py"])
 
     for rep_id in range(n_rep):
         env = os.environ.copy()

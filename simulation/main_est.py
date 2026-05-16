@@ -12,7 +12,13 @@ import torch
 import yaml
 
 from sim_utils import bootstrap_kedrl, clean_policy_params, kedrl_import_info, seed_from_array, select_target_set
-from sim_eval import common_eval_grid, mean_embedding_hat, mean_embedding_true, save_mu_outputs
+from sim_eval import (
+    common_eval_grid,
+    fixed_point_embedding_risk,
+    mean_embedding_hat,
+    mean_embedding_true,
+    save_mu_outputs,
+)
 
 
 bootstrap_kedrl()
@@ -105,11 +111,11 @@ def summarize_risk_history(history_obj: list[float], history_be: list[float]) ->
     return out
 
 
-def load_benchmark_truth(data_dir: Path, offline_data_id: int) -> dict[str, Any]:
-    path = data_dir / f"Z_true_{offline_data_id}.pt"
+def load_benchmark_truth(data_dir: Path, cfg: dict[str, Any]) -> dict[str, Any]:
+    path = data_dir / str(cfg.get("output", "Z_true.pt"))
     if not path.exists():
         raise FileNotFoundError(
-            f"Missing benchmark true-Z file: {path}. Run Job_Z.sbatch after Job_data.sbatch."
+            f"Missing fixed benchmark true-Z file: {path}. Run Job_Z.sbatch once before estimation."
         )
     blob = torch.load(path, map_location="cpu")
     Z_list = blob.get("Z_true")
@@ -118,12 +124,6 @@ def load_benchmark_truth(data_dir: Path, offline_data_id: int) -> dict[str, Any]
     meta = blob.get("metadata", {})
     if "s_star" not in meta or "a_star" not in meta:
         raise ValueError(f"{path} metadata must contain the benchmark s_star and a_star.")
-    truth_offline_id = maybe_int(meta.get("offline_data_id"))
-    if truth_offline_id is not None and truth_offline_id != offline_data_id:
-        raise ValueError(
-            f"{path} was generated for offline_data_id={truth_offline_id}, "
-            f"but this estimation job is offline_data_id={offline_data_id}."
-        )
     return {
         "path": path,
         "Z_true": torch.as_tensor(Z_list[0], dtype=torch.float64),
@@ -227,9 +227,11 @@ r0 = torch.as_tensor(blob["r0"], dtype=torch.float64)
 
 meta = blob["metadata"]
 beh_policy = meta["policy"]
-truth = load_benchmark_truth(data_dir, offline_data_id)
+bench_cfg = dict(P.get("benchmark") or {})
+truth = load_benchmark_truth(data_dir, bench_cfg)
 meta_z = truth["metadata"]
-benchmark_row = maybe_int(meta_z.get("offline_row"))
+benchmark_point_source = meta_z.get("point_source", "unknown")
+benchmark_exclude_idx = None
 s_eval = truth["s_eval"]
 a_eval = truth["a_eval"]
 
@@ -250,7 +252,7 @@ s_star, a_star, target_idx = select_target_set(
     seed=target_seed,
     fallback_eval_s=s_eval,
     fallback_eval_a=a_eval,
-    exclude_idx=benchmark_row,
+    exclude_idx=benchmark_exclude_idx,
 )
 write_target_point_table(
     out_path=data_dir / f"target_points_{offline_data_id}.csv",
@@ -258,7 +260,7 @@ write_target_point_table(
     s_star=s_star,
     a_star=a_star,
     target_idx=target_idx,
-    benchmark_row=benchmark_row,
+    benchmark_row=benchmark_exclude_idx,
 )
 
 requested_targets = int((P.get("target_set") or {}).get("num_points", s_star.shape[0]))
@@ -310,7 +312,8 @@ print("Data and parameters loaded.")
 print(f"offline path: {df_path}")
 print(f"benchmark true-Z path: {truth['path']}")
 print(f"offline shapes: s0={tuple(s0.shape)}, a0={tuple(a0.shape)}, r0={tuple(r0.shape)}")
-print(f"benchmark row: {benchmark_row}")
+print(f"fixed benchmark point source: {benchmark_point_source}")
+print(f"benchmark row excluded from this offline data: {benchmark_exclude_idx}")
 print(f"global loss target set shape: s_star={tuple(s_star.shape)}, a_star={tuple(a_star.shape)}")
 print(f"benchmark true-Z shape: {tuple(truth['Z_true'].shape)}")
 print(f"target policy: {target_policy}")
@@ -399,7 +402,7 @@ torch.save(
         "history_obj": history_obj,
         "history_be": history_be,
         "offline_data_id": offline_data_id,
-        "benchmark_row": benchmark_row,
+        "benchmark_point_source": benchmark_point_source,
         "benchmark_z_path": str(truth["path"]),
         "target_set_size": int(s_star.shape[0]),
         "target_indices": None if target_idx is None else [int(x) for x in target_idx.detach().cpu().reshape(-1).tolist()],
@@ -416,7 +419,7 @@ risk_metrics = summarize_risk_history(history_obj, history_be)
 risk_metrics.update(
     {
         "offline_data_id": offline_data_id,
-        "benchmark_row": benchmark_row,
+        "benchmark_point_source": benchmark_point_source,
         "target_set_size": int(s_star.shape[0]),
         "lambda_reg": lambda_reg,
         "lambda_B": lambda_B,
@@ -498,14 +501,29 @@ mu_true = mean_embedding_true(
     length_scale=length_scale,
     sigma=sigma_k,
 )
-metrics = save_mu_outputs(run_id=offline_data_id, mu_hat=mu_hat, mu_true=mu_true, beta=beta_eval)
-metrics.update(
-    {
-        "offline_data_id": offline_data_id,
-        "benchmark_row": benchmark_row,
-        "target_set_size": int(s_star.shape[0]),
-        "benchmark_z_path": str(truth["path"]),
-    }
+benchmark_embedding_risk = fixed_point_embedding_risk(
+    beta_eval,
+    Z_grid,
+    Z_true_tensor,
+    nu=nu,
+    length_scale=length_scale,
+    sigma=sigma_k,
+)
+extra_metrics = {
+    "offline_data_id": offline_data_id,
+    "benchmark_point_source": benchmark_point_source,
+    "target_set_size": int(s_star.shape[0]),
+    "benchmark_z_path": str(truth["path"]),
+    "benchmark_embedding_risk": float(benchmark_embedding_risk.detach().cpu()),
+    "risk_bellman_final": risk_metrics.get("risk_bellman_final"),
+    "risk_obj_final": risk_metrics.get("risk_obj_final"),
+}
+metrics = save_mu_outputs(
+    run_id=offline_data_id,
+    mu_hat=mu_hat,
+    mu_true=mu_true,
+    beta=beta_eval,
+    extra_metrics=extra_metrics,
 )
 pd.DataFrame([metrics]).to_csv(f"metrics/global_eval_metrics_{offline_data_id}.csv", index=False)
 print(f"Replicate {offline_data_id} benchmark metrics:", metrics)

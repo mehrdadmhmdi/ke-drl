@@ -44,7 +44,7 @@ print(
 )
 
 df = export_metrics_tables(mu_dir=args.mu_dir, metrics_dir=args.metrics_dir)
-plot_mu_summary(mu_dir=args.mu_dir, outdir=args.plots_dir)
+plot_mu_summary(mu_dir=args.mu_dir, metrics_dir=args.metrics_dir, outdir=args.plots_dir)
 summary_path = Path(args.plots_dir) / "mu_summary_UG.png"
 if not summary_path.exists():
     raise RuntimeError(

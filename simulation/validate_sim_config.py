@@ -94,16 +94,43 @@ def main() -> None:
         print(f"Note: policy.{target_name}.theta_scale/theta_std are log-scale coefficients in Probability_Densities.")
 
     n_rep = int((P.get("experiment") or {}).get("num_replicates", 1))
-    bench_points = int((P.get("benchmark") or {}).get("num_points", 1))
+    bench_cfg = dict(P.get("benchmark") or {})
+    bench_points = int(bench_cfg.get("num_points", 1))
     target_cfg = dict(P.get("target_set") or {})
     target_points = int(target_cfg.get("num_points", 1))
     if n_rep < 1:
         raise ValueError("experiment.num_replicates must be at least 1.")
     if bench_points != 1:
-        raise ValueError("This simulation architecture expects benchmark.num_points: 1.")
+        raise ValueError("This simulation architecture expects one fixed benchmark point: benchmark.num_points: 1.")
+    if ("s_star" in bench_cfg) != ("a_star" in bench_cfg):
+        raise ValueError("benchmark.s_star and benchmark.a_star must either both be present or both be omitted.")
+    if "s_star" in bench_cfg:
+        if len(_as_list(bench_cfg["s_star"])) != state_dim:
+            raise ValueError(f"benchmark.s_star has length {len(_as_list(bench_cfg['s_star']))}, expected {state_dim}.")
+        if len(_as_list(bench_cfg["a_star"])) != action_dim:
+            raise ValueError(f"benchmark.a_star has length {len(_as_list(bench_cfg['a_star']))}, expected {action_dim}.")
     if target_points < 1 and str(target_cfg.get("mode", "train_subset")).lower() not in {"all", "train_all"}:
         raise ValueError("target_set.num_points must be at least 1.")
-    print(f"Replicate config OK: num_replicates={n_rep}, benchmark points=1, loss target points={target_points}")
+    print(
+        "Replicate config OK: "
+        f"num_replicates={n_rep}, fixed benchmark points=1 independent of D_i, "
+        f"loss target points={target_points}"
+    )
+    if "s_star" in bench_cfg:
+        s_bench = torch.as_tensor(bench_cfg["s_star"], dtype=torch.float64).reshape(1, -1)
+        a_bench = torch.as_tensor(bench_cfg["a_star"], dtype=torch.float64).reshape(1, -1)
+        print(f"Fixed benchmark point: s_star={s_bench.reshape(-1).tolist()}, a_star={a_bench.reshape(-1).tolist()}")
+        if behavior_name == "uniform" and action_dim == 1:
+            lower, upper = _uniform_bounds(behavior_block, s_bench)
+            print(
+                "Fixed benchmark behavior-support interval: "
+                f"[{lower.item():.4g}, {upper.item():.4g}], a_star={a_bench.item():.4g}"
+            )
+            if not (lower.item() <= a_bench.item() <= upper.item()):
+                raise ValueError("benchmark.a_star is outside the behavior-policy support at benchmark.s_star.")
+        loc = _location(target_name, target_block, s_bench)
+        if loc is not None:
+            print(f"Fixed benchmark target-policy location at s_star: {loc.item():.4g}")
 
     if args.data is None:
         return

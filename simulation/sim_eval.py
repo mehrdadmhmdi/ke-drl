@@ -51,6 +51,29 @@ def mean_embedding_hat(
     return (Kzz @ beta.reshape(-1)).contiguous()
 
 
+def fixed_point_embedding_risk(
+    beta: torch.Tensor,
+    Z_grid: torch.Tensor,
+    Z_test: torch.Tensor,
+    *,
+    nu: float,
+    length_scale: float,
+    sigma: float,
+    batch_size: int = 2000,
+) -> torch.Tensor:
+    """Compute E||k(.,Z)-mu_hat||^2 for one fixed evaluation point."""
+    beta = torch.as_tensor(beta, dtype=Z_grid.dtype, device=Z_grid.device).reshape(-1)
+    Z_grid = torch.as_tensor(Z_grid, dtype=beta.dtype, device=beta.device)
+    Z_test = torch.as_tensor(Z_test, dtype=beta.dtype, device=beta.device)
+    K_grid = matern_kernel(Z_grid, Z_grid, nu=nu, length_scale=length_scale, sigma=sigma)
+    quad = beta @ (K_grid @ beta)
+    cross = torch.zeros((), dtype=beta.dtype, device=beta.device)
+    for start in range(0, Z_test.shape[0], batch_size):
+        chunk = Z_test[start : start + batch_size]
+        cross = cross + (matern_kernel(chunk, Z_grid, nu=nu, length_scale=length_scale, sigma=sigma) @ beta).sum()
+    return (sigma**2) - 2.0 * cross / float(Z_test.shape[0]) + quad
+
+
 def common_eval_grid(Z_true: torch.Tensor, n_points: int) -> torch.Tensor:
     """Deterministic benchmark grid for one replicate's Monte Carlo truth sample."""
     Z_true = torch.as_tensor(Z_true)
@@ -98,6 +121,7 @@ def save_mu_outputs(
     mu_hat: torch.Tensor,
     mu_true: torch.Tensor,
     beta: torch.Tensor,
+    extra_metrics: dict | None = None,
     mu_dir: str | os.PathLike = "./mu",
     metrics_dir: str | os.PathLike = "./metrics",
 ) -> dict[str, float]:
@@ -126,6 +150,8 @@ def save_mu_outputs(
             "beta_neg_frac": float(np.mean(beta_np < 0.0)),
         }
     )
+    if extra_metrics:
+        metrics.update(extra_metrics)
     row = {"run_id": rid, **metrics}
     pd.DataFrame([row]).to_csv(metrics_dir / f"run_metrics_{rid}.csv", index=False)
     return row
@@ -149,6 +175,10 @@ def export_metrics_tables(
         mu_hat = np.loadtxt(hat_path, delimiter=",")
         mu_true = np.loadtxt(true_path, delimiter=",")
         row = {"run_id": run_id, **metrics_from_mu(mu_hat, mu_true)}
+        run_metrics_path = metrics_dir / f"run_metrics_{run_id}.csv"
+        if run_metrics_path.exists():
+            saved_row = pd.read_csv(run_metrics_path).iloc[0].to_dict()
+            row.update({k: v for k, v in saved_row.items() if k != "run_id"})
         weights_path = mu_dir / f"weights_{run_id}.csv"
         if weights_path.exists():
             beta = np.loadtxt(weights_path, delimiter=",").reshape(-1)
@@ -171,7 +201,20 @@ def export_metrics_tables(
     df.to_csv(metrics_dir / "per_point_metrics.csv", index=False)
     df.to_csv(metrics_dir / "per_run_metrics.csv", index=False)  # backward-compatible name
     agg = {}
-    for col in ["RMSE", "MAE", "SupNorm", "Bias", "Corr", "beta_sum", "beta_l1", "beta_l2", "beta_neg_frac"]:
+    for col in [
+        "RMSE",
+        "MAE",
+        "SupNorm",
+        "Bias",
+        "Corr",
+        "beta_sum",
+        "beta_l1",
+        "beta_l2",
+        "beta_neg_frac",
+        "risk_bellman_final",
+        "risk_obj_final",
+        "benchmark_embedding_risk",
+    ]:
         if col not in df:
             continue
         agg[f"{col}_mean"] = float(df[col].mean())
@@ -191,6 +234,7 @@ def export_metrics_tables(
 def plot_mu_summary(
     *,
     mu_dir: str | os.PathLike = "./mu",
+    metrics_dir: str | os.PathLike = "./metrics",
     outdir: str | os.PathLike = "./plots",
 ) -> None:
     try:
@@ -206,13 +250,14 @@ def plot_mu_summary(
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
 
-    hats, trues = [], []
+    hats, trues, run_ids = [], [], []
     for hat_path in sorted(mu_dir.glob("mu_hat_*.csv")):
         run_id = hat_path.stem.replace("mu_hat_", "")
         true_path = mu_dir / f"mu_true_{run_id}.csv"
         if true_path.exists():
             hats.append(np.loadtxt(hat_path, delimiter=",").reshape(-1))
             trues.append(np.loadtxt(true_path, delimiter=",").reshape(-1))
+            run_ids.append(run_id)
     if not hats:
         raise FileNotFoundError(f"No matched mu outputs in {mu_dir}")
 
@@ -222,7 +267,12 @@ def plot_mu_summary(
     h_mean, h_sd = H.mean(axis=0), H.std(axis=0, ddof=1) if H.shape[0] > 1 else np.zeros(H.shape[1])
     t_mean, t_sd = T.mean(axis=0), T.std(axis=0, ddof=1) if T.shape[0] > 1 else np.zeros(T.shape[1])
 
-    _plot_four_panel_summary(H, T, outdir=outdir, plt=plt)
+    metrics_df = None
+    per_run_path = Path(metrics_dir) / "per_run_metrics.csv"
+    if per_run_path.exists():
+        metrics_df = pd.read_csv(per_run_path)
+
+    _plot_four_panel_summary(H, T, run_ids=run_ids, metrics_df=metrics_df, outdir=outdir, plt=plt)
 
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(x, t_mean, lw=1.7, color="black", label="MC truth")
@@ -266,7 +316,15 @@ def _binned_means(x: np.ndarray, y: np.ndarray, n_bins: int = 10):
     return np.asarray(bx), np.asarray(by), np.asarray(se)
 
 
-def _plot_four_panel_summary(H: np.ndarray, T: np.ndarray, *, outdir: Path, plt) -> None:
+def _plot_four_panel_summary(
+    H: np.ndarray,
+    T: np.ndarray,
+    *,
+    run_ids: list[str],
+    metrics_df: pd.DataFrame | None,
+    outdir: Path,
+    plt,
+) -> None:
     x = np.arange(H.shape[1])
     h_mean = H.mean(axis=0)
     t_mean = T.mean(axis=0)
@@ -276,23 +334,30 @@ def _plot_four_panel_summary(H: np.ndarray, T: np.ndarray, *, outdir: Path, plt)
 
     fig, axs = plt.subplots(2, 2, figsize=(13, 9))
     ax = axs[0, 0]
-    for row in T:
-        ax.plot(x, row, color="0.72", lw=0.7, alpha=0.45)
+    for row in H:
+        ax.plot(x, row, color="0.72", lw=0.7, alpha=0.35)
     ax.fill_between(x, t_mean - 1.96 * t_sd, t_mean + 1.96 * t_sd, color="#0b2a50", alpha=0.10)
     ax.fill_between(x, h_mean - 1.96 * h_sd, h_mean + 1.96 * h_sd, color="#ff5f05", alpha=0.20)
     ax.plot(x, h_mean, color="#ff5f05", lw=2.0, label=r"$\hat{\mu}$")
     ax.plot(x, t_mean, color="#0b2a50", lw=2.0, label=r"$\mu$")
-    ax.set_title("(a) Mean +/- 1.96 SD Across Runs")
-    ax.set_xlabel("Index on per-run benchmark Z grid")
+    ax.set_title("(a) Mean +/- 1.96 SD Across Offline Samples")
+    ax.set_xlabel("Index on fixed benchmark Z grid")
     ax.set_ylabel("Mean embedding")
     ax.grid(alpha=0.25)
     ax.legend()
 
     ax = axs[0, 1]
+    order = np.argsort(t_mean)
+    bins = np.array_split(order, min(10, order.size))
+    bx = np.asarray([float(t_mean[b].mean()) for b in bins if b.size])
+    line_values = []
     for tr, hr in zip(T, H):
-        bx, by, _ = _binned_means(tr, hr, n_bins=10)
-        ax.plot(bx, by, color="0.6", lw=0.8, alpha=0.25)
-    bx, by, se = _binned_means(T.reshape(-1), H.reshape(-1), n_bins=10)
+        by_run = np.asarray([float(hr[b].mean()) for b in bins if b.size])
+        line_values.append(by_run)
+        ax.plot(bx, by_run, color="0.6", lw=0.8, alpha=0.25)
+    Y = np.vstack(line_values)
+    by = Y.mean(axis=0)
+    se = Y.std(axis=0, ddof=1) / math.sqrt(Y.shape[0]) if Y.shape[0] > 1 else np.zeros(Y.shape[1])
     slope, intercept = _deming(T.reshape(-1), H.reshape(-1))
     lo = min(float(np.nanmin(T)), float(np.nanmin(H)))
     hi = max(float(np.nanmax(T)), float(np.nanmax(H)))
@@ -305,7 +370,7 @@ def _plot_four_panel_summary(H: np.ndarray, T: np.ndarray, *, outdir: Path, plt)
         marker="o",
         lw=2.0,
         capsize=3,
-        label="binned means +/- 95% CI",
+        label="mean calibration +/- 95% CI",
     )
     ax.text(0.04, 0.94, f"Deming slope={slope:.3f}, int={intercept:.3f}", transform=ax.transAxes, va="top")
     ax.set_title("(b) Quantile Calibration")
@@ -321,6 +386,13 @@ def _plot_four_panel_summary(H: np.ndarray, T: np.ndarray, *, outdir: Path, plt)
             "RMSE": np.sqrt(np.mean(diff * diff, axis=1)),
         }
     )
+    if metrics_df is not None and "risk_bellman_final" in metrics_df.columns:
+        risk_lookup = metrics_df.assign(run_id=metrics_df["run_id"].astype(str)).set_index("run_id")
+        values = []
+        for rid in run_ids:
+            values.append(float(risk_lookup.loc[str(rid), "risk_bellman_final"]) if str(rid) in risk_lookup.index else np.nan)
+        if np.isfinite(values).any():
+            per_run["Bellman risk"] = np.asarray(values, dtype=float)
     ax = axs[1, 0]
     ax.boxplot([per_run[c].to_numpy() for c in per_run.columns], labels=list(per_run.columns), showmeans=True)
     ax.set_title("(c) Per-run Error Summaries")

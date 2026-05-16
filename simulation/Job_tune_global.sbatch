@@ -2,10 +2,10 @@
 #SBATCH --account=bfez-delta-gpu
 #SBATCH --job-name=KEDRL_TUNE
 #SBATCH --output=logs/tune_%A_%a.log
-#SBATCH --time=03:00:00
+#SBATCH --time=08:00:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
-#SBATCH --mem=12g
+#SBATCH --mem=16g
 #SBATCH --cpus-per-task=4
 #SBATCH --partition=gpuA40x4
 #SBATCH --mail-type=END,FAIL

@@ -8,7 +8,7 @@ import pandas as pd
 import torch
 import yaml
 
-from sim_utils import kedrl_import_info, monte_carlo_Z, seed_from_array
+from sim_utils import clean_policy_params, kedrl_import_info, monte_carlo_Z, sample_policy_actions, seed_from_array
 
 
 print("# ================================================== #")
@@ -17,22 +17,19 @@ print("# ================================================== #")
 
 start = time.time()
 job_id = os.environ.get("SLURM_JOB_ID")
-array_id = os.environ.get("SLURM_ARRAY_TASK_ID", "0")
+array_id = os.environ.get("SLURM_ARRAY_TASK_ID")
 print(f"Slurm Job ID: {job_id}")
-print(f"Slurm Array ID: {array_id} -- used as the offline-replicate id")
+print(f"Slurm Array ID: {array_id}")
 print(f"ke_drl import source: {kedrl_import_info()}")
 
 with open("./params.yaml", "r", encoding="utf-8") as f:
     P = yaml.safe_load(f)
 
-offline_data_id = int(os.environ.get("OFFLINE_DATA_ID", array_id))
 num_replicates = int(P.get("experiment", {}).get("num_replicates", 1))
-if offline_data_id < 0 or offline_data_id >= num_replicates:
-    raise ValueError(f"Offline replicate id {offline_data_id} is outside 0,...,{num_replicates - 1}.")
+bench_cfg = dict(P.get("benchmark") or {})
 
-seed = seed_from_array(int(P.get("random_seed", 20260512)) + 100000, offline_data_id)
+seed = seed_from_array(int(P.get("random_seed", 20260512)) + 100000, 0)
 print(f"Random seed: {seed}")
-print(f"Offline data id: {offline_data_id}")
 print(f"Number of offline replicates: {num_replicates}")
 
 to_t = lambda x: torch.as_tensor(x, dtype=torch.float64)
@@ -43,27 +40,35 @@ target_policy_name = P["policy"]["evaluation_Target_policy"]
 target_policy = P["policy"][target_policy_name]["name"]
 target_policy_params = P["policy"][target_policy_name]
 
-offline_path = Path("data") / f"offline_data_{offline_data_id}.pt"
-if not offline_path.exists():
-    raise FileNotFoundError(f"Missing offline data file: {offline_path}. Run Job_data.sbatch first.")
-saved = torch.load(offline_path, map_location="cpu")
-s0 = torch.as_tensor(saved["s0"], dtype=torch.float64)
-a0 = torch.as_tensor(saved["a0"], dtype=torch.float64)
+design_seed = int(P.get("random_seed", 20260512)) + int(bench_cfg.get("seed_offset", 110000))
+if "s_star" in bench_cfg and "a_star" in bench_cfg:
+    s_star = torch.as_tensor(bench_cfg["s_star"], dtype=torch.float64).reshape(-1)
+    a_star = torch.as_tensor(bench_cfg["a_star"], dtype=torch.float64).reshape(-1)
+    point_source = "fixed_config"
+else:
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(design_seed)
+    s_star = torch.randn(int(P["state_dim"]), generator=generator, dtype=torch.float64)
+    torch.manual_seed(design_seed + 1)
+    a_star = sample_policy_actions(
+        target_policy,
+        clean_policy_params(target_policy, target_policy_params),
+        s_star.reshape(1, -1),
+        int(P["action_dim"]),
+    ).reshape(-1)
+    point_source = "independent_target_policy_draw"
+if s_star.numel() != int(P["state_dim"]):
+    raise ValueError(f"benchmark.s_star has length {s_star.numel()}, expected {P['state_dim']}.")
+if a_star.numel() != int(P["action_dim"]):
+    raise ValueError(f"benchmark.a_star has length {a_star.numel()}, expected {P['action_dim']}.")
+print(f"Fixed MC benchmark point source: {point_source}")
+print(f"s_star={s_star.tolist()}")
+print(f"a_star={a_star.tolist()}")
 
-bench_cfg = dict(P.get("benchmark") or {})
-design_seed = int(P.get("random_seed", 20260512)) + int(bench_cfg.get("seed_offset", 110000)) + offline_data_id
-generator = torch.Generator(device="cpu")
-generator.manual_seed(design_seed)
-idx = torch.randperm(s0.size(0), generator=generator)[0].item()
-s_star = s0[idx]
-a_star = a0[idx]
-print(f"Selected MC benchmark row: {idx}")
-
-csv = Path("./data") / f"benchmark_point_{offline_data_id}.csv"
+csv = Path("./data") / "benchmark_point.csv"
 csv.parent.mkdir(parents=True, exist_ok=True)
 row = {
-    "offline_data_id": offline_data_id,
-    "offline_row": idx,
+    "point_source": point_source,
     **{f"s{i}": v for i, v in enumerate(s_star.detach().cpu().flatten().tolist())},
     **{f"a{i}": v for i, v in enumerate(a_star.detach().cpu().flatten().tolist())},
 }
@@ -91,7 +96,7 @@ print("len(Z_true) =", len(Z_true), "shape each =", tuple(Z_true[0].shape))
 
 out_dir = Path("data")
 out_dir.mkdir(parents=True, exist_ok=True)
-out_path = out_dir / f"Z_true_{offline_data_id}.pt"
+out_path = out_dir / str(bench_cfg.get("output", "Z_true.pt"))
 
 torch.save(
     {
@@ -99,13 +104,12 @@ torch.save(
         "metadata": {
             "s_star": s_star,
             "a_star": a_star,
-            "offline_row": idx,
-            "offline_data_id": offline_data_id,
+            "point_source": point_source,
             "benchmark_id": 0,
             "policy": target_policy,
             "policy_params": {target_policy: target_policy_params},
             "params_file": "params.yaml",
-            "stamp": str(offline_data_id),
+            "stamp": "fixed",
             "random_seed": seed,
             "design_seed": design_seed,
         },

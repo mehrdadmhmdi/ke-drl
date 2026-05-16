@@ -79,11 +79,11 @@ for ((j=0; j<N_REP; j++)); do
     echo "Missing $DATA_DIR/offline_data_${j}.pt. Run Job_data.sbatch and wait for all ${N_REP} array tasks." >&2
     exit 1
   fi
-  if [ ! -f "$DATA_DIR/Z_true_${j}.pt" ]; then
-    echo "Missing $DATA_DIR/Z_true_${j}.pt. Run Job_Z.sbatch and wait for all ${N_REP} array tasks." >&2
-    exit 1
-  fi
 done
+if [ ! -f "$DATA_DIR/Z_true.pt" ]; then
+  echo "Missing $DATA_DIR/Z_true.pt. Run Job_Z.sbatch once before estimation." >&2
+  exit 1
+fi
 python3 validate_sim_config.py --params "$BASE/params.yaml" --data "$DATA_DIR/offline_data_0.pt"
 N_REP_ENV="$N_REP" DATA_DIR_ENV="$DATA_DIR" python3 - <<'PY'
 import os
@@ -93,21 +93,14 @@ import torch
 
 n_rep = int(os.environ["N_REP_ENV"])
 data_dir = Path(os.environ["DATA_DIR_ENV"])
-for j in range(n_rep):
-    z_path = data_dir / f"Z_true_{j}.pt"
-    blob = torch.load(z_path, map_location="cpu")
-    meta = blob.get("metadata", {})
-    offline_id = int(meta.get("offline_data_id", -999999))
-    if offline_id != j:
-        raise SystemExit(
-            f"{z_path} has metadata offline_data_id={offline_id}, expected {j}. "
-            "This usually means stale true-Z files are mixed with the current run."
-        )
-    if "s_star" not in meta or "a_star" not in meta:
-        raise SystemExit(f"{z_path} is missing benchmark s_star/a_star metadata.")
-print(f"Benchmark true-Z metadata OK for {n_rep} replicates.")
+z_path = data_dir / "Z_true.pt"
+blob = torch.load(z_path, map_location="cpu")
+meta = blob.get("metadata", {})
+if "s_star" not in meta or "a_star" not in meta:
+    raise SystemExit(f"{z_path} is missing benchmark s_star/a_star metadata.")
+print(f"Fixed benchmark true-Z metadata OK: point_source={meta.get('point_source', 'unknown')}.")
 PY
-echo "Found ${N_REP} offline datasets and benchmark true-Z files."
+echo "Found ${N_REP} offline datasets and one fixed benchmark true-Z file."
 
 mkdir -p "$RUN" "$RUN/logs"
 

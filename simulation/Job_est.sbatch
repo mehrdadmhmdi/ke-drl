@@ -2,15 +2,15 @@
 #SBATCH --account=bfez-delta-gpu
 #SBATCH --job-name=UL_est
 #SBATCH --output=logs/est_%A_%a.log
-#SBATCH --time=04:00:00
+#SBATCH --time=12:00:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
-#SBATCH --mem=8g
+#SBATCH --mem=16g
 #SBATCH --cpus-per-task=4
 #SBATCH --partition=gpuA40x4
 #SBATCH --mail-type=NONE
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-49
+#SBATCH --array=0-99
 
 cd ${OUTDIR:-${BASE:-$PWD}}
 echo "Running in folder: $(pwd)"

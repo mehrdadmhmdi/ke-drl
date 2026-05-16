@@ -115,14 +115,8 @@ done
 unset SLURM_ARRAY_TASK_ID
 unset OFFLINE_DATA_ID
 
-echo "===== SMOKE 2/4: one Monte Carlo benchmark true Z per replicate ====="
-for ((r=0; r<N_REP; r++)); do
-  export SLURM_ARRAY_TASK_ID="$r"
-  export OFFLINE_DATA_ID="$r"
-  python3 main_MonteCarloZ.py
-done
-unset SLURM_ARRAY_TASK_ID
-unset OFFLINE_DATA_ID
+echo "===== SMOKE 2/4: one fixed Monte Carlo benchmark true Z ====="
+python3 main_MonteCarloZ.py
 
 echo "===== SMOKE 3/4: one global B fit per replicate ====="
 for ((r=0; r<N_REP; r++)); do
