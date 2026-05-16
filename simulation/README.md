@@ -187,9 +187,28 @@ jid_tune=$(sbatch --parsable Job_tune_global.sbatch)
 jid_sum=$(sbatch --parsable --dependency=afterok:${jid_tune} Job_tune_summary.sbatch)
 ```
 
-Each tuning array task uses `params_tune.yaml`, applies one override from
-`tuning_grid.yaml`, and runs the same fixed-benchmark architecture on 5 smaller
-replicates. The summary job writes:
+Each tuning array task uses `params_tune.yaml`, applies one one-factor-at-a-time
+override from `tuning_grid.yaml`, and runs the same fixed-benchmark architecture
+on 5 tuning replicates. The current base tuning design is:
+
+```yaml
+n_ids: 1000
+n_timepoints: 3
+Z_sim: {n_ids: 2000, n_timepoints: 300}
+target_set.num_points: 100
+num_grid_points: 200
+optimization.num_steps: 400
+optimization.target_batch_size: 30
+lambda_reg: 0.001
+lambda_B: 0.001
+optimization.mass_anchor_lambda: 1.0
+kernel: {nu: 3.5, length_scale: 1.0, sigma: 0.7}
+```
+
+The tuning grid currently has 17 array tasks: the base setting plus single-factor
+changes over `lambda_reg`, `lambda_B`, kernel length scale, kernel sigma, kernel
+smoothness `nu`, hull expansion, mass anchor, negativity penalty, and grid size.
+The summary job writes:
 
 ```text
 runs/tuning_summary.csv
@@ -217,13 +236,13 @@ Good first knobs:
 
 - Increase `lambda_B` if `B_hat` looks unstable across replicates.
 - Increase `lambda_reg` if Gamma/importance-weight behavior is noisy.
-- Compare `optimization.mass_anchor_lambda` values around `0.3`, `1.0`, `3.0`,
-  and `10.0` if the estimated embedding mass is too small or too rigid.
+- Compare `optimization.mass_anchor_lambda` values around `0.3`, `1.0`, and
+  `3.0` if the estimated embedding mass is too small or too rigid.
 - Compare a mild `optimization.negativity_penalty_lambda` such as `0.1` if the
   fitted benchmark weights are too negative.
 - Compare `kernel.length_scale` values around `0.7`, `1.0`, and `1.5`.
-- Increase `num_grid_points` only after the small run is stable.
-- Increase `n_ids` and `Z_sim.n_ids` when the estimator is stable but noisy.
+- Compare `num_grid_points` values `200` and `400` only after the smaller grid is
+  stable.
 
 ## Production Run
 

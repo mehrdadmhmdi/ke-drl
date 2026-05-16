@@ -2,15 +2,15 @@
 #SBATCH --account=bfez-delta-gpu
 #SBATCH --job-name=KEDRL_TUNE
 #SBATCH --output=logs/tune_%A_%a.log
-#SBATCH --time=08:00:00
+#SBATCH --time=12:00:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
-#SBATCH --mem=16g
+#SBATCH --mem=32g
 #SBATCH --cpus-per-task=4
 #SBATCH --partition=gpuA40x4-preempt
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-12
+#SBATCH --array=0-16
 
 echo "Job ID:    ${SLURM_JOB_ID}"
 echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
