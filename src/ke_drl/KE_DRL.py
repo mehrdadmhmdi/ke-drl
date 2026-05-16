@@ -86,7 +86,7 @@ def KE_DRL(
     B_conv: bool = False,
     Sum_one_W: bool = False,
     NonNeg_W: bool = False,
-    mass_anchor_lambda: float = 0.0,
+    mass_anchor_lambda: float = 1.0,
     target_mass: float = 1.0,
     negativity_penalty_lambda: float = 0.0,
     max_B_norm: float | None = None,
@@ -97,7 +97,9 @@ def KE_DRL(
     The returned coefficient matrix B_hat has shape (N, m) and defines the
     conditional embedding weights for any query x through B_hat.T @ k_X(x).
     The `s_star`/`a_star` inputs are interpreted as the target-point set
-    X_star used to fit the global objective.
+    X_star used to fit the global objective. By default the finite-grid
+    coefficient mass is anchored at one, matching the non-degeneracy penalty in
+    the revised global-B objective.
     """
     t0 = time.time()
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -146,6 +148,11 @@ def KE_DRL(
         print("Estimating the global KE-DRL mean embedding")
         print(f"Data dims: N={s0.shape[0]}, L={s_star.shape[0]}, Ds={Ds}, Da={Da}, Dr={Dr}")
         print(f"lambda_Gamma={lambda_reg}, lambda_B={lambda_B}")
+        if mass_anchor_lambda <= 0.0:
+            print(
+                "Warning: mass_anchor_lambda <= 0 leaves the Bellman objective "
+                "homogeneous, so B=0 may be a degenerate minimizer."
+            )
 
     s_a = torch.cat([s0, a0], dim=1)
     s_a_plus = torch.cat([s1, a1], dim=1)

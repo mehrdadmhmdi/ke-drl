@@ -47,7 +47,7 @@ def estimate_embedding(
     use_low_rank: bool = False, rank_for_low_rank: Optional[int] = None,
     B_positive: bool = False, fixed_point_constraint: bool = False, exact_projection: bool = False,
     ortho_lambda: float = 0.0, B_conv: bool = False, Sum_one_W: bool = False, NonNeg_W: bool = False,
-    mass_anchor_lambda: float = 0.0, target_mass: float = 1.0,
+    mass_anchor_lambda: float = 1.0, target_mass: float = 1.0,
     negativity_penalty_lambda: float = 0.0,
     max_B_norm: Optional[float] = None,
     B_ridge_penalty: bool = False,

@@ -15,7 +15,8 @@ class RKDRL_Optimizer:
         u_l^T K_Z u_l - 2 u_l^T H_l v_l + v_l^T G_l v_l,
 
     where u_l = B^T k_l and v_l = B^T Phi_l, plus the state-action RKHS
-    ridge lambda_B tr(B^T K_X B).
+    ridge lambda_B tr(B^T K_X B). The finite-grid mass anchor is enabled by
+    default to avoid the homogeneous zero-embedding solution.
     """
 
     def __init__(self, device=None, dtype=torch.float64):
@@ -180,7 +181,7 @@ class RKDRL_Optimizer:
             B_conv: bool = False,
             Sum_one_W: bool = False,
             NonNeg_W: bool = False,
-            mass_anchor_lambda: float = 0.0,
+            mass_anchor_lambda: float = 1.0,
             target_mass: float = 1.0,
             negativity_penalty_lambda: float = 0.0,
             max_B_norm: Optional[float] = None,
