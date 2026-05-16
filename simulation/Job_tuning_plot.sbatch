@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=bfez-delta-gpu
-#SBATCH --partition=gpuA40x4
+#SBATCH --partition=gpuA40x4-preempt
 #SBATCH --job-name=UL_PLOTS
 #SBATCH --output=logs/data_%j.log
 #SBATCH --error=logs/submit_plots_%j.err

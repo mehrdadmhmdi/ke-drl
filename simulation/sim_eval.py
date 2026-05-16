@@ -16,6 +16,26 @@ bootstrap_kedrl()
 from ke_drl.matern_kernel import matern_kernel
 
 
+def _configure_times_fonts(plt) -> None:
+    plt.rcParams.update(
+        {
+            "font.family": "serif",
+            "font.serif": [
+                "Times New Roman",
+                "Times",
+                "Nimbus Roman",
+                "Nimbus Roman No9 L",
+                "Liberation Serif",
+                "DejaVu Serif",
+            ],
+            "mathtext.fontset": "stix",
+            "axes.unicode_minus": False,
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+        }
+    )
+
+
 def mean_embedding_true(
     Z_grid: torch.Tensor,
     Z_true: torch.Tensor,
@@ -242,6 +262,7 @@ def plot_mu_summary(
 
         matplotlib.use("Agg", force=True)
         import matplotlib.pyplot as plt
+        _configure_times_fonts(plt)
     except ModuleNotFoundError as exc:
         print(f"Plotting skipped because matplotlib is unavailable: {exc}")
         return
@@ -386,13 +407,17 @@ def _plot_four_panel_summary(
             "RMSE": np.sqrt(np.mean(diff * diff, axis=1)),
         }
     )
-    if metrics_df is not None and "risk_bellman_final" in metrics_df.columns:
+    if metrics_df is not None and "benchmark_embedding_risk" in metrics_df.columns:
         risk_lookup = metrics_df.assign(run_id=metrics_df["run_id"].astype(str)).set_index("run_id")
         values = []
         for rid in run_ids:
-            values.append(float(risk_lookup.loc[str(rid), "risk_bellman_final"]) if str(rid) in risk_lookup.index else np.nan)
+            values.append(
+                float(risk_lookup.loc[str(rid), "benchmark_embedding_risk"])
+                if str(rid) in risk_lookup.index
+                else np.nan
+            )
         if np.isfinite(values).any():
-            per_run["Bellman risk"] = np.asarray(values, dtype=float)
+            per_run["Embedding test risk"] = np.asarray(values, dtype=float)
     ax = axs[1, 0]
     ax.boxplot([per_run[c].to_numpy() for c in per_run.columns], labels=list(per_run.columns), showmeans=True)
     ax.set_title("(c) Per-run Error Summaries")

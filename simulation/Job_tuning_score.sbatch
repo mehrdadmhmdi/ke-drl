@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=bfez-delta-gpu
-#SBATCH --partition=gpuA40x4
+#SBATCH --partition=gpuA40x4-preempt
 #SBATCH --job-name=UL_Score
 #SBATCH --output=logs/data_%A_%a.log
 #SBATCH --time=00:20:00

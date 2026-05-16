@@ -271,7 +271,7 @@ The four panels show:
 
 - Mean estimated embeddings across `D_i` against the fixed Monte Carlo truth.
 - Quantile calibration lines, one gray line per `D_i`, plus their mean line.
-- Per-replicate error summaries, including the final empirical Bellman risk
+- Per-replicate error summaries, including the benchmark embedding test risk
   when available.
 - ECDF of absolute mean-embedding error.
 
