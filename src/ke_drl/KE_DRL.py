@@ -65,9 +65,13 @@ def KE_DRL(
     weight_decay: float = 0.0,
     num_steps: int = 5000,
     target_batch_size: Optional[int] = None,
+    target_weights: Optional[torch.Tensor] = None,
     random_seed: Optional[int] = None,
     initial_scale: float = 1e-3,
     H_batch_size: int = 10,
+    eta_clip_min: float | None = 0.0,
+    eta_clip_max: float | None = None,
+    normalize_eta: bool = False,
     device: str | torch.device | None = None,
     dtype: torch.dtype = torch.float64,
     verbose: bool = True,
@@ -84,6 +88,8 @@ def KE_DRL(
     NonNeg_W: bool = False,
     mass_anchor_lambda: float = 0.0,
     target_mass: float = 1.0,
+    negativity_penalty_lambda: float = 0.0,
+    max_B_norm: float | None = None,
     B_ridge_penalty: bool = False,
 ):
     """Fit the global KE-DRL mean-embedding map.
@@ -151,13 +157,30 @@ def KE_DRL(
         **ratio_params,
     )
     alpha = ulsif.fit(s1, a1, target_p_choice, target_p_params, plot=False)
-    eta_plus = ulsif.predict(s1, a1).to(dev, dtype).reshape(-1, 1).clamp_min(0.0)
+    eta_plus_raw = ulsif.predict(s1, a1).to(dev, dtype).reshape(-1, 1)
+    eta_plus = eta_plus_raw
+    if eta_clip_min is not None:
+        eta_plus = eta_plus.clamp_min(float(eta_clip_min))
+    if eta_clip_max is not None:
+        eta_plus = eta_plus.clamp_max(float(eta_clip_max))
+    if normalize_eta:
+        eta_mean = eta_plus.mean()
+        if torch.isfinite(eta_mean) and eta_mean > torch.finfo(dtype).eps:
+            eta_plus = eta_plus / eta_mean
     if verbose:
         try:
             ess_train = ulsif.compute_ess(s1, a1)
             print(f"ESS for eta_plus: {ess_train:.1f} / {s1.shape[0]}")
         except Exception:
             print("ESS unavailable.")
+        with torch.no_grad():
+            raw = eta_plus_raw.reshape(-1)
+            stable = eta_plus.reshape(-1)
+            print(
+                "eta_plus diagnostics: "
+                f"raw_mean={raw.mean().item():.3g}, raw_min={raw.min().item():.3g}, raw_max={raw.max().item():.3g}; "
+                f"used_mean={stable.mean().item():.3g}, used_min={stable.min().item():.3g}, used_max={stable.max().item():.3g}"
+            )
 
     Z = ZGrid.Z_kmeans(r, n_clusters=int(num_grid_points), constant_factor=float(hull_expand_factor))
     if discrete_dims is not None:
@@ -200,6 +223,7 @@ def KE_DRL(
         num_steps=int(num_steps),
         random_seed=random_seed,
         initial_scale=initial_scale,
+        target_weights=target_weights,
         FP_penalty_lambda=FP_penalty_lambda,
         use_low_rank=use_low_rank,
         rank=rank_for_low_rank,
@@ -212,6 +236,8 @@ def KE_DRL(
         NonNeg_W=NonNeg_W,
         mass_anchor_lambda=mass_anchor_lambda,
         target_mass=target_mass,
+        negativity_penalty_lambda=negativity_penalty_lambda,
+        max_B_norm=max_B_norm,
         B_ridge_penalty=B_ridge_penalty,
         verbose=verbose,
     )
@@ -233,7 +259,9 @@ def KE_DRL(
         "H": H_stack,
         "G": G_stack,
         "eta_plus": eta_plus,
+        "eta_plus_raw": eta_plus_raw,
         "alpha": torch.as_tensor(alpha, dtype=dtype, device=dev),
+        "optimizer_diagnostics": optimizer.last_diagnostics,
         "x_kernel_params": x_params,
         "z_kernel_params": z_params,
         "ratio_kernel_params": ratio_params,

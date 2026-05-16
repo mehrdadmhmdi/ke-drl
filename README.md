@@ -1,63 +1,80 @@
 # ke-drl
-Offline Multi-Dimensional Distributional RL - RKHS Mean Embedding Estimation
+
+Offline multi-dimensional distributional reinforcement learning via RKHS
+kernel mean embeddings.
 
 ## Installation
-### Works on Linux/macOS/Windows (requires GPU, Python ≥3.9, git, and pip). 
-```python
-# install directly from GitHub
-python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"
 
+Requires Python 3.10 or newer.
+
+```bash
+python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"
 ```
 
-### Developer install (locally editable)
+For local development:
 
-```python
-# clone the repo
+```bash
 git clone https://github.com/mehrdadmhmdi/ke-drl.git
 cd ke-drl
-
-# install in editable mode
 python -m pip install -e .
 ```
 
-<h3>The KE-DRL Algorithm</h3>
+## Estimator
 
-<hr>
+The package fits one policy-specific global coefficient matrix `B` for a fixed
+target policy. For historical state-action inputs `X_train` and a return grid
+`Z_grid`, the fitted conditional return embedding at a query input `x` is
 
-<ol>
-<li>
-<b>Input:</b> Historical data 
-<code>𝒟 = {hᵢ}ᵢ₌₁ᴺ = {{(sᵢₜ, aᵢₜ, rᵢₜ)}ₜ₌₁ᵀⁱ}ᵢ₌₁ᴺ</code>, 
-regularization <code>λ_reg</code>, discount factor <code>γ</code>, 
-Matérn parameters <code>(ν, ℓ)</code>, target policy <code>π</code>, 
-evaluation pair <code>(s*, a*)</code>, grid <code>Z^π</code>, 
-initialization <code>B_init</code>, fixed-point penalty <code>λ_FP</code>, 
-mass-anchor penalty <code>λ_mass</code>.
-</li>
+```text
+mu_hat(x) = sum_i omega_i(x; B) k_Z(z_i, .),
+omega(x; B) = B.T k_X(X_train, x).
+```
 
-<li><b>Pre-computations:</b></li>
-<ul>
-<li>Compute Gram matrices <code>K̃_(s,a)</code>, <code>K̃_(s′,a′)</code>, <code>K_Zπ</code>.</li>
-<li>Compute kernel vector <code>k̃_(s,a)</code> using fixed <code>(s*, a*)</code>.</li>
-<li>Compute importance weights <code>α̂</code>.</li>
-</ul>
+The target-point set `X_star` is used only to choose where the Bellman residual
+is enforced during training. It is not a separate optimization for each
+scientific evaluation point.
 
-<li><b>Auxiliary Operators:</b></li>
-<ul>
-<li><code>Γ_(s,a) ← Γ(K̃_(s,a), k̃_(s,a), λ_reg)</code></li>
-<li><code>G_(s,a) ← G(Γ_(s,a), Z^π, γ, r, ν, ℓ)</code></li>
-<li><code>H_(s,a) ← H(Γ_(s,a), Z^π, γ, r, ν, ℓ)</code></li>
-<li><code>Φ_(s,a) ← Φ(K̃_(s′,a′), Γ_(s,a), α̂)</code></li>
-</ul>
+The implemented global objective follows `rz_new_version.tex`:
 
-<li><b>Optimization Step:</b></li>
-<ul>
-<li>
-<code>B_opt ← Optimize(B_init, k̃_(s,a), G_(s,a), H_(s,a), Φ_(s,a), λ_FP, λ_mass)</code>
-</li>
-</ul>
+```text
+mean_l [
+  u_l.T K_Z u_l - 2 u_l.T H_l v_l + v_l.T G_l v_l
+]
++ lambda_B tr(B.T K_X B)
++ lambda_mass mean_l (1.T u_l - target_mass)^2
++ lambda_neg mean_l ||negative_part(u_l)||_2^2
+```
 
-<li><b>Return:</b> <code>B_opt</code></li>
-</ol>
+where `u_l = B.T k_l` and `v_l = B.T Phi_l`. The mass anchor is important:
+without it, the Bellman residual and RKHS ridge are homogeneous in `B`, so
+`B = 0` can become an artificial minimizer. The negativity penalty is optional.
 
-<hr>
+## Main Entry Point
+
+```python
+from ke_drl import estimate_embedding
+
+B_hat, history_obj, history_be, pre = estimate_embedding(
+    s0=s0,
+    s1=s1,
+    a0=a0,
+    a1=a1,
+    s_star=s_star,
+    a_star=a_star,
+    r=r0,
+    target_p_choice="logistic",
+    target_p_params={"logistic": {...}},
+    nu=3.5,
+    length_scale=1.0,
+    sigma=0.7,
+    gamma_val=0.8,
+    lambda_reg=1e-3,
+    lambda_B=1e-3,
+    mass_anchor_lambda=1.0,
+    negativity_penalty_lambda=0.0,
+)
+```
+
+`pre` contains the fitted grid, state-action Gram matrices, stacked
+target-point operators, stabilized continuation density ratios, and optimizer
+diagnostics.

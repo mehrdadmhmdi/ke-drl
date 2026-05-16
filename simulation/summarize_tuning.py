@@ -43,6 +43,7 @@ def main() -> None:
         "risk_bellman_final_mean",
         "target_mass_mean_mean",
         "target_mass_rmse_to_target_mean",
+        "target_neg_frac_mean_mean",
         "run_dir",
     ]
     cols = [c for c in cols if c in out.columns]

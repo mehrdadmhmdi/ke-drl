@@ -21,6 +21,7 @@ class RKDRL_Optimizer:
     def __init__(self, device=None, dtype=torch.float64):
         self.dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self.dtype = dtype
+        self.last_diagnostics: dict[str, list[float]] = {}
 
     @staticmethod
     def _ensure_target_matrix(name: str, value: torch.Tensor) -> torch.Tensor:
@@ -72,11 +73,83 @@ class RKDRL_Optimizer:
         return term1 + term2 + term3
 
     @staticmethod
-    def _mass_anchor_penalty(B, k_batch, target_mass: float) -> torch.Tensor:
+    def _weighted_average(values: torch.Tensor, weights: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if weights is None:
+            return values.mean()
+        return torch.sum(values * weights)
+
+    @staticmethod
+    def _normal_target_weights(
+        target_weights: Optional[torch.Tensor],
+        L: int,
+        *,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> Optional[torch.Tensor]:
+        if target_weights is None:
+            return None
+        w = target_weights.to(device=device, dtype=dtype).reshape(-1)
+        if w.numel() != L:
+            raise ValueError(f"target_weights must have length {L}, got {w.numel()}.")
+        if not torch.isfinite(w).all():
+            raise ValueError("target_weights must be finite.")
+        if torch.any(w < 0):
+            raise ValueError("target_weights must be nonnegative.")
+        total = w.sum()
+        if total <= 0:
+            raise ValueError("target_weights must have positive sum.")
+        return w / total
+
+    @staticmethod
+    def _select_weights(weights: Optional[torch.Tensor], idx: torch.Tensor) -> Optional[torch.Tensor]:
+        if weights is None:
+            return None
+        w = weights.index_select(0, idx)
+        total = w.sum()
+        if total <= 0:
+            return torch.full_like(w, 1.0 / float(w.numel()))
+        return w / total
+
+    @staticmethod
+    def _coefficient_vectors(B, k_batch) -> torch.Tensor:
+        return k_batch.transpose(0, 1) @ B
+
+    @classmethod
+    def _mass_anchor_penalty(
+        cls,
+        B,
+        k_batch,
+        target_mass: float,
+        weights: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """Penalize target-point coefficient masses away from a probability mass."""
-        u = k_batch.transpose(0, 1) @ B
+        u = cls._coefficient_vectors(B, k_batch)
         mass = u.sum(dim=1)
-        return torch.mean((mass - float(target_mass)) ** 2)
+        return cls._weighted_average((mass - float(target_mass)) ** 2, weights)
+
+    @classmethod
+    def _negativity_penalty(
+        cls,
+        B,
+        k_batch,
+        weights: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Optional penalty for negative finite-grid coefficients."""
+        u = cls._coefficient_vectors(B, k_batch)
+        neg_sq = torch.clamp(-u, min=0.0).pow(2).sum(dim=1)
+        return cls._weighted_average(neg_sq, weights)
+
+    @staticmethod
+    def _rkhs_ridge(B, K_X) -> torch.Tensor:
+        return torch.sum(B * (K_X @ B))
+
+    @staticmethod
+    def _project_frobenius_ball_(B: torch.Tensor, max_norm: Optional[float]) -> None:
+        if max_norm is None or max_norm <= 0:
+            return
+        norm = torch.linalg.vector_norm(B)
+        if torch.isfinite(norm) and norm > float(max_norm):
+            B.mul_(float(max_norm) / (norm + torch.finfo(B.dtype).eps))
 
     def optimize(
             self,
@@ -95,6 +168,7 @@ class RKDRL_Optimizer:
             num_steps: int = 2000,
             random_seed: Optional[int] = None,
             initial_scale: float = 1e-3,
+            target_weights: Optional[torch.Tensor] = None,
             # Legacy keyword arguments kept for package/API compatibility.
             FP_penalty_lambda: float = 0.0,
             use_low_rank: bool = False,
@@ -108,6 +182,8 @@ class RKDRL_Optimizer:
             NonNeg_W: bool = False,
             mass_anchor_lambda: float = 0.0,
             target_mass: float = 1.0,
+            negativity_penalty_lambda: float = 0.0,
+            max_B_norm: Optional[float] = None,
             B_ridge_penalty: bool = False,
             verbose: bool = True,
     ) -> tuple[torch.Tensor, list[float], list[float]]:
@@ -134,6 +210,7 @@ class RKDRL_Optimizer:
             K_X = K_X.to(dev, dtype)
         if K_X.shape != (N, N):
             raise ValueError(f"K_X must have shape {(N, N)}, got {tuple(K_X.shape)}.")
+        weights_full = self._normal_target_weights(target_weights, L, device=dev, dtype=dtype)
 
         if initial_B is None:
             B0 = self.initial_B(N, m, scale=initial_scale, seed=random_seed)
@@ -152,11 +229,17 @@ class RKDRL_Optimizer:
                 "fixed_point, projection, simplex/nonnegativity, low-rank, and ad hoc ridge. "
                 "The mass anchor is implemented separately when mass_anchor_lambda > 0."
             )
+        if verbose and negativity_penalty_lambda > 0.0:
+            print(f"Using finite-grid negativity penalty: lambda_neg={float(negativity_penalty_lambda):.3g}")
+        if verbose and max_B_norm is not None and max_B_norm > 0:
+            print(f"Projecting B onto Frobenius ball with radius {float(max_B_norm):.3g}")
 
         if target_batch_size is None or target_batch_size <= 0 or target_batch_size > L:
             target_batch_size = L
 
         B = torch.nn.Parameter(B0.clone())
+        with torch.no_grad():
+            self._project_frobenius_ball_(B, max_B_norm)
         opt = optim.AdamW([B], lr=lr, weight_decay=weight_decay)
         sched = optim.lr_scheduler.ReduceLROnPlateau(
             opt, mode="min", factor=0.5, patience=20, threshold=1e-4, min_lr=1e-8
@@ -164,6 +247,14 @@ class RKDRL_Optimizer:
 
         history_obj: list[float] = []
         history_be: list[float] = []
+        history_components: dict[str, list[float]] = {
+            "objective": [],
+            "bellman": [],
+            "rkhs_ridge": [],
+            "mass": [],
+            "negativity": [],
+            "B_norm": [],
+        }
         eps = torch.finfo(dtype).eps
 
         for step in range(1, int(num_steps) + 1):
@@ -172,6 +263,7 @@ class RKDRL_Optimizer:
                 idx = torch.arange(L, device=dev)
             else:
                 idx = torch.randperm(L, device=dev)[:target_batch_size]
+            weights_batch = self._select_weights(weights_full, idx)
 
             residuals = self._batch_residuals(
                 B,
@@ -181,45 +273,69 @@ class RKDRL_Optimizer:
                 H_stack.index_select(0, idx),
                 G_stack.index_select(0, idx),
             )
-            bellman_loss = residuals.mean()
-            ridge = float(lambda_B) * torch.trace(B.transpose(0, 1) @ K_X @ B)
+            bellman_loss = self._weighted_average(residuals, weights_batch)
+            ridge = float(lambda_B) * self._rkhs_ridge(B, K_X)
             mass_penalty = (
                 float(mass_anchor_lambda)
-                * self._mass_anchor_penalty(B, k_mat[:, idx], target_mass)
+                * self._mass_anchor_penalty(B, k_mat[:, idx], target_mass, weights_batch)
                 if mass_anchor_lambda > 0.0
                 else torch.zeros((), device=dev, dtype=dtype)
             )
-            loss = bellman_loss + ridge + mass_penalty
+            neg_penalty = (
+                float(negativity_penalty_lambda)
+                * self._negativity_penalty(B, k_mat[:, idx], weights_batch)
+                if negativity_penalty_lambda > 0.0
+                else torch.zeros((), device=dev, dtype=dtype)
+            )
+            loss = bellman_loss + ridge + mass_penalty + neg_penalty
 
             loss.backward()
             grad_norm = clip_grad_norm_([B], max_norm=1e2).item()
             opt.step()
+            with torch.no_grad():
+                self._project_frobenius_ball_(B, max_B_norm)
             sched.step(float(loss.detach().cpu()))
 
             with torch.no_grad():
                 full_residuals = self._batch_residuals(B, k_mat, phi_mat, K_Z, H_stack, G_stack)
-                full_bellman = full_residuals.mean().clamp_min(eps)
-                full_loss = (
-                    full_bellman
-                    + float(lambda_B) * torch.trace(B.transpose(0, 1) @ K_X @ B).clamp_min(0.0)
-                    + (
-                        float(mass_anchor_lambda)
-                        * self._mass_anchor_penalty(B, k_mat, target_mass).clamp_min(0.0)
-                        if mass_anchor_lambda > 0.0
-                        else torch.zeros((), device=dev, dtype=dtype)
-                    )
-                ).clamp_min(eps)
+                full_bellman_raw = self._weighted_average(full_residuals, weights_full)
+                full_bellman = full_bellman_raw.clamp_min(eps)
+                full_ridge = float(lambda_B) * self._rkhs_ridge(B, K_X)
+                full_mass = (
+                    float(mass_anchor_lambda)
+                    * self._mass_anchor_penalty(B, k_mat, target_mass, weights_full)
+                    if mass_anchor_lambda > 0.0
+                    else torch.zeros((), device=dev, dtype=dtype)
+                )
+                full_neg = (
+                    float(negativity_penalty_lambda)
+                    * self._negativity_penalty(B, k_mat, weights_full)
+                    if negativity_penalty_lambda > 0.0
+                    else torch.zeros((), device=dev, dtype=dtype)
+                )
+                full_loss_raw = full_bellman_raw + full_ridge + full_mass + full_neg
+                full_loss = full_loss_raw.clamp_min(eps)
                 history_obj.append(math.log(float(full_loss.detach().cpu())))
                 history_be.append(math.log(float(torch.sqrt(full_bellman).detach().cpu())))
+                history_components["objective"].append(float(full_loss_raw.detach().cpu()))
+                history_components["bellman"].append(float(full_bellman_raw.detach().cpu()))
+                history_components["rkhs_ridge"].append(float(full_ridge.detach().cpu()))
+                history_components["mass"].append(float(full_mass.detach().cpu()))
+                history_components["negativity"].append(float(full_neg.detach().cpu()))
+                history_components["B_norm"].append(float(torch.linalg.vector_norm(B).detach().cpu()))
 
             if verbose and (step == 1 or step % max(1, int(num_steps) // 10) == 0):
                 print(
-                    f"Iter {step}/{num_steps} | loss={history_obj[-1]:.3e} "
-                    f"| Bellman={history_be[-1]:.3e} | grad={grad_norm:.2e}"
+                    f"Iter {step}/{num_steps} | log_obj={history_obj[-1]:.3e} "
+                    f"| log_Bellman_root={history_be[-1]:.3e} | "
+                    f"mass={history_components['mass'][-1]:.2e} "
+                    f"| neg={history_components['negativity'][-1]:.2e} "
+                    f"| grad={grad_norm:.2e}"
                 )
             if grad_norm < 1e-8:
                 if verbose:
                     print(f"Converged at step {step}: grad={grad_norm:.2e}")
                 break
 
+        self.last_diagnostics = history_components
         return B.detach().cpu(), history_obj, history_be

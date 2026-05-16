@@ -297,6 +297,14 @@ FP_penalty_lambda = as_float(opt.get("FP_penalty_lambda", 0.0))
 ortho_lambda = as_float(opt.get("ortho_lambda", 0.0))
 mass_anchor_lambda = as_float(opt.get("mass_anchor_lambda", 0.0))
 target_mass = as_float(opt.get("target_mass", 1.0))
+negativity_penalty_lambda = as_float(opt.get("negativity_penalty_lambda", opt.get("lambda_neg", 0.0)))
+max_B_norm = opt.get("max_B_norm")
+max_B_norm = None if max_B_norm in (None, "None", "none", 0, "0") else as_float(max_B_norm)
+eta_clip_min = opt.get("eta_clip_min", 0.0)
+eta_clip_min = None if eta_clip_min in (None, "None", "none") else as_float(eta_clip_min)
+eta_clip_max = opt.get("eta_clip_max")
+eta_clip_max = None if eta_clip_max in (None, "None", "none") else as_float(eta_clip_max)
+normalize_eta = as_bool(opt.get("normalize_eta", False))
 
 print("Data and parameters loaded.")
 print(f"offline path: {df_path}")
@@ -309,6 +317,11 @@ print(f"target policy: {target_policy}")
 print(f"behavior policy: {beh_policy}")
 print(f"lambda_Gamma={lambda_reg}, lambda_B={lambda_B}, d_r_method={d_r_method}")
 print(f"mass_anchor_lambda={mass_anchor_lambda}, target_mass={target_mass}")
+print(
+    "optimizer stabilizers: "
+    f"lambda_neg={negativity_penalty_lambda}, max_B_norm={max_B_norm}, "
+    f"eta_clip_min={eta_clip_min}, eta_clip_max={eta_clip_max}, normalize_eta={normalize_eta}"
+)
 
 B_hat, history_obj, history_be, pre = KE_DRL(
     s0=s0,
@@ -334,6 +347,9 @@ B_hat, history_obj, history_be, pre = KE_DRL(
     target_batch_size=target_batch_size,
     random_seed=seed,
     initial_scale=initial_scale,
+    eta_clip_min=eta_clip_min,
+    eta_clip_max=eta_clip_max,
+    normalize_eta=normalize_eta,
     FP_penalty_lambda=FP_penalty_lambda,
     use_low_rank=use_low_rank,
     rank_for_low_rank=None,
@@ -346,6 +362,8 @@ B_hat, history_obj, history_be, pre = KE_DRL(
     NonNeg_W=NonNeg_W,
     mass_anchor_lambda=mass_anchor_lambda,
     target_mass=target_mass,
+    negativity_penalty_lambda=negativity_penalty_lambda,
+    max_B_norm=max_B_norm,
     B_ridge_penalty=B_ridge_penalty,
     H_batch_size=H_batch_size,
     device=None,
@@ -360,12 +378,16 @@ with torch.no_grad():
     k_star_fit = pre["k_star"].to(device=B_hat.device, dtype=B_hat.dtype)
     target_beta = k_star_fit.transpose(0, 1) @ B_hat
     target_masses = target_beta.sum(dim=1).detach().cpu()
+    target_neg_frac = (target_beta < 0).double().mean(dim=1).detach().cpu()
     target_mass_diag = {
         "target_mass_mean": float(target_masses.mean()),
         "target_mass_min": float(target_masses.min()),
         "target_mass_max": float(target_masses.max()),
         "target_mass_sd": float(target_masses.std(unbiased=True)) if target_masses.numel() > 1 else 0.0,
         "target_mass_rmse_to_target": float(torch.sqrt(torch.mean((target_masses - target_mass) ** 2))),
+        "target_beta_min": float(target_beta.min().detach().cpu()),
+        "target_beta_max": float(target_beta.max().detach().cpu()),
+        "target_neg_frac_mean": float(target_neg_frac.mean()),
     }
 print("Global-loss target mass diagnostics:", target_mass_diag)
 
@@ -415,6 +437,11 @@ config = {
     "NonNeg_W": NonNeg_W,
     "mass_anchor_lambda": mass_anchor_lambda,
     "target_mass": target_mass,
+    "negativity_penalty_lambda": negativity_penalty_lambda,
+    "max_B_norm": max_B_norm,
+    "eta_clip_min": eta_clip_min,
+    "eta_clip_max": eta_clip_max,
+    "normalize_eta": normalize_eta,
     "num_steps": num_steps,
     "nu": nu,
     "length_scale": length_scale,

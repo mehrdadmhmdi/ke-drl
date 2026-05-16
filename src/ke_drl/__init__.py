@@ -30,6 +30,7 @@ from .api import (
 )
 
 __all__ = [
+    "KE_DRL",
     "estimate_embedding",
     "build_plot_config",
     "plot_bellman_error",

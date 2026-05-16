@@ -86,6 +86,12 @@ Other important tuning parameters are:
   zero mass anchoring, the Bellman-only quadratic objective can collapse toward
   a near-zero embedding. Estimation logs and `metrics/risk_metrics_*.csv`
   report `target_mass_*` diagnostics; these should be close to 1 after fitting.
+- `optimization.negativity_penalty_lambda`: optional penalty on negative
+  finite-grid coefficients. Leave at `0.0` for a signed RKHS expansion; tune it
+  upward only if the grid coefficients need a more probability-vector-like
+  interpretation.
+- `optimization.eta_clip_*` and `optimization.normalize_eta`: stabilize the
+  uLSIF continuation density ratios used in `Phi`.
 - `kernel.length_scale`, `kernel.sigma`, `kernel.nu`: Matern kernel settings.
 - `optimization.lr`, `optimization.weight_decay`, `optimization.num_steps`.
 - `optimization.target_batch_size`: number of target points used per optimizer
@@ -186,6 +192,8 @@ Good first knobs:
 - Increase `lambda_reg` if Gamma/importance-weight behavior is noisy.
 - Compare `optimization.mass_anchor_lambda` values around `0.3`, `1.0`, `3.0`,
   and `10.0` if the estimated embedding mass is too small or too rigid.
+- Compare a mild `optimization.negativity_penalty_lambda` such as `0.1` if the
+  fitted benchmark weights are too negative.
 - Compare `kernel.length_scale` values around `0.7`, `1.0`, and `1.5`.
 - Increase `num_grid_points` only after the small run is stable.
 - Increase `n_ids` and `Z_sim.n_ids` when the estimator is stable but noisy.
