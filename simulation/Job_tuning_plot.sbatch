@@ -45,6 +45,10 @@ fi
 if [ -d "$KEDRL_SRC" ]; then
   export KEDRL_SRC
   export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"
+  echo "KEDRL_SRC: $KEDRL_SRC"
+else
+  echo "ERROR: KEDRL_SRC=$KEDRL_SRC not found. Run from the cloned repo so ../src exists, or export KEDRL_SRC=/path/to/kedrl_git/src." >&2
+  exit 1
 fi
 :> "$BASE/tunning/agg_ids.txt"
 :> "$BASE/tunning/agg_map.tsv"

@@ -10,7 +10,7 @@
 #SBATCH --partition=gpuA40x4
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-10
+#SBATCH --array=0-11
 
 echo "Job ID:    ${SLURM_JOB_ID}"
 echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
@@ -47,8 +47,10 @@ fi
 if [ -n "${KEDRL_SRC:-}" ] && [ -d "$KEDRL_SRC" ]; then
   export KEDRL_SRC
   export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"
+  echo "KEDRL_SRC: $KEDRL_SRC"
 else
-  echo "Warning: KEDRL_SRC=${KEDRL_SRC:-unset} not found; relying on installed ke_drl package." >&2
+  echo "ERROR: KEDRL_SRC=${KEDRL_SRC:-unset} not found. Run from the cloned repo so ../src exists, or export KEDRL_SRC=/path/to/kedrl_git/src." >&2
+  exit 1
 fi
 
 export VISPY_GL_BACKEND=egl

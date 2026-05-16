@@ -49,8 +49,12 @@ if [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../src" ]; then
 elif [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../kedrl_git/src" ]; then
   export KEDRL_SRC="$PWD/../kedrl_git/src"
 fi
-if [ -n "${KEDRL_SRC:-}" ]; then
+if [ -n "${KEDRL_SRC:-}" ] && [ -d "$KEDRL_SRC" ]; then
   export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"
+  echo "KEDRL_SRC: $KEDRL_SRC"
+else
+  echo "ERROR: KEDRL_SRC is not set. Run from the cloned repo so ../src exists, or export KEDRL_SRC=/path/to/kedrl_git/src." >&2
+  exit 1
 fi
 
 python3 mu_plot.py

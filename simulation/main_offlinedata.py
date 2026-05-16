@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 import yaml
 
-from sim_utils import seed_from_array, synthetic_data_generation_torch
+from sim_utils import kedrl_import_info, seed_from_array, synthetic_data_generation_torch
 
 
 print("# =================================================== #")
@@ -19,6 +19,7 @@ job_id = os.environ.get("SLURM_JOB_ID")
 array_id = os.environ.get("SLURM_ARRAY_TASK_ID", "0")
 print(f"Slurm Job ID: {job_id}")
 print(f"Slurm Array ID: {array_id} -- used as the data replicate id")
+print(f"ke_drl import source: {kedrl_import_info()}")
 
 with open("./params.yaml", "r", encoding="utf-8") as f:
     P = yaml.safe_load(f)

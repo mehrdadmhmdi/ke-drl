@@ -7,6 +7,7 @@ from pathlib import Path
 
 import yaml
 
+from sim_utils import kedrl_import_info
 from sim_eval import export_metrics_tables, plot_mu_summary
 
 
@@ -19,6 +20,7 @@ job_id = os.environ.get("SLURM_JOB_ID")
 array_id = os.environ.get("SLURM_ARRAY_TASK_ID")
 print(f"Slurm Job ID: {job_id}")
 print(f"Slurm Array ID: {array_id}")
+print(f"ke_drl import source: {kedrl_import_info()}")
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--mu-dir", default="./mu")

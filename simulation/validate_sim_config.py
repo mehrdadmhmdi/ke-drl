@@ -7,7 +7,7 @@ from typing import Any
 import torch
 import yaml
 
-from sim_utils import clean_policy_params, sample_policy_actions
+from sim_utils import clean_policy_params, kedrl_import_info, sample_policy_actions
 
 
 REQUIRED = {
@@ -82,6 +82,8 @@ def main() -> None:
 
     with open(args.params, "r", encoding="utf-8") as f:
         P = yaml.safe_load(f)
+
+    print(f"ke_drl import source: {kedrl_import_info()}")
 
     state_dim = int(P["state_dim"])
     action_dim = int(P["action_dim"])

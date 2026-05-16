@@ -54,6 +54,11 @@ def aggregate_risk_metrics() -> dict[str, float]:
         "risk_bellman_min",
         "risk_log_obj_drop",
         "risk_log_bellman_root_drop",
+        "target_mass_mean",
+        "target_mass_min",
+        "target_mass_max",
+        "target_mass_sd",
+        "target_mass_rmse_to_target",
     ]:
         if col in df:
             out[f"{col}_mean"] = float(df[col].mean())
@@ -72,12 +77,14 @@ def write_result(combo_id: int, combo_name: str, overrides: dict[str, Any], elap
         + 0.02 * abs(float(cal["deming_slope"]) - 1.0)
     )
     score_risk = float(risk.get("risk_log_obj_final_mean", float("nan")))
+    score_mass = float(risk.get("target_mass_rmse_to_target_mean", float("nan")))
     row = {
         "combo_id": combo_id,
         "combo_name": combo_name,
         "score": score_true_z,
         "score_true_z": score_true_z,
         "score_risk": score_risk,
+        "score_mass": score_mass,
         "elapsed_sec": elapsed,
         "overrides_json": json.dumps(overrides, sort_keys=True),
         **agg,

@@ -9,11 +9,7 @@ from typing import Iterable
 import torch
 
 
-def bootstrap_kedrl() -> None:
-    """Make the sibling installable package importable in local and Slurm runs."""
-    if importlib.util.find_spec("ke_drl") is not None:
-        return
-
+def _kedrl_src_candidates() -> list[Path]:
     candidates: list[Path] = []
     env_src = os.environ.get("KEDRL_SRC")
     if env_src:
@@ -30,12 +26,41 @@ def bootstrap_kedrl() -> None:
                 base / ".." / ".." / "kedrl_git" / "src",
             ]
         )
+    return candidates
 
-    for cand in candidates:
+
+def bootstrap_kedrl() -> None:
+    """Prefer the checked-out package source over any installed ke_drl wheel."""
+    seen: set[str] = set()
+    for cand in _kedrl_src_candidates():
         src = cand.resolve()
+        src_s = str(src)
+        if src_s in seen:
+            continue
+        seen.add(src_s)
         if (src / "ke_drl").is_dir():
-            sys.path.insert(0, str(src))
+            if src_s in sys.path:
+                sys.path.remove(src_s)
+            sys.path.insert(0, src_s)
             return
+    if importlib.util.find_spec("ke_drl") is None:
+        raise ModuleNotFoundError(
+            "Could not find local src/ke_drl or an installed ke_drl package. "
+            "Set KEDRL_SRC to the repository src directory before running simulations."
+        )
+
+
+def kedrl_import_info() -> str:
+    """Return the package path that Python will use for ke_drl."""
+    spec = importlib.util.find_spec("ke_drl")
+    if spec is None:
+        return "ke_drl not importable"
+    if spec.origin:
+        return str(Path(spec.origin).resolve())
+    locations = list(spec.submodule_search_locations or [])
+    if locations:
+        return str(Path(locations[0]).resolve())
+    return "ke_drl import path unknown"
 
 
 bootstrap_kedrl()

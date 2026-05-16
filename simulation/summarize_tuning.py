@@ -29,6 +29,7 @@ def main() -> None:
         "combo_name",
         "score_true_z",
         "score_risk",
+        "score_mass",
         "true_z_rank",
         "risk_rank",
         "combined_rank",
@@ -40,6 +41,8 @@ def main() -> None:
         "deming_slope",
         "risk_log_obj_final_mean",
         "risk_bellman_final_mean",
+        "target_mass_mean_mean",
+        "target_mass_rmse_to_target_mean",
         "run_dir",
     ]
     cols = [c for c in cols if c in out.columns]

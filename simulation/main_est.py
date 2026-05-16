@@ -11,7 +11,7 @@ import pandas as pd
 import torch
 import yaml
 
-from sim_utils import bootstrap_kedrl, clean_policy_params, seed_from_array, select_target_set
+from sim_utils import bootstrap_kedrl, clean_policy_params, kedrl_import_info, seed_from_array, select_target_set
 from sim_eval import common_eval_grid, mean_embedding_hat, mean_embedding_true, save_mu_outputs
 
 
@@ -199,6 +199,7 @@ offline_data_id = int(os.environ.get("OFFLINE_DATA_ID", array_id))
 print(f"Slurm Job ID: {job_id}")
 print(f"Slurm Array ID: {array_id} -- used as the offline-replicate id")
 print(f"Offline data id: {offline_data_id}")
+print(f"ke_drl import source: {kedrl_import_info()}")
 
 with open("./params.yaml", "r", encoding="utf-8") as f:
     P = yaml.safe_load(f)
@@ -307,6 +308,7 @@ print(f"benchmark true-Z shape: {tuple(truth['Z_true'].shape)}")
 print(f"target policy: {target_policy}")
 print(f"behavior policy: {beh_policy}")
 print(f"lambda_Gamma={lambda_reg}, lambda_B={lambda_B}, d_r_method={d_r_method}")
+print(f"mass_anchor_lambda={mass_anchor_lambda}, target_mass={target_mass}")
 
 B_hat, history_obj, history_be, pre = KE_DRL(
     s0=s0,
@@ -354,6 +356,19 @@ B_hat, history_obj, history_be, pre = KE_DRL(
 print("KE-DRL global estimation is done.")
 print("B_hat shape:", tuple(B_hat.shape))
 
+with torch.no_grad():
+    k_star_fit = pre["k_star"].to(device=B_hat.device, dtype=B_hat.dtype)
+    target_beta = k_star_fit.transpose(0, 1) @ B_hat
+    target_masses = target_beta.sum(dim=1).detach().cpu()
+    target_mass_diag = {
+        "target_mass_mean": float(target_masses.mean()),
+        "target_mass_min": float(target_masses.min()),
+        "target_mass_max": float(target_masses.max()),
+        "target_mass_sd": float(target_masses.std(unbiased=True)) if target_masses.numel() > 1 else 0.0,
+        "target_mass_rmse_to_target": float(torch.sqrt(torch.mean((target_masses - target_mass) ** 2))),
+    }
+print("Global-loss target mass diagnostics:", target_mass_diag)
+
 Z_grid = pre["Z_grid"]
 torch.save(Z_grid.detach().cpu(), data_dir / f"Zgrid_{offline_data_id}.pt")
 torch.save(
@@ -368,6 +383,7 @@ torch.save(
         "target_indices": None if target_idx is None else [int(x) for x in target_idx.detach().cpu().reshape(-1).tolist()],
         "target_policy": target_policy,
         "target_policy_params": target_policy_params,
+        "target_mass_diagnostics": target_mass_diag,
     },
     data_dir / f"fit_{offline_data_id}.pt",
 )
@@ -383,6 +399,7 @@ risk_metrics.update(
         "lambda_reg": lambda_reg,
         "lambda_B": lambda_B,
         "num_steps": num_steps,
+        **target_mass_diag,
     }
 )
 pd.DataFrame([risk_metrics]).to_csv(f"metrics/risk_metrics_{offline_data_id}.csv", index=False)

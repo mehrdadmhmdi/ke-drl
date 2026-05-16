@@ -148,7 +148,21 @@ def export_metrics_tables(
             continue
         mu_hat = np.loadtxt(hat_path, delimiter=",")
         mu_true = np.loadtxt(true_path, delimiter=",")
-        rows.append({"run_id": run_id, **metrics_from_mu(mu_hat, mu_true)})
+        row = {"run_id": run_id, **metrics_from_mu(mu_hat, mu_true)}
+        weights_path = mu_dir / f"weights_{run_id}.csv"
+        if weights_path.exists():
+            beta = np.loadtxt(weights_path, delimiter=",").reshape(-1)
+            row.update(
+                {
+                    "beta_sum": float(beta.sum()),
+                    "beta_l1": float(np.abs(beta).sum()),
+                    "beta_l2": float(np.sqrt(np.sum(beta * beta))),
+                    "beta_min": float(beta.min()),
+                    "beta_max": float(beta.max()),
+                    "beta_neg_frac": float(np.mean(beta < 0.0)),
+                }
+            )
+        rows.append(row)
 
     df = pd.DataFrame(rows)
     if df.empty:
@@ -157,7 +171,9 @@ def export_metrics_tables(
     df.to_csv(metrics_dir / "per_point_metrics.csv", index=False)
     df.to_csv(metrics_dir / "per_run_metrics.csv", index=False)  # backward-compatible name
     agg = {}
-    for col in ["RMSE", "MAE", "SupNorm", "Bias", "Corr"]:
+    for col in ["RMSE", "MAE", "SupNorm", "Bias", "Corr", "beta_sum", "beta_l1", "beta_l2", "beta_neg_frac"]:
+        if col not in df:
+            continue
         agg[f"{col}_mean"] = float(df[col].mean())
         agg[f"{col}_sd"] = float(df[col].std(ddof=1)) if len(df) > 1 else 0.0
     pd.DataFrame([agg]).to_csv(metrics_dir / "aggregate_metrics.csv", index=False)

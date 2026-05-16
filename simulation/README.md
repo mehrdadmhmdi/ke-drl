@@ -12,9 +12,9 @@ The main consistency experiment repeats the following pipeline 50 times.
 1. Generate one offline dataset under the behavior policy.
 2. Choose one benchmark state-action point from that offline dataset.
 3. Generate one Monte Carlo true return sample `Z_true_i.pt` for that benchmark.
-4. Choose 300 separate target state-action points from the same offline dataset.
+4. Choose 30 separate target state-action points from the same offline dataset.
 5. Fit one global coefficient matrix `B_hat` by averaging the Bellman loss over
-   those 300 target points.
+   those 30 target points.
 6. Evaluate that fitted global `B_hat` at the one benchmark point and compare
    the estimated mean embedding against the Monte Carlo truth.
 
@@ -66,7 +66,7 @@ benchmark:
 
 target_set:
   mode: train_subset
-  num_points: 300
+  num_points: 30
   exclude_benchmark: True
 ```
 
@@ -84,11 +84,12 @@ Other important tuning parameters are:
 - `optimization.mass_anchor_lambda`: penalty enforcing learned target-point
   coefficient masses near `optimization.target_mass`. Keep this positive; with
   zero mass anchoring, the Bellman-only quadratic objective can collapse toward
-  a near-zero embedding.
+  a near-zero embedding. Estimation logs and `metrics/risk_metrics_*.csv`
+  report `target_mass_*` diagnostics; these should be close to 1 after fitting.
 - `kernel.length_scale`, `kernel.sigma`, `kernel.nu`: Matern kernel settings.
 - `optimization.lr`, `optimization.weight_decay`, `optimization.num_steps`.
 - `optimization.target_batch_size`: number of target points used per optimizer
-  step. With 300 target points, `300` means full target-batch optimization.
+  step. With 30 target points, `30` means full target-batch optimization.
 
 ## Policy Alignment
 
@@ -123,8 +124,12 @@ The smoke test uses `params_smoke.yaml`:
 
 - 3 offline replicates.
 - 1 benchmark true-Z per replicate.
-- 60 target points per replicate for the global loss.
+- 10 target points per replicate for the global loss.
 - 50 return-grid points and 80 optimizer steps.
+
+Every Slurm script prints `KEDRL_SRC` and every Python stage prints the
+resolved `ke_drl import source`. These should point to the cloned repository's
+`src/ke_drl`, not to a stale installed package.
 
 Expected output is under:
 
@@ -150,8 +155,8 @@ jid_sum=$(sbatch --parsable --dependency=afterok:${jid_tune} Job_tune_summary.sb
 ```
 
 Each tuning array task uses `params_tune.yaml`, applies one override from
-`tuning_grid.yaml`, and runs the same architecture on 5 smaller replicates with
-100 global-loss target points. The summary job writes:
+`tuning_grid.yaml`, and runs the same 30-target architecture on 5 smaller
+replicates. The summary job writes:
 
 ```text
 runs/tuning_summary.csv
@@ -166,6 +171,7 @@ Each tuning run now records two benchmark families:
 - `score_true_z`: external accuracy against the Monte Carlo benchmark true-Z.
 - `score_risk`: internal empirical risk, using the final log regularized
   Bellman objective from the optimizer history.
+- `score_mass`: mass-constraint RMSE for the 30 global-loss target points.
 
 `runs/tuning_summary.csv` also reports `true_z_rank`, `risk_rank`, and
 `combined_rank`. Prefer settings that are good on both ranks. The true-Z score
@@ -178,8 +184,8 @@ Good first knobs:
 
 - Increase `lambda_B` if `B_hat` looks unstable across replicates.
 - Increase `lambda_reg` if Gamma/importance-weight behavior is noisy.
-- Compare `optimization.mass_anchor_lambda` values around `0.3`, `1.0`, and
-  `3.0` if the estimated embedding mass is too small or too rigid.
+- Compare `optimization.mass_anchor_lambda` values around `0.3`, `1.0`, `3.0`,
+  and `10.0` if the estimated embedding mass is too small or too rigid.
 - Compare `kernel.length_scale` values around `0.7`, `1.0`, and `1.5`.
 - Increase `num_grid_points` only after the small run is stable.
 - Increase `n_ids` and `Z_sim.n_ids` when the estimator is stable but noisy.
