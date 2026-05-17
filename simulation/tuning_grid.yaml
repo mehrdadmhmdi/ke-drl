@@ -1,6 +1,8 @@
 # Global-B tuning grid. Run with Job_tune_global.sbatch.
 # This is a one-factor-at-a-time grid around params_tune.yaml.
-# A full Cartesian product of these ranges would create 6912 jobs.
+# Sample size, benchmark Monte Carlo size, grid size, optimizer steps, and
+# H-batch size are fixed in params_tune.yaml so configs differ only by the
+# statistical/optimization tuning parameter named in each override.
 combos:
   - name: base
     overrides: {}
@@ -72,8 +74,3 @@ combos:
     overrides:
       optimization:
         negativity_penalty_lambda: 0.1
-
-  - name: grid_400
-    overrides:
-      num_grid_points: 400
-      H_batch_size: 16

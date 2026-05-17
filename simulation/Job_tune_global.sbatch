@@ -10,7 +10,7 @@
 #SBATCH --partition=gpuA40x4-preempt
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-16
+#SBATCH --array=0-15
 
 echo "Job ID:    ${SLURM_JOB_ID}"
 echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
