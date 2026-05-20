@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=bfez-delta-gpu
-#SBATCH --partition=gpuA40x4-preempt
+#SBATCH --partition=gpuA100x8
 #SBATCH --job-name=UL_PLOTS
 #SBATCH --output=logs/data_%j.log
 #SBATCH --error=logs/submit_plots_%j.err
@@ -86,7 +86,7 @@ for RUN in "$BASE"/tunning/runs/*; do
   OUT=$(submit_with_retry \
     "sbatch --job-name=PLOT_RUN --parsable --account=bfez-delta-gpu \
      --output=\"$LOGDIR/AGG_%j.log\" --error=\"$LOGDIR/AGG_%j.err\" \
-     --time=00:15:00 --nodes=1 --mem=8g --gres=gpu:1 --cpus-per-task=4 --partition=gpuA40x4 \
+     --time=00:15:00 --nodes=1 --mem=8g --gres=gpu:1 --cpus-per-task=4 --partition=gpuA100x8 \
      --export=ALL,BASE=\"$RUN\",KEDRL_SRC=\"$KEDRL_SRC\" --chdir=\"$RUN\" \"$PLOT_S\"") \
     || { echo "WARN: failed submit for $RUN"; continue; }
 
