@@ -4,7 +4,7 @@ import importlib.util
 import os
 import sys
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable
 
 import torch
 
@@ -66,6 +66,44 @@ def kedrl_import_info() -> str:
 bootstrap_kedrl()
 
 from ke_drl.Probability_Densities import Probability_Densities
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+    return bool(value)
+
+
+def resolve_compute_device(config: dict[str, Any] | None = None, *, purpose: str = "computation") -> torch.device:
+    cfg = dict(config or {})
+    requested = os.environ.get("KEDRL_DEVICE") or cfg.get("device")
+    require_cuda = _as_bool(os.environ.get("KEDRL_REQUIRE_CUDA", cfg.get("require_cuda", False)))
+    if requested is None:
+        requested = "cuda" if torch.cuda.is_available() else "cpu"
+    device = torch.device(str(requested))
+    if device.type == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            f"{purpose} requested CUDA, but torch.cuda.is_available() is False. "
+            "Check the Slurm partition/modules and the installed PyTorch build."
+        )
+    if require_cuda and device.type != "cuda":
+        raise RuntimeError(
+            f"{purpose} requires CUDA, but resolved device is {device}. "
+            "Set compute.device: cuda or fix the CUDA/PyTorch environment."
+        )
+    return device
+
+
+def print_compute_device(device: torch.device, *, prefix: str = "Compute") -> None:
+    if device.type == "cuda":
+        idx = device.index if device.index is not None else torch.cuda.current_device()
+        name = torch.cuda.get_device_name(idx)
+        major, minor = torch.cuda.get_device_capability(idx)
+        print(f"{prefix} device: {device} ({name}, capability {major}.{minor}); torch CUDA={torch.version.cuda}", flush=True)
+    else:
+        print(f"{prefix} device: {device}; CUDA available={torch.cuda.is_available()}", flush=True)
 
 
 def seed_from_array(base_seed: int, array_id: str | int | None) -> int:

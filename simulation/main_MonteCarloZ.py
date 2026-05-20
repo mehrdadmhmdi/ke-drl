@@ -8,7 +8,15 @@ import pandas as pd
 import torch
 import yaml
 
-from sim_utils import clean_policy_params, kedrl_import_info, monte_carlo_Z, sample_policy_actions, seed_from_array
+from sim_utils import (
+    clean_policy_params,
+    kedrl_import_info,
+    monte_carlo_Z,
+    print_compute_device,
+    resolve_compute_device,
+    sample_policy_actions,
+    seed_from_array,
+)
 
 
 print("# ================================================== #")
@@ -24,6 +32,9 @@ print(f"ke_drl import source: {kedrl_import_info()}")
 
 with open("./params.yaml", "r", encoding="utf-8") as f:
     P = yaml.safe_load(f)
+
+compute_device = resolve_compute_device(P.get("compute"), purpose="Monte Carlo Z")
+print_compute_device(compute_device, prefix="Monte Carlo")
 
 num_replicates = int(P.get("experiment", {}).get("num_replicates", 1))
 bench_cfg = dict(P.get("benchmark") or {})
@@ -91,6 +102,7 @@ Z_true = monte_carlo_Z(
     sigma_r,
     plot=False,
     dtype=torch.float64,
+    device=compute_device,
 )
 print("len(Z_true) =", len(Z_true), "shape each =", tuple(Z_true[0].shape))
 

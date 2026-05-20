@@ -12,6 +12,8 @@ from typing import Any
 import pandas as pd
 import yaml
 
+from parallel_offlinedata import run_parallel_offline_data
+
 
 def deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
     for key, value in src.items():
@@ -120,21 +122,14 @@ def main() -> None:
     run_step([sys.executable, "validate_sim_config.py", "--params", "params.yaml"])
 
     n_rep = int(params.get("experiment", {}).get("num_replicates", 1))
-    for rep_id in range(n_rep):
-        env = os.environ.copy()
-        env["SLURM_ARRAY_TASK_ID"] = str(rep_id)
-        env["OFFLINE_DATA_ID"] = str(rep_id)
-        run_step([sys.executable, "main_offlinedata.py"], env=env)
-        run_step(
-            [
-                sys.executable,
-                "validate_sim_config.py",
-                "--params",
-                "params.yaml",
-                "--data",
-                f"data/offline_data_{rep_id}.pt",
-            ]
-        )
+    workers = int(
+        params.get("offline_data_workers")
+        or os.environ.get("OFFLINE_DATA_WORKERS")
+        or os.environ.get("SLURM_CPUS_PER_TASK")
+        or os.environ.get("SLURM_CPUS_ON_NODE")
+        or 1
+    )
+    run_parallel_offline_data(n_rep, workers=max(1, min(n_rep, workers)), validate=True)
 
     run_step([sys.executable, "main_MonteCarloZ.py"])
 

@@ -1,5 +1,6 @@
 #!/bin/bash
-#SBATCH --account=bfez-delta-gpu
+##SBATCH --account=bfez-delta-gpu
+#SBATCH --account=bfez-dtai-gh
 #SBATCH --job-name=tuning
 #SBATCH --output=logs/tune_%j.log
 #SBATCH --time=30:08:00
@@ -7,7 +8,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64g
 #SBATCH --cpus-per-task=4
-#SBATCH --partition=gpuA100x8
+##SBATCH --partition=gpuA100x8
+#SBATCH --partition=ghx4
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=mehrdad3@illinois.edu
 
@@ -17,18 +19,16 @@ echo "CPUs/node: ${SLURM_CPUS_ON_NODE}"
 echo "Mem/node:  ${SLURM_MEM_PER_NODE}"
 
 ## load modules/env -- delta ai
-#module purge
-#module load cuda/12.6.1
-#module load craype-accel-nvidia90
-#module load python/miniforge3_pytorch/2.7.0
-
+module purge
+module load cuda/12.6.1
+module load default gcc/14.2.0 craype-accel-nvidia90
+module load python/miniforge3_pytorch/2.7.0
 ##load module/env -- delta
-module load slurm-env/0.1
-module load cudatoolkit/25.3_12.8
-module load pytorch-conda/2.8
-eval "$(conda shell.bash hook)"   # IMPORTANT
-conda activate delta_env
-
+#module load slurm-env/0.1
+#module load cudatoolkit/25.3_12.8
+#module load pytorch-conda/2.8
+#eval "$(conda shell.bash hook)"   # IMPORTANT
+#conda activate delta_env
 echo $SLURM_JOB_PARTITION
 echo $CUDA_VISIBLE_DEVICES
 
@@ -175,7 +175,7 @@ while read -r CFG; do
   # submit estimation array (paths unchanged)
   echo "Submitting estimation array job"
   EST_OUTPUT=$(submit_with_retry \
-    "sbatch --job-name=EST_RUN --parsable --account=bfez-delta-gpu \
+    "sbatch --job-name=EST_RUN --parsable --account=bfez-dtai-gh \
      --export=ALL,BASE=\"$RUN\",KEDRL_SRC=\"$KEDRL_SRC\" --array=0-100 --chdir=\"$RUN\" \"$RUN/Job_est.sbatch\"")
   EST_RET=$?
   echo "sbatch EST output: $EST_OUTPUT"
@@ -195,9 +195,9 @@ while read -r CFG; do
   # submit aggregation after estimate array finishes (paths unchanged)
   echo "Submitting aggregation job dependent on $EST"
   AGG_OUTPUT=$(submit_with_retry \
-    "sbatch --job-name=PLOT_RUN --parsable --account=bfez-delta-gpu \
+    "sbatch --job-name=PLOT_RUN --parsable --account=bfez-dtai-gh \
      --output=\"$RUN/logs/AGG_%j.log\" \
-     --time=00:08:00 --nodes=1 --gres=gpu:1 --mem=8g --cpus-per-task=4 --partition=gpuA100x8 --mail-type=ALL \
+     --time=00:08:00 --nodes=1 --gres=gpu:1 --mem=8g --cpus-per-task=4 --partition=ghx4 --mail-type=ALL \
      --mail-user=mehrdad3@illinois.edu --export=ALL,BASE=\"$RUN\",KEDRL_SRC=\"$KEDRL_SRC\" --dependency=afterany:$EST --chdir=\"$RUN\" \
      \"$RUN/Job_plot.sbatch\"")
   AGG_RET=$?
@@ -224,13 +224,13 @@ else
   ALL_DEPS=$(paste -sd: tunning/agg_ids.txt)
   echo "Submitting scoring job"
   SCORE_OUTPUT=$(
-    sbatch --account=bfez-delta-gpu \
+    sbatch --account=bfez-dtai-gh \
       --dependency=afterany:$ALL_DEPS \
       --chdir="$BASE/tunning" \
       --export=ALL,BASE="$BASE" \
       --job-name=TUNE_SCORE \
       --output=score_%j.log \
-      --time=00:15:00 --gres=gpu:1 --mem=2g --cpus-per-task=4 --partition=gpuA100x8 \
+      --time=00:15:00 --gres=gpu:1 --mem=2g --cpus-per-task=4 --partition=ghx4 \
       --wrap="python -u $BASE/score_combo.py" 2>&1
   )
   echo "sbatch SCORE output: $SCORE_OUTPUT"

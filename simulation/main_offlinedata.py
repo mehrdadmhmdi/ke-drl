@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 import yaml
 
-from sim_utils import kedrl_import_info, seed_from_array, synthetic_data_generation_torch
+from sim_utils import kedrl_import_info, print_compute_device, resolve_compute_device, seed_from_array, synthetic_data_generation_torch
 
 
 print("# =================================================== #")
@@ -23,6 +23,9 @@ print(f"ke_drl import source: {kedrl_import_info()}")
 
 with open("./params.yaml", "r", encoding="utf-8") as f:
     P = yaml.safe_load(f)
+
+compute_device = resolve_compute_device(P.get("compute"), purpose="offline data generation")
+print_compute_device(compute_device, prefix="Offline data")
 
 seed = seed_from_array(int(P.get("random_seed", 20260512)), array_id)
 print(f"Random seed: {seed}")
@@ -50,6 +53,7 @@ s0, s1, a0, a1, r0, r1, r = synthetic_data_generation_torch(
     b_r,
     sigma_r,
     dtype=torch.float64,
+    device=compute_device,
 )
 
 for name, tensor in {

@@ -1,5 +1,6 @@
 #!/bin/bash
-#SBATCH --account=bfez-delta-gpu
+##SBATCH --account=bfez-delta-gpu
+#SBATCH --account=bfez-dtai-gh
 #SBATCH --job-name=KEDRL_SMOKE
 #SBATCH --output=logs/smoke.%j.log
 #SBATCH --time=00:40:00
@@ -7,7 +8,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=8g
 #SBATCH --cpus-per-task=4
-#SBATCH --partition=gpuA100x8
+##SBATCH --partition=gpuA100x8
+#SBATCH --partition=ghx4
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=mehrdad3@illinois.edu
 
@@ -17,18 +19,16 @@ echo "CPUs/node: ${SLURM_CPUS_ON_NODE}"
 echo "Mem/node:  ${SLURM_MEM_PER_NODE}"
 
 ## load modules/env -- delta ai
-#module purge
-#module load cuda/12.6.1
-#module load craype-accel-nvidia90
-#module load python/miniforge3_pytorch/2.7.0
-
+module purge
+module load cuda/12.6.1
+module load default gcc/14.2.0 craype-accel-nvidia90
+module load python/miniforge3_pytorch/2.7.0
 ##load module/env -- delta
-module load slurm-env/0.1
-module load cudatoolkit/25.3_12.8
-module load pytorch-conda/2.8
-eval "$(conda shell.bash hook)"   # IMPORTANT
-conda activate delta_env
-
+#module load slurm-env/0.1
+#module load cudatoolkit/25.3_12.8
+#module load pytorch-conda/2.8
+#eval "$(conda shell.bash hook)"   # IMPORTANT
+#conda activate delta_env
 echo $SLURM_JOB_PARTITION
 echo $CUDA_VISIBLE_DEVICES
 
@@ -75,6 +75,7 @@ cp "$BASE/mu_plot.py" "$RUN/"
 cp "$BASE/sim_utils.py" "$RUN/"
 cp "$BASE/sim_eval.py" "$RUN/"
 cp "$BASE/validate_sim_config.py" "$RUN/"
+cp "$BASE/parallel_offlinedata.py" "$RUN/"
 cp "$BASE/params_smoke.yaml" "$RUN/params.yaml"
 
 cd "$RUN"
@@ -107,14 +108,7 @@ PY
 )
 
 echo "===== SMOKE 1/4: offline data for ${N_REP} replicates ====="
-for ((r=0; r<N_REP; r++)); do
-  export SLURM_ARRAY_TASK_ID="$r"
-  export OFFLINE_DATA_ID="$r"
-  python3 main_offlinedata.py
-  python3 validate_sim_config.py --params params.yaml --data "data/offline_data_${r}.pt"
-done
-unset SLURM_ARRAY_TASK_ID
-unset OFFLINE_DATA_ID
+python3 parallel_offlinedata.py --params params.yaml
 
 echo "===== SMOKE 2/4: one fixed Monte Carlo benchmark true Z ====="
 python3 main_MonteCarloZ.py

@@ -162,6 +162,7 @@ def KE_DRL(
         Ds, Da, Dr = s0.shape[1], a0.shape[1], r.shape[1]
         print("=" * 40)
         print("Estimating the global KE-DRL mean embedding")
+        print(f"torch device={dev}, dtype={dtype}")
         print(f"Data dims: N={s0.shape[0]}, L={s_star.shape[0]}, Ds={Ds}, Da={Da}, Dr={Dr}")
         print(f"lambda_Gamma={lambda_reg}, lambda_B={lambda_B}")
         print(

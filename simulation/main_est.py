@@ -11,7 +11,15 @@ import pandas as pd
 import torch
 import yaml
 
-from sim_utils import bootstrap_kedrl, clean_policy_params, kedrl_import_info, seed_from_array, select_target_set
+from sim_utils import (
+    bootstrap_kedrl,
+    clean_policy_params,
+    kedrl_import_info,
+    print_compute_device,
+    resolve_compute_device,
+    seed_from_array,
+    select_target_set,
+)
 from sim_eval import (
     common_eval_grid,
     fixed_point_embedding_risk,
@@ -214,6 +222,8 @@ with open("./params.yaml", "r", encoding="utf-8") as f:
     P = yaml.safe_load(f)
 
 est_dtype = resolve_torch_dtype(P.get("dtype", "float64"))
+compute_device = resolve_compute_device(P.get("compute"), purpose="KE-DRL estimation")
+print_compute_device(compute_device, prefix="Estimator")
 num_replicates = as_int(P.get("experiment", {}).get("num_replicates", 1))
 if offline_data_id < 0 or offline_data_id >= num_replicates:
     raise ValueError(f"Offline replicate id {offline_data_id} is outside 0,...,{num_replicates - 1}.")
@@ -425,7 +435,7 @@ B_hat, history_obj, history_be, pre = KE_DRL(
     ratio_basis_source=ratio_basis_source,
     ratio_basis_seed=ratio_basis_seed,
     ratio_lambda_reg=ratio_lambda_reg,
-    device=None,
+    device=compute_device,
     dtype=est_dtype,
     verbose=True,
 )

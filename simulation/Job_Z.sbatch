@@ -2,7 +2,8 @@
 #####----------
 ### Generates the single fixed benchmark true-Z file shared by all replicates.
 ####--------------
-#SBATCH --account=bfez-delta-gpu
+##SBATCH --account=bfez-delta-gpu
+#SBATCH --account=bfez-dtai-gh
 #SBATCH --job-name=GU_Z
 #SBATCH --output=logs/Z_true_%j.log
 #SBATCH --time=04:00:00
@@ -10,7 +11,8 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=16g
 #SBATCH --cpus-per-task=4
-#SBATCH --partition=gpuA100x8
+##SBATCH --partition=gpuA100x8
+#SBATCH --partition=ghx4
 #SBATCH --mail-type=NONE
 #SBATCH --mail-user=mehrdad3@illinois.edu
 
@@ -24,18 +26,16 @@ echo "CPUs/node: ${SLURM_CPUS_ON_NODE}"
 echo "Mem/node:  ${SLURM_MEM_PER_NODE}"
 
 ## load modules/env -- delta ai
-#module purge
-#module load cuda/12.6.1
-#module load craype-accel-nvidia90
-#module load python/miniforge3_pytorch/2.7.0
-
+module purge
+module load cuda/12.6.1
+module load default gcc/14.2.0 craype-accel-nvidia90
+module load python/miniforge3_pytorch/2.7.0
 ##load module/env -- delta
-module load slurm-env/0.1
-module load cudatoolkit/25.3_12.8
-module load pytorch-conda/2.8
-eval "$(conda shell.bash hook)"   # IMPORTANT
-conda activate delta_env
-
+#module load slurm-env/0.1
+#module load cudatoolkit/25.3_12.8
+#module load pytorch-conda/2.8
+#eval "$(conda shell.bash hook)"   # IMPORTANT
+#conda activate delta_env
 echo $SLURM_JOB_PARTITION
 echo $CUDA_VISIBLE_DEVICES
 

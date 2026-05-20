@@ -51,6 +51,20 @@ def _summarize_tensor(name: str, x: torch.Tensor) -> None:
     )
 
 
+def _check_kedrl_package_api() -> None:
+    try:
+        from ke_drl.evaluation_metric import predict_embedding_weights  # noqa: F401
+        from ke_drl.operator_approx import compute_G_rff, compute_H_rff  # noqa: F401
+    except ImportError as exc:
+        raise ImportError(
+            "Installed ke_drl package is incompatible with these simulation scripts. "
+            "Reinstall the current package before running: "
+            'python -m pip install --no-cache-dir --force-reinstall '
+            '"git+https://github.com/mehrdadmhmdi/ke-drl.git@main"'
+        ) from exc
+    print("ke_drl package API OK: prediction weights and RFF operators available")
+
+
 def _uniform_bounds(policy_block: dict[str, Any], s: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     theta_lower = torch.as_tensor(policy_block["theta_lower"], dtype=s.dtype, device=s.device)
     theta_upper = torch.as_tensor(policy_block["theta_upper"], dtype=s.dtype, device=s.device)
@@ -84,6 +98,7 @@ def main() -> None:
         P = yaml.safe_load(f)
 
     print(f"ke_drl import source: {kedrl_import_info()}")
+    _check_kedrl_package_api()
 
     state_dim = int(P["state_dim"])
     action_dim = int(P["action_dim"])
