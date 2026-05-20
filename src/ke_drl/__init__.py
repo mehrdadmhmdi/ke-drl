@@ -4,8 +4,9 @@ os.environ.setdefault("VISPY_GL_BACKEND", "egl")
 os.environ.setdefault("VISPY_USE_APP", "headless")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("MPLBACKEND", "Agg")
+os.environ.pop("PYTORCH_CUDA_ALLOC_CONF", None)
 os.environ.setdefault(
-    "PYTORCH_CUDA_ALLOC_CONF",
+    "PYTORCH_ALLOC_CONF",
     "expandable_segments:True,max_split_size_mb:64,garbage_collection_threshold:0.8"
 )
 

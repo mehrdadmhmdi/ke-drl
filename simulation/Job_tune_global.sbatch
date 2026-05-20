@@ -66,7 +66,8 @@ export VISPY_GL_BACKEND=egl
 export VISPY_USE_APP=headless
 export QT_QPA_PLATFORM=offscreen
 export MPLBACKEND=Agg
-export PYTORCH_CUDA_ALLOC_CONF="expandable_segments:True,max_split_size_mb:64,garbage_collection_threshold:0.8"
+unset PYTORCH_CUDA_ALLOC_CONF
+export PYTORCH_ALLOC_CONF="expandable_segments:True,max_split_size_mb:64,garbage_collection_threshold:0.8"
 
 cp "$BASE/main_offlinedata.py" "$RUN/"
 cp "$BASE/main_MonteCarloZ.py" "$RUN/"
