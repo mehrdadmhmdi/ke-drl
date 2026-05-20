@@ -98,9 +98,9 @@ Other important tuning parameters are:
   tests.
 - `lambda_reg`: Gamma/ridge regularization for conditional embedding weights.
 - `lambda_B`: ridge regularization on the global coefficient matrix.
-- `optimization.ridge_mode`: use `frobenius` for fast simulation sweeps. The
-  exact RKHS ridge mode requires a dense `K_X @ B` multiply at every optimizer
-  step.
+- `optimization.ridge_mode`: use `rkhs` for the draft's
+  `tr(B^T K_X B)` penalty. `frobenius` is available only as a cheaper
+  diagnostic variant and changes the estimator.
 - `optimization.mass_anchor_lambda`: penalty enforcing learned target-point
   coefficient masses near `optimization.target_mass`. Keep this positive; with
   zero mass anchoring, the Bellman-only quadratic objective can collapse toward

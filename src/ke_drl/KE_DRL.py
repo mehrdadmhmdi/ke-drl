@@ -357,12 +357,3 @@ def KE_DRL(
         print(f"Done in {time.time() - t0:.2f}s.")
 
     return B_hat_torch, history_obj, history_be, pre_computed_matrices
-        "ratio_kernel_params": ratio_params,
-        "lambda_Gamma": torch.as_tensor(lambda_reg, dtype=dtype, device=dev),
-        "lambda_B": torch.as_tensor(lambda_B, dtype=dtype, device=dev),
-    }
-
-    if verbose:
-        print(f"Done in {time.time() - t0:.2f}s.")
-
-    return B_hat_torch, history_obj, history_be, pre_computed_matrices
