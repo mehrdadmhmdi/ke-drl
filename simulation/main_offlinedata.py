@@ -7,7 +7,14 @@ from pathlib import Path
 import torch
 import yaml
 
-from sim_utils import kedrl_import_info, print_compute_device, resolve_compute_device, seed_from_array, synthetic_data_generation_torch
+from sim_utils import (
+    kedrl_import_info,
+    print_compute_device,
+    resolve_compute_device,
+    resolve_torch_dtype,
+    seed_from_array,
+    synthetic_data_generation_torch,
+)
 
 
 print("# =================================================== #")
@@ -25,12 +32,13 @@ with open("./params.yaml", "r", encoding="utf-8") as f:
     P = yaml.safe_load(f)
 
 compute_device = resolve_compute_device(P.get("compute"), purpose="offline data generation")
+sim_dtype = resolve_torch_dtype(P.get("dtype", "float64"))
 print_compute_device(compute_device, prefix="Offline data")
 
 seed = seed_from_array(int(P.get("random_seed", 20260512)), array_id)
 print(f"Random seed: {seed}")
 
-to_t = lambda x: torch.as_tensor(x, dtype=torch.float64)
+to_t = lambda x: torch.as_tensor(x, dtype=sim_dtype)
 W_s, b_s, sigma_s = map(to_t, (P["MDP"]["W_s"], P["MDP"]["b_s"], P["MDP"]["sigma_s"]))
 W_r, b_r, sigma_r = map(to_t, (P["MDP"]["W_r"], P["MDP"]["b_r"], P["MDP"]["sigma_r"]))
 
@@ -52,7 +60,7 @@ s0, s1, a0, a1, r0, r1, r = synthetic_data_generation_torch(
     W_r,
     b_r,
     sigma_r,
-    dtype=torch.float64,
+    dtype=sim_dtype,
     device=compute_device,
 )
 

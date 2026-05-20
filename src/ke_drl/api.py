@@ -47,7 +47,7 @@ def estimate_embedding(
     operator_num_features: int = 128,
     operator_seed: Optional[int] = None,
     ridge_mode: str = "rkhs",
-    diagnostic_interval: int = 1,
+    diagnostic_interval: int = 50,
     eta_clip_min: Optional[float] = 0.0,
     eta_clip_max: Optional[float] = None,
     normalize_eta: bool = False,

@@ -40,12 +40,12 @@ def embedding_test_risk(
     where β_j = k_sa_test[j, :] @ B_hat_torch.
     """
 
-    device = Z_test.device
-    dtype  = Z_test.dtype
+    device = B_hat_torch.device
+    dtype = B_hat_torch.dtype
 
-    Z_test  = Z_test.to(device=device, dtype=dtype)
-    Z_grid  = Z_grid.to(device=device, dtype=dtype)
-    B_hat   = B_hat_torch.to(device=device, dtype=dtype)
+    Z_test = Z_test.to(device=device, dtype=dtype)
+    Z_grid = Z_grid.to(device=device, dtype=dtype)
+    B_hat = B_hat_torch.to(device=device, dtype=dtype)
 
     # ensure k_sa_test is 2D: (m, n_sa)
     if k_sa_test.ndim == 1:

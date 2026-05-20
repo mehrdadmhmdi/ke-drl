@@ -198,7 +198,7 @@ class RKDRL_Optimizer:
             max_B_norm: Optional[float] = None,
             B_ridge_penalty: bool = False,
             ridge_mode: str = "rkhs",
-            diagnostic_interval: int = 1,
+            diagnostic_interval: int = 50,
             verbose: bool = True,
     ) -> tuple[torch.Tensor, list[float], list[float]]:
 
@@ -308,7 +308,7 @@ class RKDRL_Optimizer:
             loss = bellman_loss + ridge + mass_penalty + neg_penalty
 
             loss.backward()
-            grad_norm = clip_grad_norm_([B], max_norm=1e2).item()
+            grad_norm = clip_grad_norm_([B], max_norm=1e2)
             opt.step()
             with torch.no_grad():
                 self._project_frobenius_ball_(B, max_B_norm)
@@ -316,10 +316,10 @@ class RKDRL_Optimizer:
             with torch.no_grad():
                 do_report = verbose and (step == 1 or step % report_every == 0 or step == int(num_steps))
                 do_diagnostics = do_report or step % diagnostic_interval == 0 or step == int(num_steps)
+                grad_norm_value: float | None = None
                 if do_diagnostics:
                     full_residuals = self._batch_residuals(B, k_mat, phi_mat, K_Z, H_stack, G_stack)
                     full_bellman_raw = self._weighted_average(full_residuals, weights_full)
-                    full_bellman = full_bellman_raw.clamp_min(eps)
                     full_ridge = float(lambda_B) * self._ridge_penalty(B, K_X, ridge_mode)
                     full_mass = (
                         float(mass_anchor_lambda)
@@ -333,29 +333,33 @@ class RKDRL_Optimizer:
                         if negativity_penalty_lambda > 0.0
                         else torch.zeros((), device=dev, dtype=dtype)
                     )
+                    full_bellman = full_bellman_raw.clamp_min(eps)
                     full_loss_raw = full_bellman_raw + full_ridge + full_mass + full_neg
                     full_loss = full_loss_raw.clamp_min(eps)
-                    sched.step(float(full_loss.detach().cpu()))
-                    history_obj.append(math.log(float(full_loss.detach().cpu())))
-                    history_be.append(math.log(float(torch.sqrt(full_bellman).detach().cpu())))
-                    history_components["objective"].append(float(full_loss_raw.detach().cpu()))
-                    history_components["bellman"].append(float(full_bellman_raw.detach().cpu()))
-                    history_components["rkhs_ridge"].append(float(full_ridge.detach().cpu()))
-                    history_components["mass"].append(float(full_mass.detach().cpu()))
-                    history_components["negativity"].append(float(full_neg.detach().cpu()))
-                    history_components["B_norm"].append(float(torch.linalg.vector_norm(B).detach().cpu()))
+                    sched.step(full_loss.item())
+                    history_obj.append(math.log(full_loss.item()))
+                    history_be.append(math.log(torch.sqrt(full_bellman).item()))
+                    history_components["objective"].append(full_loss_raw.item())
+                    history_components["bellman"].append(full_bellman_raw.item())
+                    history_components["rkhs_ridge"].append(full_ridge.item())
+                    history_components["mass"].append(full_mass.item())
+                    history_components["negativity"].append(full_neg.item())
+                    history_components["B_norm"].append(torch.linalg.vector_norm(B).item())
+                    grad_norm_value = grad_norm.item()
 
             if verbose and (step == 1 or step % report_every == 0 or step == int(num_steps)):
+                if grad_norm_value is None:
+                    grad_norm_value = grad_norm.item()
                 print(
                     f"Iter {step}/{num_steps} | log_obj={history_obj[-1]:.3e} "
                     f"| log_Bellman_root={history_be[-1]:.3e} | "
                     f"mass={history_components['mass'][-1]:.2e} "
                     f"| neg={history_components['negativity'][-1]:.2e} "
-                    f"| grad={grad_norm:.2e}"
+                    f"| grad={grad_norm_value:.2e}"
                 )
-            if grad_norm < 1e-8:
+            if do_diagnostics and grad_norm_value is not None and grad_norm_value < 1e-8:
                 if verbose:
-                    print(f"Converged at step {step}: grad={grad_norm:.2e}")
+                    print(f"Converged at step {step}: grad={grad_norm_value:.2e}")
                 break
 
         self.last_diagnostics = history_components

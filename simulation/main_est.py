@@ -17,6 +17,7 @@ from sim_utils import (
     kedrl_import_info,
     print_compute_device,
     resolve_compute_device,
+    resolve_torch_dtype,
     seed_from_array,
     select_target_set,
 )
@@ -69,15 +70,6 @@ def maybe_int(x: Any) -> int | None:
     if x is None:
         return None
     return as_int(x)
-
-
-def resolve_torch_dtype(name: Any) -> torch.dtype:
-    value = str(name or "float64").strip().lower()
-    if value in {"float32", "single", "fp32", "torch.float32"}:
-        return torch.float32
-    if value in {"float64", "double", "fp64", "torch.float64"}:
-        return torch.float64
-    raise ValueError(f"Unsupported dtype={name!r}; use float32 or float64.")
 
 
 def _exp_safe(x: float) -> float:
@@ -315,7 +307,7 @@ B_conv = as_bool(opt.get("B_conv", False))
 Sum_one_W = as_bool(opt.get("Sum_one_W", False))
 B_ridge_penalty = as_bool(opt.get("B_ridge_penalty", False))
 ridge_mode = str(opt.get("ridge_mode", "rkhs"))
-diagnostic_interval = as_int(opt.get("diagnostic_interval", 1))
+diagnostic_interval = as_int(opt.get("diagnostic_interval", 50))
 exact_projection = as_bool(opt.get("exact_projection", False))
 NonNeg_W = as_bool(opt.get("NonNeg_W", False))
 FP_penalty_lambda = as_float(opt.get("FP_penalty_lambda", 0.0))

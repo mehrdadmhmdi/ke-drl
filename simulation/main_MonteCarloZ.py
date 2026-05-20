@@ -14,6 +14,7 @@ from sim_utils import (
     monte_carlo_Z,
     print_compute_device,
     resolve_compute_device,
+    resolve_torch_dtype,
     sample_policy_actions,
     seed_from_array,
 )
@@ -34,6 +35,7 @@ with open("./params.yaml", "r", encoding="utf-8") as f:
     P = yaml.safe_load(f)
 
 compute_device = resolve_compute_device(P.get("compute"), purpose="Monte Carlo Z")
+sim_dtype = resolve_torch_dtype(P.get("dtype", "float64"))
 print_compute_device(compute_device, prefix="Monte Carlo")
 
 num_replicates = int(P.get("experiment", {}).get("num_replicates", 1))
@@ -43,7 +45,7 @@ seed = seed_from_array(int(P.get("random_seed", 20260512)) + 100000, 0)
 print(f"Random seed: {seed}")
 print(f"Number of offline replicates: {num_replicates}")
 
-to_t = lambda x: torch.as_tensor(x, dtype=torch.float64)
+to_t = lambda x: torch.as_tensor(x, dtype=sim_dtype)
 W_s, b_s, sigma_s = map(to_t, (P["MDP"]["W_s"], P["MDP"]["b_s"], P["MDP"]["sigma_s"]))
 W_r, b_r, sigma_r = map(to_t, (P["MDP"]["W_r"], P["MDP"]["b_r"], P["MDP"]["sigma_r"]))
 
@@ -53,13 +55,13 @@ target_policy_params = P["policy"][target_policy_name]
 
 design_seed = int(P.get("random_seed", 20260512)) + int(bench_cfg.get("seed_offset", 110000))
 if "s_star" in bench_cfg and "a_star" in bench_cfg:
-    s_star = torch.as_tensor(bench_cfg["s_star"], dtype=torch.float64).reshape(-1)
-    a_star = torch.as_tensor(bench_cfg["a_star"], dtype=torch.float64).reshape(-1)
+    s_star = torch.as_tensor(bench_cfg["s_star"], dtype=sim_dtype).reshape(-1)
+    a_star = torch.as_tensor(bench_cfg["a_star"], dtype=sim_dtype).reshape(-1)
     point_source = "fixed_config"
 else:
     generator = torch.Generator(device="cpu")
     generator.manual_seed(design_seed)
-    s_star = torch.randn(int(P["state_dim"]), generator=generator, dtype=torch.float64)
+    s_star = torch.randn(int(P["state_dim"]), generator=generator, dtype=sim_dtype)
     torch.manual_seed(design_seed + 1)
     a_star = sample_policy_actions(
         target_policy,
@@ -101,7 +103,7 @@ Z_true = monte_carlo_Z(
     b_r,
     sigma_r,
     plot=False,
-    dtype=torch.float64,
+    dtype=sim_dtype,
     device=compute_device,
 )
 print("len(Z_true) =", len(Z_true), "shape each =", tuple(Z_true[0].shape))

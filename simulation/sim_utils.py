@@ -106,6 +106,15 @@ def print_compute_device(device: torch.device, *, prefix: str = "Compute") -> No
         print(f"{prefix} device: {device}; CUDA available={torch.cuda.is_available()}", flush=True)
 
 
+def resolve_torch_dtype(name: Any) -> torch.dtype:
+    value = str(name or "float64").strip().lower()
+    if value in {"float32", "single", "fp32", "torch.float32"}:
+        return torch.float32
+    if value in {"float64", "double", "fp64", "torch.float64"}:
+        return torch.float64
+    raise ValueError(f"Unsupported dtype={name!r}; use float32 or float64.")
+
+
 def seed_from_array(base_seed: int, array_id: str | int | None) -> int:
     try:
         offset = int(array_id) if array_id is not None else 0
@@ -128,8 +137,19 @@ def clean_policy_params(policy: str, params: dict) -> dict:
     return {policy: raw}
 
 
-def sample_policy_actions(policy: str, params: dict, states: torch.Tensor, action_dim: int) -> torch.Tensor:
-    sampler = Probability_Densities(**clean_policy_params(policy, params))
+def make_policy_sampler(policy: str, params: dict) -> Probability_Densities:
+    return Probability_Densities(**clean_policy_params(policy, params))
+
+
+def sample_policy_actions(
+    policy: str,
+    params: dict,
+    states: torch.Tensor,
+    action_dim: int,
+    *,
+    sampler: Probability_Densities | None = None,
+) -> torch.Tensor:
+    sampler = sampler or make_policy_sampler(policy, params)
     actions = sampler.sample_pdf(policy, states)
     if actions is None:
         raise RuntimeError(f"Policy sampler returned None for policy={policy!r}.")
@@ -142,20 +162,20 @@ def sample_policy_actions(policy: str, params: dict, states: torch.Tensor, actio
     return actions.repeat(1, reps)[:, :action_dim]
 
 
-def _mvn_noise(n: int, cov: torch.Tensor, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+def _cov_cholesky(cov: torch.Tensor, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
     cov = cov.to(device=device, dtype=dtype)
     dim = cov.shape[0]
     eye = torch.eye(dim, dtype=dtype, device=device)
     try:
-        dist = torch.distributions.MultivariateNormal(
-            torch.zeros(dim, dtype=dtype, device=device), covariance_matrix=cov
-        )
-    except ValueError:
+        return torch.linalg.cholesky(cov)
+    except RuntimeError:
         jitter = 1e-6 * torch.trace(cov).clamp_min(1.0) / float(dim)
-        dist = torch.distributions.MultivariateNormal(
-            torch.zeros(dim, dtype=dtype, device=device), covariance_matrix=cov + jitter * eye
-        )
-    return dist.sample((n,))
+        return torch.linalg.cholesky(cov + jitter * eye)
+
+
+def _mvn_noise_from_chol(n: int, chol: torch.Tensor) -> torch.Tensor:
+    eps = torch.randn((n, chol.shape[0]), dtype=chol.dtype, device=chol.device)
+    return eps @ chol.transpose(0, 1)
 
 
 def _linear_gaussian(
@@ -163,11 +183,11 @@ def _linear_gaussian(
     actions: torch.Tensor,
     W: torch.Tensor,
     b: torch.Tensor,
-    cov: torch.Tensor,
+    chol: torch.Tensor,
 ) -> torch.Tensor:
     x = torch.cat([states, actions], dim=1)
-    mean = x @ W.to(device=x.device, dtype=x.dtype).T + b.to(device=x.device, dtype=x.dtype)
-    return mean + _mvn_noise(mean.shape[0], cov, device=mean.device, dtype=mean.dtype)
+    mean = x @ W.T + b
+    return mean + _mvn_noise_from_chol(mean.shape[0], chol)
 
 
 def synthetic_data_generation_torch(
@@ -201,15 +221,24 @@ def synthetic_data_generation_torch(
     states = torch.empty(n_ids, n_timepoints, state_dim, dtype=dtype, device=dev)
     actions = torch.empty(n_ids, n_timepoints, action_dim, dtype=dtype, device=dev)
     rewards = torch.empty(n_ids, n_timepoints, reward_dim, dtype=dtype, device=dev)
+    W_s = W_s.to(device=dev, dtype=dtype)
+    b_s = b_s.to(device=dev, dtype=dtype)
+    W_r = W_r.to(device=dev, dtype=dtype)
+    b_r = b_r.to(device=dev, dtype=dtype)
+    chol_s = _cov_cholesky(sigma_s, device=dev, dtype=dtype)
+    chol_r = _cov_cholesky(sigma_r, device=dev, dtype=dtype)
+    sampler = make_policy_sampler(policy, policy_params)
 
     states[:, 0, :] = torch.randn(n_ids, state_dim, dtype=dtype, device=dev)
-    actions[:, 0, :] = sample_policy_actions(policy, policy_params, states[:, 0, :], action_dim)
+    actions[:, 0, :] = sample_policy_actions(policy, policy_params, states[:, 0, :], action_dim, sampler=sampler)
 
     for t in range(n_timepoints):
-        rewards[:, t, :] = _linear_gaussian(states[:, t, :], actions[:, t, :], W_r, b_r, sigma_r)
+        rewards[:, t, :] = _linear_gaussian(states[:, t, :], actions[:, t, :], W_r, b_r, chol_r)
         if t + 1 < n_timepoints:
-            states[:, t + 1, :] = _linear_gaussian(states[:, t, :], actions[:, t, :], W_s, b_s, sigma_s)
-            actions[:, t + 1, :] = sample_policy_actions(policy, policy_params, states[:, t + 1, :], action_dim)
+            states[:, t + 1, :] = _linear_gaussian(states[:, t, :], actions[:, t, :], W_s, b_s, chol_s)
+            actions[:, t + 1, :] = sample_policy_actions(
+                policy, policy_params, states[:, t + 1, :], action_dim, sampler=sampler
+            )
 
     s0 = states[:, :-1, :].reshape(-1, state_dim)
     s1 = states[:, 1:, :].reshape(-1, state_dim)
@@ -263,6 +292,13 @@ def monte_carlo_Z(
         torch.as_tensor(gamma_val, dtype=dtype, device=dev),
         torch.arange(n_timepoints, dtype=dtype, device=dev),
     )
+    W_s = W_s.to(device=dev, dtype=dtype)
+    b_s = b_s.to(device=dev, dtype=dtype)
+    W_r = W_r.to(device=dev, dtype=dtype)
+    b_r = b_r.to(device=dev, dtype=dtype)
+    chol_s = _cov_cholesky(sigma_s, device=dev, dtype=dtype)
+    chol_r = _cov_cholesky(sigma_r, device=dev, dtype=dtype)
+    sampler = make_policy_sampler(policy, policy_params)
 
     for ell in range(s_star.shape[0]):
         states = s_star[ell : ell + 1, :].repeat(n_ids, 1)
@@ -270,11 +306,11 @@ def monte_carlo_Z(
         returns = torch.zeros(n_ids, reward_dim, dtype=dtype, device=dev)
 
         for t in range(n_timepoints):
-            reward_t = _linear_gaussian(states, actions, W_r, b_r, sigma_r)
+            reward_t = _linear_gaussian(states, actions, W_r, b_r, chol_r)
             returns += discounts[t] * reward_t
             if t + 1 < n_timepoints:
-                states = _linear_gaussian(states, actions, W_s, b_s, sigma_s)
-                actions = sample_policy_actions(policy, policy_params, states, actions.shape[1])
+                states = _linear_gaussian(states, actions, W_s, b_s, chol_s)
+                actions = sample_policy_actions(policy, policy_params, states, actions.shape[1], sampler=sampler)
 
         out.append(returns.detach().cpu())
     return out

@@ -77,7 +77,7 @@ def KE_DRL(
     operator_num_features: int = 128,
     operator_seed: Optional[int] = None,
     ridge_mode: str = "rkhs",
-    diagnostic_interval: int = 1,
+    diagnostic_interval: int = 50,
     eta_clip_min: float | None = 0.0,
     eta_clip_max: float | None = None,
     normalize_eta: bool = False,
@@ -329,7 +329,7 @@ def KE_DRL(
         verbose=verbose,
     )
 
-    B_hat_torch = torch.as_tensor(B_hat, dtype=dtype, device=dev)
+    B_hat_torch = B_hat  # already on correct device/dtype from optimizer
     pre_computed_matrices = {
         "Z_grid": Z,
         "X_train": s_a,
