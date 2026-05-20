@@ -64,6 +64,14 @@ def aggregate_risk_metrics() -> dict[str, float]:
         "target_beta_min",
         "target_beta_max",
         "target_neg_frac_mean",
+        "risk_objective_final_raw",
+        "risk_objective_min_raw",
+        "risk_bellman_final_raw",
+        "risk_bellman_min_raw",
+        "risk_rkhs_ridge_final_raw",
+        "risk_mass_final_raw",
+        "risk_negativity_final_raw",
+        "risk_B_norm_final_raw",
     ]:
         if col in df:
             out[f"{col}_mean"] = float(df[col].mean())

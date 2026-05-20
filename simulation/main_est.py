@@ -475,6 +475,7 @@ torch.save(
         "target_policy": target_policy,
         "target_policy_params": target_policy_params,
         "target_mass_diagnostics": target_mass_diag,
+        "optimizer_diagnostics": pre.get("optimizer_diagnostics", {}),
     },
     data_dir / f"fit_{offline_data_id}.pt",
 )
@@ -493,6 +494,12 @@ risk_metrics.update(
         **target_mass_diag,
     }
 )
+opt_diag = pre.get("optimizer_diagnostics", {}) or {}
+for name, values in opt_diag.items():
+    if values:
+        risk_metrics[f"risk_{name}_final_raw"] = float(values[-1])
+        risk_metrics[f"risk_{name}_min_raw"] = float(min(values))
+        risk_metrics[f"risk_{name}_max_raw"] = float(max(values))
 pd.DataFrame([risk_metrics]).to_csv(f"metrics/risk_metrics_{offline_data_id}.csv", index=False)
 print(f"Replicate {offline_data_id} risk metrics:", risk_metrics)
 

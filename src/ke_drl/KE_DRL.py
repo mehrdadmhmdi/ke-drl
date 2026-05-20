@@ -12,7 +12,7 @@ from .IS_ULSIF import ULSIFEstimator
 from .Phi_sa import Phi_sa
 from .ZGrid import ZGrid
 from .matern_kernel import matern_kernel
-from .operator_approx import compute_G_rff, compute_H_rff, sample_matern_rff
+from .operator_approx import compute_G_rff, compute_H_rff, rff_features, sample_matern_rff
 from .optimize import RKDRL_Optimizer
 
 
@@ -233,9 +233,6 @@ def KE_DRL(
     stage_t = log_stage("K_plus", stage_t)
     k_star = matern_kernel(s_a, x_star, **x_params)
     stage_t = log_stage("k_star", stage_t)
-    K_Z = matern_kernel(Z, Z, **z_params)
-    stage_t = log_stage("K_Z", stage_t)
-
     Gamma_stack = Gamma_sa(K_X, k_star, lambda_reg)
     stage_t = log_stage("Gamma_stack", stage_t)
     Phi_stack = Phi_sa(K_plus, Gamma_stack, eta_plus)
@@ -243,6 +240,8 @@ def KE_DRL(
 
     operator_method_l = str(operator_method).lower()
     if operator_method_l in {"exact", "full"}:
+        K_Z = matern_kernel(Z, Z, **z_params)
+        stage_t = log_stage("K_Z exact", stage_t)
         if verbose:
             n, m, L = r.shape[0], Z.shape[0], Gamma_stack.shape[1]
             print(
@@ -276,6 +275,9 @@ def KE_DRL(
             seed=operator_seed,
         )
         stage_t = log_stage("RFF feature sample", stage_t)
+        feat_Z = rff_features(Z, omega, phase, rff_scale)
+        K_Z = feat_Z @ feat_Z.transpose(0, 1)
+        stage_t = log_stage("K_Z RFF", stage_t)
         G_stack = compute_G_rff(
             Gamma_stack, gamma_val, r, Z,
             omega=omega, phase=phase, scale=rff_scale,

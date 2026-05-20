@@ -66,7 +66,18 @@ def compute_H_rff(
     scale: float,
     batch_size: int = 16,
 ) -> torch.Tensor:
-    """Approximate H_l[i,j] = sum_p Gamma_l[p] k(R_p, Z_i - gamma Z_j)."""
+    """Approximate H with the same finite feature map used by G.
+
+    For a stationary kernel, the exact expression
+
+        sum_p Gamma_l[p] k(R_p, Z_i - gamma Z_j)
+
+    equals <phi(Z_i), sum_p Gamma_l[p] phi(gamma Z_j + R_p)> in the RKHS.
+    In the finite-RFF objective we must use this second form so that K_Z, H,
+    and G are all built from one shared feature map. Otherwise the Bellman
+    quadratic is no longer guaranteed to be nonnegative and the optimizer can
+    exploit numerical negative directions.
+    """
     if Gamma_sa.ndim == 1:
         Gamma_sa = Gamma_sa.unsqueeze(1)
     if Gamma_sa.ndim != 2:
@@ -84,19 +95,27 @@ def compute_H_rff(
     phase = phase.to(device=device, dtype=dtype)
 
     n_targets = Gamma_sa.shape[1]
-    m, d = Z.shape
-    feat_R = rff_features(R, omega, phase, scale)
-    weighted_reward_features = Gamma_sa.transpose(0, 1) @ feat_R
+    m = Z.shape[0]
+
+    feat_Z = rff_features(Z, omega, phase, scale)
+
+    reward_arg = R @ omega.transpose(0, 1) + phase
+    c_reward = Gamma_sa.transpose(0, 1) @ torch.cos(reward_arg)
+    s_reward = Gamma_sa.transpose(0, 1) @ torch.sin(reward_arg)
+
+    z_arg = (float(gamma) * Z) @ omega.transpose(0, 1)
+    c_z = torch.cos(z_arg)
+    s_z = torch.sin(z_arg)
+
+    successor_feature_sums = float(scale) * (
+        c_reward.unsqueeze(1) * c_z.unsqueeze(0)
+        - s_reward.unsqueeze(1) * s_z.unsqueeze(0)
+    )
 
     H = torch.empty((n_targets, m, m), device=device, dtype=dtype)
-    gamma_t = torch.as_tensor(float(gamma), device=device, dtype=dtype)
     for i0 in range(0, m, int(batch_size)):
         i1 = min(m, i0 + int(batch_size))
-        shifts = Z[i0:i1].unsqueeze(1) - gamma_t * Z.unsqueeze(0)
-        feat_shift = rff_features(shifts.reshape(-1, d), omega, phase, scale)
-        chunk = weighted_reward_features @ feat_shift.transpose(0, 1)
-        H[:, i0:i1, :] = chunk.reshape(n_targets, i1 - i0, m)
-        del shifts, feat_shift, chunk
+        H[:, i0:i1, :] = torch.einsum("iq,ljq->lij", feat_Z[i0:i1], successor_feature_sums)
     return H
 
 
