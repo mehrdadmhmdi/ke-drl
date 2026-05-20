@@ -116,6 +116,25 @@ def main() -> None:
         f"num_replicates={n_rep}, fixed benchmark points=1 independent of D_i, "
         f"loss target points={target_points}"
     )
+    n_train = int(P.get("n_ids", 1)) * max(1, int(P.get("n_timepoints", 2)) - 1)
+    m_grid = int(P.get("num_grid_points", 1))
+    op_cfg = dict(P.get("operator_approximation") or {})
+    op_method = str(op_cfg.get("method", "exact")).lower()
+    if op_method in {"rff", "random_fourier", "random-fourier"}:
+        print(
+            "Return-operator approximation OK: "
+            f"method=rff, features={int(op_cfg.get('num_features', 128))}, "
+            f"exact G avoided for estimated N={n_train}, m={m_grid}, L={target_points}"
+        )
+    else:
+        g_terms = target_points * m_grid * m_grid * n_train * n_train
+        h_terms = target_points * m_grid * m_grid * n_train
+        print(f"Exact return-operator work estimate: H~{h_terms:.3e}, G~{g_terms:.3e} kernel terms")
+        if g_terms > 1e11:
+            raise ValueError(
+                "Exact G construction is computationally infeasible at this size. "
+                "Set operator_approximation.method: rff or reduce n_ids/num_grid_points/target_set.num_points."
+            )
     if "s_star" in bench_cfg:
         s_bench = torch.as_tensor(bench_cfg["s_star"], dtype=torch.float64).reshape(1, -1)
         a_bench = torch.as_tensor(bench_cfg["a_star"], dtype=torch.float64).reshape(1, -1)

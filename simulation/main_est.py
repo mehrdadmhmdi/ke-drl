@@ -63,6 +63,15 @@ def maybe_int(x: Any) -> int | None:
     return as_int(x)
 
 
+def resolve_torch_dtype(name: Any) -> torch.dtype:
+    value = str(name or "float64").strip().lower()
+    if value in {"float32", "single", "fp32", "torch.float32"}:
+        return torch.float32
+    if value in {"float64", "double", "fp64", "torch.float64"}:
+        return torch.float64
+    raise ValueError(f"Unsupported dtype={name!r}; use float32 or float64.")
+
+
 def _exp_safe(x: float) -> float:
     return float(math.exp(max(min(float(x), 700.0), -700.0)))
 
@@ -204,6 +213,7 @@ print(f"ke_drl import source: {kedrl_import_info()}")
 with open("./params.yaml", "r", encoding="utf-8") as f:
     P = yaml.safe_load(f)
 
+est_dtype = resolve_torch_dtype(P.get("dtype", "float64"))
 num_replicates = as_int(P.get("experiment", {}).get("num_replicates", 1))
 if offline_data_id < 0 or offline_data_id >= num_replicates:
     raise ValueError(f"Offline replicate id {offline_data_id} is outside 0,...,{num_replicates - 1}.")
@@ -219,11 +229,11 @@ if not df_path.exists():
     raise FileNotFoundError(f"Missing offline data file: {df_path}. Run Job_data.sbatch first.")
 blob = torch.load(df_path, map_location="cpu")
 
-s0 = torch.as_tensor(blob["s0"], dtype=torch.float64)
-a0 = torch.as_tensor(blob["a0"], dtype=torch.float64)
-s1 = torch.as_tensor(blob["s1"], dtype=torch.float64)
-a1 = torch.as_tensor(blob["a1"], dtype=torch.float64)
-r0 = torch.as_tensor(blob["r0"], dtype=torch.float64)
+s0 = torch.as_tensor(blob["s0"], dtype=est_dtype)
+a0 = torch.as_tensor(blob["a0"], dtype=est_dtype)
+s1 = torch.as_tensor(blob["s1"], dtype=est_dtype)
+a1 = torch.as_tensor(blob["a1"], dtype=est_dtype)
+r0 = torch.as_tensor(blob["r0"], dtype=est_dtype)
 
 meta = blob["metadata"]
 beh_policy = meta["policy"]
@@ -279,6 +289,7 @@ lambda_rec = as_float(P["lambda_rec"])
 d_r_method = str(P["d_r_method"])
 
 opt = P["optimization"]
+operator_cfg = dict(P.get("operator_approximation") or {})
 lr = as_float(opt["lr"])
 weight_decay = as_float(opt["weight_decay"])
 num_steps = as_int(opt["num_steps"])
@@ -293,6 +304,8 @@ fixed_point_constraint = as_bool(opt.get("fixed_point_constraint", False))
 B_conv = as_bool(opt.get("B_conv", False))
 Sum_one_W = as_bool(opt.get("Sum_one_W", False))
 B_ridge_penalty = as_bool(opt.get("B_ridge_penalty", False))
+ridge_mode = str(opt.get("ridge_mode", "rkhs"))
+diagnostic_interval = as_int(opt.get("diagnostic_interval", 1))
 exact_projection = as_bool(opt.get("exact_projection", False))
 NonNeg_W = as_bool(opt.get("NonNeg_W", False))
 FP_penalty_lambda = as_float(opt.get("FP_penalty_lambda", 0.0))
@@ -307,6 +320,10 @@ eta_clip_min = None if eta_clip_min in (None, "None", "none") else as_float(eta_
 eta_clip_max = opt.get("eta_clip_max")
 eta_clip_max = None if eta_clip_max in (None, "None", "none") else as_float(eta_clip_max)
 normalize_eta = as_bool(opt.get("normalize_eta", False))
+operator_method = str(operator_cfg.get("method", "exact"))
+operator_num_features = as_int(operator_cfg.get("num_features", 128))
+operator_seed_offset = as_int(operator_cfg.get("seed_offset", 314159))
+operator_seed = seed + operator_seed_offset
 
 print("Data and parameters loaded.")
 print(f"offline path: {df_path}")
@@ -319,6 +336,8 @@ print(f"benchmark true-Z shape: {tuple(truth['Z_true'].shape)}")
 print(f"target policy: {target_policy}")
 print(f"behavior policy: {beh_policy}")
 print(f"lambda_Gamma={lambda_reg}, lambda_B={lambda_B}, d_r_method={d_r_method}")
+print(f"dtype={est_dtype}, operator_method={operator_method}, operator_num_features={operator_num_features}")
+print(f"ridge_mode={ridge_mode}, diagnostic_interval={diagnostic_interval}")
 print(f"mass_anchor_lambda={mass_anchor_lambda}, target_mass={target_mass}")
 print(
     "optimizer stabilizers: "
@@ -368,9 +387,14 @@ B_hat, history_obj, history_be, pre = KE_DRL(
     negativity_penalty_lambda=negativity_penalty_lambda,
     max_B_norm=max_B_norm,
     B_ridge_penalty=B_ridge_penalty,
+    ridge_mode=ridge_mode,
+    diagnostic_interval=diagnostic_interval,
     H_batch_size=H_batch_size,
+    operator_method=operator_method,
+    operator_num_features=operator_num_features,
+    operator_seed=operator_seed,
     device=None,
-    dtype=torch.float64,
+    dtype=est_dtype,
     verbose=True,
 )
 

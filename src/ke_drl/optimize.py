@@ -145,6 +145,17 @@ class RKDRL_Optimizer:
         return torch.sum(B * (K_X @ B))
 
     @staticmethod
+    def _ridge_penalty(B, K_X, mode: str) -> torch.Tensor:
+        mode_l = str(mode).lower()
+        if mode_l in {"rkhs", "kernel"}:
+            return RKDRL_Optimizer._rkhs_ridge(B, K_X)
+        if mode_l in {"frobenius", "l2", "euclidean"}:
+            return torch.sum(B * B)
+        if mode_l in {"none", "off", "disabled"}:
+            return torch.zeros((), device=B.device, dtype=B.dtype)
+        raise ValueError(f"Unknown ridge_mode={mode!r}. Use 'rkhs', 'frobenius', or 'none'.")
+
+    @staticmethod
     def _project_frobenius_ball_(B: torch.Tensor, max_norm: Optional[float]) -> None:
         if max_norm is None or max_norm <= 0:
             return
@@ -186,6 +197,8 @@ class RKDRL_Optimizer:
             negativity_penalty_lambda: float = 0.0,
             max_B_norm: Optional[float] = None,
             B_ridge_penalty: bool = False,
+            ridge_mode: str = "rkhs",
+            diagnostic_interval: int = 1,
             verbose: bool = True,
     ) -> tuple[torch.Tensor, list[float], list[float]]:
 
@@ -234,9 +247,13 @@ class RKDRL_Optimizer:
             print(f"Using finite-grid negativity penalty: lambda_neg={float(negativity_penalty_lambda):.3g}")
         if verbose and max_B_norm is not None and max_B_norm > 0:
             print(f"Projecting B onto Frobenius ball with radius {float(max_B_norm):.3g}")
+        if verbose:
+            print(f"Ridge mode: {ridge_mode}; diagnostic interval: {int(diagnostic_interval)}")
 
         if target_batch_size is None or target_batch_size <= 0 or target_batch_size > L:
             target_batch_size = L
+        diagnostic_interval = max(1, int(diagnostic_interval))
+        report_every = max(1, int(num_steps) // 10)
 
         B = torch.nn.Parameter(B0.clone())
         with torch.no_grad():
@@ -275,7 +292,7 @@ class RKDRL_Optimizer:
                 G_stack.index_select(0, idx),
             )
             bellman_loss = self._weighted_average(residuals, weights_batch)
-            ridge = float(lambda_B) * self._rkhs_ridge(B, K_X)
+            ridge = float(lambda_B) * self._ridge_penalty(B, K_X, ridge_mode)
             mass_penalty = (
                 float(mass_anchor_lambda)
                 * self._mass_anchor_penalty(B, k_mat[:, idx], target_mass, weights_batch)
@@ -298,34 +315,37 @@ class RKDRL_Optimizer:
             sched.step(float(loss.detach().cpu()))
 
             with torch.no_grad():
-                full_residuals = self._batch_residuals(B, k_mat, phi_mat, K_Z, H_stack, G_stack)
-                full_bellman_raw = self._weighted_average(full_residuals, weights_full)
-                full_bellman = full_bellman_raw.clamp_min(eps)
-                full_ridge = float(lambda_B) * self._rkhs_ridge(B, K_X)
-                full_mass = (
-                    float(mass_anchor_lambda)
-                    * self._mass_anchor_penalty(B, k_mat, target_mass, weights_full)
-                    if mass_anchor_lambda > 0.0
-                    else torch.zeros((), device=dev, dtype=dtype)
-                )
-                full_neg = (
-                    float(negativity_penalty_lambda)
-                    * self._negativity_penalty(B, k_mat, weights_full)
-                    if negativity_penalty_lambda > 0.0
-                    else torch.zeros((), device=dev, dtype=dtype)
-                )
-                full_loss_raw = full_bellman_raw + full_ridge + full_mass + full_neg
-                full_loss = full_loss_raw.clamp_min(eps)
-                history_obj.append(math.log(float(full_loss.detach().cpu())))
-                history_be.append(math.log(float(torch.sqrt(full_bellman).detach().cpu())))
-                history_components["objective"].append(float(full_loss_raw.detach().cpu()))
-                history_components["bellman"].append(float(full_bellman_raw.detach().cpu()))
-                history_components["rkhs_ridge"].append(float(full_ridge.detach().cpu()))
-                history_components["mass"].append(float(full_mass.detach().cpu()))
-                history_components["negativity"].append(float(full_neg.detach().cpu()))
-                history_components["B_norm"].append(float(torch.linalg.vector_norm(B).detach().cpu()))
+                do_report = verbose and (step == 1 or step % report_every == 0 or step == int(num_steps))
+                do_diagnostics = do_report or step % diagnostic_interval == 0 or step == int(num_steps)
+                if do_diagnostics:
+                    full_residuals = self._batch_residuals(B, k_mat, phi_mat, K_Z, H_stack, G_stack)
+                    full_bellman_raw = self._weighted_average(full_residuals, weights_full)
+                    full_bellman = full_bellman_raw.clamp_min(eps)
+                    full_ridge = float(lambda_B) * self._ridge_penalty(B, K_X, ridge_mode)
+                    full_mass = (
+                        float(mass_anchor_lambda)
+                        * self._mass_anchor_penalty(B, k_mat, target_mass, weights_full)
+                        if mass_anchor_lambda > 0.0
+                        else torch.zeros((), device=dev, dtype=dtype)
+                    )
+                    full_neg = (
+                        float(negativity_penalty_lambda)
+                        * self._negativity_penalty(B, k_mat, weights_full)
+                        if negativity_penalty_lambda > 0.0
+                        else torch.zeros((), device=dev, dtype=dtype)
+                    )
+                    full_loss_raw = full_bellman_raw + full_ridge + full_mass + full_neg
+                    full_loss = full_loss_raw.clamp_min(eps)
+                    history_obj.append(math.log(float(full_loss.detach().cpu())))
+                    history_be.append(math.log(float(torch.sqrt(full_bellman).detach().cpu())))
+                    history_components["objective"].append(float(full_loss_raw.detach().cpu()))
+                    history_components["bellman"].append(float(full_bellman_raw.detach().cpu()))
+                    history_components["rkhs_ridge"].append(float(full_ridge.detach().cpu()))
+                    history_components["mass"].append(float(full_mass.detach().cpu()))
+                    history_components["negativity"].append(float(full_neg.detach().cpu()))
+                    history_components["B_norm"].append(float(torch.linalg.vector_norm(B).detach().cpu()))
 
-            if verbose and (step == 1 or step % max(1, int(num_steps) // 10) == 0):
+            if verbose and (step == 1 or step % report_every == 0 or step == int(num_steps)):
                 print(
                     f"Iter {step}/{num_steps} | log_obj={history_obj[-1]:.3e} "
                     f"| log_Bellman_root={history_be[-1]:.3e} | "

@@ -10,6 +10,7 @@ reward_dim: 3
 action_dim: 1
 num_grid_points: 300
 random_seed: 20260512
+dtype: float32
 # Main consistency experiment: 100 independent offline datasets D_i. The
 # benchmark point is fixed independently of every D_i, while 150 target points
 # define the empirical global Bellman loss for each fitted B_i.
@@ -31,6 +32,10 @@ H_batch_size: 30
 d_r_method: song  #song, bellman, Schuster
 bandwidth: 1.5
 lambda_rec: 0.02
+operator_approximation:
+  method: rff
+  num_features: 128
+  seed_offset: 314159
 # Target set for the global X objective in each offline replicate.
 target_set:
   mode: train_subset
@@ -43,7 +48,9 @@ optimization:
   weight_decay: 1e-4
   FP_penalty_lambda: 0.0
   num_steps: 1000
-  target_batch_size: 150
+  target_batch_size: 30
+  diagnostic_interval: 20
+  ridge_mode: frobenius
   initial_scale: 1e-3
   use_low_rank: False
   B_positive: False

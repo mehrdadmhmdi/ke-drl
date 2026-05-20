@@ -92,8 +92,15 @@ Other important tuning parameters are:
 - `n_ids`, `n_timepoints`: offline data size.
 - `Z_sim.n_ids`, `Z_sim.n_timepoints`: Monte Carlo benchmark size.
 - `num_grid_points`, `hull_expand_factor`: return-grid resolution and support.
+- `operator_approximation`: construction method for the return-space `H` and
+  `G` operators. Use `method: rff` for non-smoke runs; exact `G` scales as
+  `target_points * num_grid_points^2 * N^2` and is only appropriate for tiny
+  tests.
 - `lambda_reg`: Gamma/ridge regularization for conditional embedding weights.
 - `lambda_B`: ridge regularization on the global coefficient matrix.
+- `optimization.ridge_mode`: use `frobenius` for fast simulation sweeps. The
+  exact RKHS ridge mode requires a dense `K_X @ B` multiply at every optimizer
+  step.
 - `optimization.mass_anchor_lambda`: penalty enforcing learned target-point
   coefficient masses near `optimization.target_mass`. Keep this positive; with
   zero mass anchoring, the Bellman-only quadratic objective can collapse toward

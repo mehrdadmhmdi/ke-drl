@@ -12,6 +12,7 @@ from .IS_ULSIF import ULSIFEstimator
 from .Phi_sa import Phi_sa
 from .ZGrid import ZGrid
 from .matern_kernel import matern_kernel
+from .operator_approx import compute_G_rff, compute_H_rff, sample_matern_rff
 from .optimize import RKDRL_Optimizer
 
 
@@ -69,6 +70,11 @@ def KE_DRL(
     random_seed: Optional[int] = None,
     initial_scale: float = 1e-3,
     H_batch_size: int = 10,
+    operator_method: str = "exact",
+    operator_num_features: int = 128,
+    operator_seed: Optional[int] = None,
+    ridge_mode: str = "rkhs",
+    diagnostic_interval: int = 1,
     eta_clip_min: float | None = 0.0,
     eta_clip_max: float | None = None,
     normalize_eta: bool = False,
@@ -103,6 +109,13 @@ def KE_DRL(
     """
     t0 = time.time()
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+
+    def log_stage(name: str, started: float) -> float:
+        if verbose:
+            if dev == "cuda" or (hasattr(dev, "type") and dev.type == "cuda"):
+                torch.cuda.synchronize()
+            print(f"[timing] {name}: {time.time() - started:.2f}s", flush=True)
+        return time.time()
 
     def TD(x: torch.Tensor) -> torch.Tensor:
         return torch.as_tensor(x, dtype=dtype, device=dev)
@@ -148,6 +161,10 @@ def KE_DRL(
         print("Estimating the global KE-DRL mean embedding")
         print(f"Data dims: N={s0.shape[0]}, L={s_star.shape[0]}, Ds={Ds}, Da={Da}, Dr={Dr}")
         print(f"lambda_Gamma={lambda_reg}, lambda_B={lambda_B}")
+        print(
+            "return-operator construction: "
+            f"method={operator_method}, rff_features={operator_num_features}"
+        )
         if mass_anchor_lambda <= 0.0:
             print(
                 "Warning: mass_anchor_lambda <= 0 leaves the Bellman objective "
@@ -189,30 +206,76 @@ def KE_DRL(
                 f"used_mean={stable.mean().item():.3g}, used_min={stable.min().item():.3g}, used_max={stable.max().item():.3g}"
             )
 
+    stage_t = time.time()
     Z = ZGrid.Z_kmeans(r, n_clusters=int(num_grid_points), constant_factor=float(hull_expand_factor))
     if discrete_dims is not None:
         Z[:, discrete_dims] = torch.round(Z[:, discrete_dims])
         if verbose:
             print(f"Rounded discrete reward dimensions in Z-grid: {discrete_dims}")
+    stage_t = log_stage("Z-grid", stage_t)
 
     K_X = matern_kernel(s_a, s_a, **x_params)
+    stage_t = log_stage("K_X", stage_t)
     K_plus = matern_kernel(s_a, s_a_plus, **x_params)
+    stage_t = log_stage("K_plus", stage_t)
     k_star = matern_kernel(s_a, x_star, **x_params)
+    stage_t = log_stage("k_star", stage_t)
     K_Z = matern_kernel(Z, Z, **z_params)
+    stage_t = log_stage("K_Z", stage_t)
 
     Gamma_stack = Gamma_sa(K_X, k_star, lambda_reg)
+    stage_t = log_stage("Gamma_stack", stage_t)
     Phi_stack = Phi_sa(K_plus, Gamma_stack, eta_plus)
+    stage_t = log_stage("Phi_stack", stage_t)
 
-    transformed = compute_transformed_grid_pytorch(Z, r, gamma_val)
-    G_stack = compute_G_pytorch_batched(
-        transformed, Gamma_stack,
-        nu=z_params["nu"], length_scale=z_params["length_scale"], sigma=z_params["sigma"],
-    )
-    H_stack = H_sa(
-        Gamma_stack, gamma_val, r, Z,
-        nu=z_params["nu"], length_scale=z_params["length_scale"], sigma=z_params["sigma"],
-        batch_size=int(H_batch_size),
-    )
+    operator_method_l = str(operator_method).lower()
+    if operator_method_l in {"exact", "full"}:
+        if verbose:
+            n, m, L = r.shape[0], Z.shape[0], Gamma_stack.shape[1]
+            print(
+                "Exact return-operator work estimate: "
+                f"H ~ {L * m * m * n:.3e} kernel terms, "
+                f"G ~ {L * m * m * n * n:.3e} kernel terms",
+                flush=True,
+            )
+        transformed = compute_transformed_grid_pytorch(Z, r, gamma_val)
+        stage_t = log_stage("transformed reward grid", stage_t)
+        G_stack = compute_G_pytorch_batched(
+            transformed, Gamma_stack,
+            nu=z_params["nu"], length_scale=z_params["length_scale"], sigma=z_params["sigma"],
+        )
+        stage_t = log_stage("G_stack exact", stage_t)
+        H_stack = H_sa(
+            Gamma_stack, gamma_val, r, Z,
+            nu=z_params["nu"], length_scale=z_params["length_scale"], sigma=z_params["sigma"],
+            batch_size=int(H_batch_size),
+        )
+        stage_t = log_stage("H_stack exact", stage_t)
+    elif operator_method_l in {"rff", "random_fourier", "random-fourier"}:
+        omega, phase, rff_scale = sample_matern_rff(
+            num_features=int(operator_num_features),
+            input_dim=r.shape[1],
+            nu=z_params["nu"],
+            length_scale=z_params["length_scale"],
+            sigma=z_params["sigma"],
+            device=torch.device(dev),
+            dtype=dtype,
+            seed=operator_seed,
+        )
+        stage_t = log_stage("RFF feature sample", stage_t)
+        G_stack = compute_G_rff(
+            Gamma_stack, gamma_val, r, Z,
+            omega=omega, phase=phase, scale=rff_scale,
+        )
+        stage_t = log_stage("G_stack RFF", stage_t)
+        H_stack = compute_H_rff(
+            Gamma_stack, gamma_val, r, Z,
+            omega=omega, phase=phase, scale=rff_scale,
+            batch_size=int(H_batch_size),
+        )
+        stage_t = log_stage("H_stack RFF", stage_t)
+    else:
+        raise ValueError(f"Unknown operator_method={operator_method!r}. Use 'exact' or 'rff'.")
 
     optimizer = RKDRL_Optimizer(device=dev, dtype=dtype)
     B_hat, history_obj, history_be = optimizer.optimize(
@@ -246,6 +309,8 @@ def KE_DRL(
         negativity_penalty_lambda=negativity_penalty_lambda,
         max_B_norm=max_B_norm,
         B_ridge_penalty=B_ridge_penalty,
+        ridge_mode=ridge_mode,
+        diagnostic_interval=diagnostic_interval,
         verbose=verbose,
     )
 

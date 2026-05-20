@@ -10,6 +10,7 @@ reward_dim: 3
 action_dim: 1
 num_grid_points: 50
 random_seed: 20260512
+dtype: float32
 experiment:
   num_replicates: 3
 benchmark:
@@ -28,6 +29,10 @@ H_batch_size: 8
 d_r_method: song  #song, bellman, Schuster
 bandwidth: 1.5
 lambda_rec: 0.02
+operator_approximation:
+  method: rff
+  num_features: 64
+  seed_offset: 314159
 target_set:
   mode: train_subset
   num_points: 10
@@ -40,6 +45,8 @@ optimization:
   FP_penalty_lambda: 0.0
   num_steps: 80
   target_batch_size: 10
+  diagnostic_interval: 10
+  ridge_mode: frobenius
   initial_scale: 1e-3
   use_low_rank: False
   B_positive: False
