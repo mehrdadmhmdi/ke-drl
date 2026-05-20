@@ -1,5 +1,6 @@
 import torch
 
+@torch.no_grad()
 def Gamma_sa(K_sa: torch.Tensor, k_sa: torch.Tensor, lambda_reg: float):
     """
     Calculation of Gamma_sa = (K + n*λ I)^(-1) k

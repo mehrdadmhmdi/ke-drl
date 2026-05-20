@@ -67,6 +67,7 @@ def compute_H_rows(i_batch, Gamma_sa, gamma, R, Z, kernel):
     return i_batch_t, out
 
 
+@torch.no_grad()
 def H_sa(Gamma_sa, gamma, R, Z, nu, length_scale, sigma=1.0, batch_size=10, check_props=False):
     """Construct H for either a single Gamma or a stack of L Gammas.
 

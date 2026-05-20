@@ -444,7 +444,7 @@ class RecoverAndPlot:
     @torch.no_grad()
     def plot_operator_check_2d(self, cache, R, gamma, dims=(0,1),
                                n1=80, n2=80, margin_factor=0.35,
-                               max_rewards=2000, outdir="./plots/"):
+                               max_rewards=2000, reward_batch_size=16, outdir="./plots/"):
         os.makedirs(outdir, exist_ok=True)
         beta, Zg = cache["beta"], cache["Z_grid"]
         nu, ell, sig = cache["nu"], cache["length_scale"], cache["sigma_k"]
@@ -466,11 +466,15 @@ class RecoverAndPlot:
             Ruse = R.to(dev, dt)
 
         Q_out = torch.zeros(Qd.shape[0], dtype=dt, device=dev)
+        beta_vec = beta.view(-1).to(dev, dt)
+        gamma_z = float(gamma) * Zg
         m = Zg.shape[0]
-        for r in Ruse:
-            shifted = (gamma * Zg) + r
-            K = matern_kernel(Qd, shifted, nu=nu, length_scale=ell, sigma=sig)
-            Q_out += K @ beta.view(-1)
+        reward_batch_size = max(1, int(reward_batch_size))
+        for i0 in range(0, Ruse.shape[0], reward_batch_size):
+            Rb = Ruse[i0:i0 + reward_batch_size]
+            shifted = gamma_z.unsqueeze(0) + Rb.unsqueeze(1)
+            K = matern_kernel(Qd, shifted.reshape(-1, Zg.shape[1]), nu=nu, length_scale=ell, sigma=sig)
+            Q_out += torch.einsum("qbm,m->q", K.view(Qd.shape[0], Rb.shape[0], m), beta_vec)
             del K, shifted
         Tmu2d = (Q_out / float(Ruse.shape[0])).view_as(mu2d_hat).contiguous()
 

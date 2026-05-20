@@ -17,7 +17,6 @@ in the previous per-l implementation.
 
 from __future__ import annotations
 
-import numpy as np
 import torch
 from typing import Optional
 
@@ -55,6 +54,7 @@ def _bilinear_block_stacked(K_block: torch.Tensor, Gamma_2d: torch.Tensor) -> to
     return out
 
 
+@torch.no_grad()
 def compute_G_pytorch_batched(
     transformed: torch.Tensor,
     Gamma_sa: torch.Tensor,
@@ -130,8 +130,6 @@ def compute_G_pytorch_batched(
                 G[i0:i1, j_i0:j_i1] += G_block.squeeze(0)
 
             del Kblk, K4, G_block
-            if device.type == "cuda":
-                torch.cuda.empty_cache()
 
     if check_props:
         if is_stack:
@@ -161,10 +159,10 @@ def compute_G_pytorch_semivectorized(
 
 def _check_G_properties(G) -> None:
     """Optional symmetry / PSD diagnostics for the single-Gamma path."""
-    G = np.asarray(G)
-    print("G is symmetric:", np.allclose(G, G.T, atol=1e-8))
+    G = torch.as_tensor(G)
+    print("G is symmetric:", bool(torch.allclose(G, G.T, atol=1e-8)))
     try:
-        eigs = np.linalg.eigvalsh(0.5 * (G + G.T))
+        eigs = torch.linalg.eigvalsh(0.5 * (G + G.T))
         print("G min eigenvalue:", float(eigs.min()))
-    except np.linalg.LinAlgError:
+    except RuntimeError:
         print("G eigen decomposition failed.")

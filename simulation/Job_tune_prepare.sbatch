@@ -1,18 +1,17 @@
 #!/bin/bash
 ##SBATCH --account=bfez-delta-gpu
 #SBATCH --account=bfez-dtai-gh
-#SBATCH --job-name=KEDRL_TUNE
-#SBATCH --output=logs/tune_%A_%a.log
-#SBATCH --time=12:00:00
+#SBATCH --job-name=KEDRL_TUNE_DATA
+#SBATCH --output=logs/tune_data.%j.log
+#SBATCH --time=04:00:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
-#SBATCH --mem=32g
+#SBATCH --mem=16g
 #SBATCH --cpus-per-task=4
 ##SBATCH --partition=gpuA100x8
 #SBATCH --partition=ghx4
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-15
 
 echo "Job ID:    ${SLURM_JOB_ID}"
 echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
@@ -36,9 +35,23 @@ echo $CUDA_VISIBLE_DEVICES
 set -euo pipefail
 
 BASE=$PWD
-RUN="$BASE/runs/tune_global_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
-mkdir -p "$BASE/logs" "$RUN" "$RUN/data" "$RUN/logs" "$RUN/mu" "$RUN/metrics" "$RUN/plots"
-SHARED_DATA_DIR="${KEDRL_SHARED_DATA_DIR:-$BASE/runs/tune_shared_data/data}"
+RUN="${KEDRL_SHARED_RUN:-$BASE/runs/tune_shared_data}"
+mkdir -p "$BASE/logs"
+
+if [ -e "$RUN/data/Z_true.pt" ] && [ -e "$RUN/data/offline_data_0.pt" ] && [ -e "$RUN/data/offline_data_49.pt" ] && [ "${KEDRL_PREP_FORCE:-0}" != "1" ]; then
+  echo "Shared tuning data already exists at $RUN"
+  echo "Set KEDRL_PREP_FORCE=1 to regenerate it."
+  exit 0
+fi
+
+if [ "${KEDRL_PREP_FORCE:-0}" = "1" ] && [ -d "$RUN" ]; then
+  case "$(realpath "$RUN")" in
+    "$(realpath "$BASE")"/runs/tune_shared_data*) rm -rf "$RUN" ;;
+    *) echo "Refusing to remove unexpected path: $RUN" >&2; exit 1 ;;
+  esac
+fi
+
+mkdir -p "$RUN" "$RUN/data" "$RUN/logs"
 
 if [ -z "${KEDRL_SRC:-}" ] && [ -d "$BASE/../src" ]; then
   KEDRL_SRC="$BASE/../src"
@@ -51,14 +64,11 @@ if [ -n "${KEDRL_SRC:-}" ] && [ -d "$KEDRL_SRC" ]; then
   echo "KEDRL_SRC: $KEDRL_SRC"
 else
   echo "KEDRL_SRC=${KEDRL_SRC:-unset} not found; using installed ke_drl package." >&2
-  if [ "${KEDRL_REINSTALL_FROM_GIT:-0}" = "1" ]; then
-    python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"
-  fi
   python - <<'PY'
 import importlib.util
 spec = importlib.util.find_spec("ke_drl")
 if spec is None:
-    raise SystemExit('ke_drl is not installed. Run: python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"')
+    raise SystemExit('ke_drl is not installed. Set KEDRL_SRC to the repository src directory.')
 print(f"Installed ke_drl source: {spec.origin}")
 PY
 fi
@@ -72,20 +82,32 @@ export PYTORCH_ALLOC_CONF="expandable_segments:True,max_split_size_mb:64,garbage
 
 cp "$BASE/main_offlinedata.py" "$RUN/"
 cp "$BASE/main_MonteCarloZ.py" "$RUN/"
-cp "$BASE/main_est.py" "$RUN/"
-cp "$BASE/main_tune_global.py" "$RUN/"
-cp "$BASE/mu_plot.py" "$RUN/"
 cp "$BASE/sim_utils.py" "$RUN/"
-cp "$BASE/sim_eval.py" "$RUN/"
 cp "$BASE/validate_sim_config.py" "$RUN/"
 cp "$BASE/parallel_offlinedata.py" "$RUN/"
-cp "$BASE/params_tune.yaml" "$RUN/"
-cp "$BASE/tuning_grid.yaml" "$RUN/"
+cp "$BASE/params_tune.yaml" "$RUN/params.yaml"
 
 cd "$RUN"
-if [ ! -d "$SHARED_DATA_DIR" ]; then
-  echo "Shared tuning data not found: $SHARED_DATA_DIR" >&2
-  echo "Run Job_tune_prepare.sbatch first, or set KEDRL_SHARED_DATA_DIR." >&2
-  exit 1
-fi
-python3 main_tune_global.py --combo-id "${SLURM_ARRAY_TASK_ID}" --shared-data-dir "$SHARED_DATA_DIR"
+echo "Shared tuning data folder: $(pwd)"
+echo "Using params:"
+python3 - <<'PY'
+import yaml
+with open("params.yaml", "r", encoding="utf-8") as f:
+    p = yaml.safe_load(f)
+print({
+    "n_ids": p["n_ids"],
+    "Z_sim": p["Z_sim"],
+    "experiment": p["experiment"],
+    "target_set": p["target_set"],
+    "num_grid_points": p["num_grid_points"],
+    "num_steps": p["optimization"]["num_steps"],
+})
+PY
+
+python3 validate_sim_config.py --params params.yaml
+python3 parallel_offlinedata.py --params params.yaml
+python3 main_MonteCarloZ.py
+
+echo "Shared data outputs:"
+ls -lh data/Z_true.pt data/offline_data_0.pt data/offline_data_49.pt
+echo "TUNING DATA PREP DONE"

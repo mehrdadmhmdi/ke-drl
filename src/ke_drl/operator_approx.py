@@ -55,6 +55,7 @@ def rff_features(x: torch.Tensor, omega: torch.Tensor, phase: torch.Tensor, scal
     return float(scale) * torch.cos(x @ omega.transpose(0, 1) + phase)
 
 
+@torch.no_grad()
 def compute_H_rff(
     Gamma_sa: torch.Tensor,
     gamma: float,
@@ -119,6 +120,7 @@ def compute_H_rff(
     return H
 
 
+@torch.no_grad()
 def compute_G_rff(
     Gamma_sa: torch.Tensor,
     gamma: float,

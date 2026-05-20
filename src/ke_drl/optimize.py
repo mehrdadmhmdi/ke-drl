@@ -312,7 +312,6 @@ class RKDRL_Optimizer:
             opt.step()
             with torch.no_grad():
                 self._project_frobenius_ball_(B, max_B_norm)
-            sched.step(float(loss.detach().cpu()))
 
             with torch.no_grad():
                 do_report = verbose and (step == 1 or step % report_every == 0 or step == int(num_steps))
@@ -336,6 +335,7 @@ class RKDRL_Optimizer:
                     )
                     full_loss_raw = full_bellman_raw + full_ridge + full_mass + full_neg
                     full_loss = full_loss_raw.clamp_min(eps)
+                    sched.step(float(full_loss.detach().cpu()))
                     history_obj.append(math.log(float(full_loss.detach().cpu())))
                     history_be.append(math.log(float(torch.sqrt(full_bellman).detach().cpu())))
                     history_components["objective"].append(float(full_loss_raw.detach().cpu()))
@@ -359,4 +359,4 @@ class RKDRL_Optimizer:
                 break
 
         self.last_diagnostics = history_components
-        return B.detach().cpu(), history_obj, history_be
+        return B.detach(), history_obj, history_be

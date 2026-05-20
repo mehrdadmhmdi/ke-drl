@@ -1,8 +1,5 @@
-import numpy as np
-from scipy.spatial.distance import cdist
-from scipy.special import gamma, kv
+from functools import lru_cache
 import torch
-import time
 import math
 # import torch_bessel
 
@@ -28,6 +25,10 @@ def matern_kernel_np(X1, X2, nu, length_scale, sigma=1.0):
     Returns:
         - kernel_matrix (np.ndarray): The computed Matern kernel matrix of shape (n_samples_x, n_samples_y).
     """
+    from scipy.spatial.distance import cdist
+    from scipy.special import gamma, kv
+    import numpy as np
+
     dist = cdist(X1, X2, metric='euclidean')
     scaled_dist = np.sqrt(2 * nu) * dist / length_scale
     scaled_safe = np.maximum(scaled_dist, np.finfo(float).eps)
@@ -37,6 +38,16 @@ def matern_kernel_np(X1, X2, nu, length_scale, sigma=1.0):
     kernel[dist == 0] = sigma ** 2  # variance on the diagonal
 
     return kernel
+
+
+@lru_cache(maxsize=None)
+def _matern_half_integer_coefficients(p: int) -> tuple[tuple[float, ...], float]:
+    coeffs = tuple(
+        float(math.factorial(2 * p - m) // (math.factorial(p - m) * math.factorial(m)))
+        for m in range(p + 1)
+    )
+    prefac = math.factorial(p) / math.factorial(2 * p)
+    return coeffs, float(prefac)
 
 
 def matern_kernel( X1: torch.Tensor,X2: torch.Tensor, nu: float,length_scale: float,sigma: float = 1.0)-> torch.Tensor:
@@ -79,14 +90,14 @@ def matern_kernel( X1: torch.Tensor,X2: torch.Tensor, nu: float,length_scale: fl
     # Construct the polynomial sum ∑_{k=0}^p ( (p+k)! / (k!(p-k)!) ) · (2z)^{p-k}
     # coefficients for powers t^m, m=0..p: a_m = (2p - m)! / ((p - m)! * m!)
     # compute on CPU as Python ints, then cast
-    a = [math.factorial(2 * p - m) // (math.factorial(p - m) * math.factorial(m)) for m in range(p + 1)]
+    a, prefac_base = _matern_half_integer_coefficients(p)
     # Horner: result = a_p; for m=p-1..0: result = result * t + a_m
     result = z.new_full(z.shape, float(a[-1]))  # one output buffer
     for m in range(p - 1, -1, -1):
         result.mul_(z).add_(float(a[m]))                             # in-place
 
     # Prefactor and final multiply (reuse exp_term as K to avoid another N×M)
-    prefac = (sigma ** 2) * (math.factorial(p) / math.factorial(2 * p))
+    prefac = (sigma ** 2) * prefac_base
     exp_term.mul_(prefac)                                            # exp_term := prefac * exp(-z)
     exp_term.mul_(result)                                            # exp_term := K
     del dists, z, result, a

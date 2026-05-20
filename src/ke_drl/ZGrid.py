@@ -1,9 +1,8 @@
 import torch
-import numpy as np
-from scipy.spatial import ConvexHull
 
 class ZGrid:
     @staticmethod
+    @torch.no_grad()
     def _kmeans_torch(r: torch.Tensor, n_clusters: int, max_iter: int = 100, tol: float = 1e-4) -> torch.Tensor:
         device, dtype = r.device, r.dtype
         N, d = r.shape
@@ -22,17 +21,26 @@ class ZGrid:
         return centers
 
     @staticmethod
-    def _convex_hull_vertices_numpy(points_t: torch.Tensor) -> torch.Tensor:
-        """
-        Convert to NumPy, get hull vertices via SciPy, return Torch indices on original device.
-        """
-        device = points_t.device
-        pts_np = points_t.detach().cpu().numpy()   # (K,D)
-        hull = ConvexHull(pts_np)
-        verts_np = hull.vertices                   # np indices
-        return torch.as_tensor(verts_np, dtype=torch.long, device=device)
+    @torch.no_grad()
+    def _boundary_vertices_torch(points_t: torch.Tensor, n_directions: int = 512) -> torch.Tensor:
+        """Approximate hull vertices with support directions, entirely on device."""
+        device, dtype = points_t.device, points_t.dtype
+        _, d = points_t.shape
+        eye = torch.eye(d, device=device, dtype=dtype)
+        directions = [eye, -eye]
+        extra = max(0, int(n_directions) - 2 * d)
+        if extra:
+            gen = torch.Generator(device=device)
+            gen.manual_seed(20260512)
+            random_dirs = torch.randn((extra, d), generator=gen, device=device, dtype=dtype)
+            random_dirs = random_dirs / random_dirs.norm(dim=1, keepdim=True).clamp_min(torch.finfo(dtype).eps)
+            directions.append(random_dirs)
+        dirs = torch.cat(directions, dim=0)
+        vertices = torch.argmax(points_t @ dirs.transpose(0, 1), dim=0)
+        return torch.unique(vertices)
 
     @staticmethod
+    @torch.no_grad()
     def Z_kmeans(r: torch.Tensor, n_clusters: int, constant_factor: float) -> torch.Tensor:
         """
         Cluster reward samples and expand hull vertices radially.
@@ -58,8 +66,8 @@ class ZGrid:
         # 2) Global centroid
         mu = centers.mean(dim=0)  # (D,)
 
-        # 3) Convex hull vertices via SciPy (NumPy hop)
-        vertices = ZGrid._convex_hull_vertices_numpy(centers)  # (H,)
+        # 3) Boundary-like vertices without leaving Torch/GPU.
+        vertices = ZGrid._boundary_vertices_torch(centers)  # (H,)
 
         # 4) Radial expansion
         expanded = centers.clone()

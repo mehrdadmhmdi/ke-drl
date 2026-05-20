@@ -1,5 +1,6 @@
 import torch
 
+@torch.no_grad()
 def Phi_sa(K_sa_prime: torch.Tensor,
            Gamma_sa  : torch.Tensor,
            eta_plus  : torch.Tensor) -> torch.Tensor:
