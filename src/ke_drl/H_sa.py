@@ -1,131 +1,114 @@
+"""Construction of the H operator for the KE-DRL Bellman residual.
+
+Given a 1D weight vector Gamma in R^N or a stack of L weight vectors
+Gamma in R^{N x L}, this module returns
+
+    H[i, j]      = sum_p Gamma[p]     * k_Z(R[p], Z[i] - gamma Z[j])     (single)
+    H[l, i, j]   = sum_p Gamma[p, l]  * k_Z(R[p], Z[i] - gamma Z[j])     (stacked)
+
+following equation (h_ij) in draft2.tex. The stacked path is the hot path used
+by the global KE-DRL estimator and is fully vectorized across the L target
+points: the (N, b*m) kernel block is computed once per row-batch and reused
+for every l via a single matmul, instead of being rebuilt L times in a Python
+loop.
+"""
+
+from __future__ import annotations
+
 import torch
+
 from .matern_kernel import matern_kernel
 
+
 def compute_H_rows(i_batch, Gamma_sa, gamma, R, Z, kernel):
-    """
-    For each i in i_batch (where i < m), compute H[i, :] of length m:
+    """Compute H[i_batch, :] for one row-batch.
 
-      H[i,j] = sum_{p=0..(n-1)}  Gamma_sa[p] * k( R[p], Z[i] - gamma * Z[j] ).
-
-    Returns: (i_batch, chunk_result) with chunk_result.shape = (len(i_batch), m).
+    Returns a chunk of shape (b, m) if Gamma_sa is 1D or (n, 1), and a chunk
+    of shape (L, b, m) if Gamma_sa has shape (n, L). The kernel block
+    K(R, shifts_flat) is constructed once and reused across all L stacked
+    weight vectors.
     """
-    # Shapes
-    nR = R.shape[0]          # n
-    nZ = Z.shape[0]          # m
-    d  = R.shape[1]
     device, dtype = Z.device, Z.dtype
 
-    # ensure tensors on same device/dtype
     if not isinstance(i_batch, torch.Tensor):
         i_batch_t = torch.as_tensor(i_batch, device=device, dtype=torch.long)
     else:
         i_batch_t = i_batch.to(device=device, dtype=torch.long)
 
-    Gamma_sa  = Gamma_sa.to(device=device, dtype=dtype).reshape(-1)     # (n,)
-    R         = R.to(device=device, dtype=dtype)                         # (n,d)
-    Z         = Z.to(device=device, dtype=dtype)                         # (m,d)
-    gamma_t   = torch.as_tensor(gamma, device=device, dtype=dtype)       # scalar
+    R = R.to(device=device, dtype=dtype)
+    Z = Z.to(device=device, dtype=dtype)
+    gamma_t = torch.as_tensor(gamma, device=device, dtype=dtype)
 
-    b = i_batch_t.numel()  # batch length
-    chunk_result = torch.zeros((b, nZ), device=device, dtype=dtype)
+    b = int(i_batch_t.numel())
+    nR = R.shape[0]
+    nZ = Z.shape[0]
+    d = R.shape[1]
 
-    # shifts: (b, m, d) with shifts[b_i, j, :] = Z[i_batch[b_i]] - gamma * Z[j]
-    Zi      = Z.index_select(dim=0, index=i_batch_t)                     # (b,d)
-    shifts  = Zi.unsqueeze(1) - gamma_t * Z.unsqueeze(0)                 # (b,m,d)
-    shifts2 = shifts.reshape(b * nZ, d)                                   # (b*m, d)
+    Zi = Z.index_select(dim=0, index=i_batch_t)                # (b, d)
+    shifts = Zi.unsqueeze(1) - gamma_t * Z.unsqueeze(0)        # (b, m, d)
+    shifts_flat = shifts.reshape(b * nZ, d)                    # (b*m, d)
 
-    # kernel matrix between R (n,d) and shifts2 (b*m,d): (n, b*m)
-    K_full = kernel(R, shifts2)                                          # (n, b*m)
+    # K(R, shifts_flat): (n, b*m) — computed exactly once per i_batch.
+    K_full = kernel(R, shifts_flat)
 
-    # row_data for all i in batch at once: (1,n) @ (n, b*m) -> (1, b*m)
-    row_data_flat = (Gamma_sa.unsqueeze(0) @ K_full)                     # (1, b*m)
-    row_data = row_data_flat.reshape(b, nZ)                               # (b, m)
+    g = Gamma_sa.to(device=device, dtype=dtype)
+    if g.ndim == 2 and g.shape[1] > 1:
+        if g.shape[0] != nR:
+            raise ValueError("Gamma rows {} must equal R rows {}.".format(g.shape[0], nR))
+        L = g.shape[1]
+        out = (g.transpose(0, 1) @ K_full).reshape(L, b, nZ)   # (L, b, m)
+    else:
+        if g.ndim == 2:
+            g = g.reshape(-1)
+        if g.numel() != nR:
+            raise ValueError("Gamma length {} must equal R rows {}.".format(g.numel(), nR))
+        out = (g.unsqueeze(0) @ K_full).reshape(b, nZ)         # (b, m)
 
-    chunk_result.copy_(row_data)
-    return i_batch, chunk_result
+    return i_batch_t, out
 
 
-def H_sa(Gamma_sa, gamma, R, Z, nu, length_scale, sigma, batch_size=10, check_props=False):
+def H_sa(Gamma_sa, gamma, R, Z, nu, length_scale, sigma=1.0, batch_size=10, check_props=False):
+    """Construct H for either a single Gamma or a stack of L Gammas.
+
+    R has shape (n, d), Z has shape (m, d), Gamma_sa has shape (n,) or (n, L).
+    The (R, shifts) kernel block for each row-batch is constructed once and
+    reused for all L stacked target points, cutting kernel work by a factor
+    of L over the previous per-l Python loop.
     """
-    Build H of shape (m,m) where:
-      R: shape (n, d)
-      Z: shape (m, d)
-      H[i,j] = sum_{p=0..n-1} Gamma_sa[p] * k( R[p],  Z[i] - gamma*Z[j] ).
-
-    If Gamma_sa has shape (n, L), returns a stack with shape (L, m, m).
-
-    - Chunked over i in [0..(m-1)]
-    - Time complexity: O(n * m^2)
-    - Memory-friendly row-wise batch approach
-    """
-    # ensure Torch tensors
-    R        = torch.as_tensor(R)
-    Z        = torch.as_tensor(Z)
+    R = torch.as_tensor(R)
+    Z = torch.as_tensor(Z)
     Gamma_sa = torch.as_tensor(Gamma_sa)
 
     device, dtype = Z.device, Z.dtype
     nR = R.shape[0]
-    d  = R.shape[1]
-    mZ = Z.shape[0]  # m
+    mZ = Z.shape[0]
 
-    if Gamma_sa.ndim == 2:
-        if Gamma_sa.shape[0] != nR:
-            raise ValueError(f"Gamma_sa rows {Gamma_sa.shape[0]} must equal R rows {nR}.")
-        mats = [
-            H_sa(
-                Gamma_sa[:, ell], gamma, R, Z, nu, length_scale, sigma,
-                batch_size=batch_size, check_props=check_props,
-            )
-            for ell in range(Gamma_sa.shape[1])
-        ]
-        return torch.stack(mats, dim=0)
-    Gamma_sa = Gamma_sa.reshape(-1)
-    if Gamma_sa.numel() != nR:
-        raise ValueError(f"Gamma_sa length {Gamma_sa.numel()} must equal R rows {nR}.")
-
-    # kernel closure to match original call pattern kernel(R, shift)
     kernel = lambda x1, x2: matern_kernel(x1, x2, length_scale=length_scale, nu=nu, sigma=sigma)
-
-    # chunk row indices
     row_indices = torch.arange(mZ, device=device)
-    chunks = [row_indices[i: i + batch_size] for i in range(0, mZ, batch_size)]
 
-    # assemble final H (on device)
+    if Gamma_sa.ndim == 2 and Gamma_sa.shape[1] > 1:
+        if Gamma_sa.shape[0] != nR:
+            raise ValueError("Gamma_sa rows {} must equal R rows {}.".format(Gamma_sa.shape[0], nR))
+        L = Gamma_sa.shape[1]
+        H_stack = torch.zeros((L, mZ, mZ), device=device, dtype=dtype)
+        for i0 in range(0, mZ, batch_size):
+            i_batch = row_indices[i0 : i0 + batch_size]
+            _, chunk = compute_H_rows(i_batch, Gamma_sa, gamma, R, Z, kernel)
+            H_stack[:, i_batch.to(torch.long), :] = chunk
+        if check_props:
+            print("H stacked finite:", bool(torch.isfinite(H_stack).all()))
+        return H_stack
+
+    g = Gamma_sa.reshape(-1) if Gamma_sa.ndim == 2 else Gamma_sa
+    if g.numel() != nR:
+        raise ValueError("Gamma_sa length {} must equal R rows {}.".format(g.numel(), nR))
+
     H = torch.zeros((mZ, mZ), device=device, dtype=dtype)
-
-    for i_batch in chunks:
-        _, chunk_mat = compute_H_rows(i_batch, Gamma_sa, gamma, R, Z, kernel)  # (len, m)
-        H.index_copy_(0, i_batch.to(dtype=torch.long), chunk_mat)
+    for i0 in range(0, mZ, batch_size):
+        i_batch = row_indices[i0 : i0 + batch_size]
+        _, chunk = compute_H_rows(i_batch, g, gamma, R, Z, kernel)
+        H.index_copy_(0, i_batch.to(dtype=torch.long), chunk)
 
     if check_props:
-        finite = bool(torch.isfinite(H).all())
-        print(f"H finite: {finite}")
+        print("H finite:", bool(torch.isfinite(H).all()))
     return H
-
-#=================================
-##  usage Example
-#=================================
-# if __name__ == "__main__":
-#     torch.manual_seed(0)
-#
-#     # dimensions
-#     n = 5   # |R|
-#     m = 6   # |Z|
-#     d = 2   # dimension
-#
-#     # toy data
-#     R = torch.randn(n, d)
-#     Z = torch.randn(m, d)
-#     Gamma_sa = torch.rand(n)           # weights
-#     gamma = 0.9
-#
-#     # kernel parameters
-#     nu = 1.5
-#     length_scale = 1.0
-#     sigma = 1.0
-#
-#     # build H
-#     H = H_sa(Gamma_sa, gamma, R, Z, nu, length_scale, sigma, batch_size=2)
-#
-#     print("H shape:", H.shape)
-#     print("H (rounded):\n", H.cpu().numpy().round(3))

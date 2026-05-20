@@ -325,6 +325,27 @@ operator_num_features = as_int(operator_cfg.get("num_features", 128))
 operator_seed_offset = as_int(operator_cfg.get("seed_offset", 314159))
 operator_seed = seed + operator_seed_offset
 
+ratio_cfg = dict(P.get("ratio") or {})
+ratio_n_basis_raw = ratio_cfg.get("n_basis")
+ratio_n_basis = (
+    None
+    if ratio_n_basis_raw in (None, "None", "none", "null", 0, "0")
+    else as_int(ratio_n_basis_raw)
+)
+ratio_basis_source = str(ratio_cfg.get("basis_source", "denominator")).lower()
+ratio_basis_seed_offset_raw = ratio_cfg.get("basis_seed_offset")
+ratio_basis_seed = (
+    None
+    if ratio_basis_seed_offset_raw in (None, "None", "none")
+    else seed + as_int(ratio_basis_seed_offset_raw)
+)
+ratio_lambda_raw = ratio_cfg.get("lambda_reg")
+ratio_lambda_reg = (
+    None
+    if ratio_lambda_raw in (None, "None", "none", "null")
+    else as_float(ratio_lambda_raw)
+)
+
 print("Data and parameters loaded.")
 print(f"offline path: {df_path}")
 print(f"benchmark true-Z path: {truth['path']}")
@@ -339,6 +360,13 @@ print(f"lambda_Gamma={lambda_reg}, lambda_B={lambda_B}, d_r_method={d_r_method}"
 print(f"dtype={est_dtype}, operator_method={operator_method}, operator_num_features={operator_num_features}")
 print(f"ridge_mode={ridge_mode}, diagnostic_interval={diagnostic_interval}")
 print(f"mass_anchor_lambda={mass_anchor_lambda}, target_mass={target_mass}")
+print(
+    "uLSIF basis: source={}, n_basis={}, lambda_reg={}".format(
+        ratio_basis_source,
+        ratio_n_basis if ratio_n_basis is not None else "full-N",
+        ratio_lambda_reg if ratio_lambda_reg is not None else lambda_reg,
+    )
+)
 print(
     "optimizer stabilizers: "
     f"lambda_neg={negativity_penalty_lambda}, max_B_norm={max_B_norm}, "
@@ -393,6 +421,10 @@ B_hat, history_obj, history_be, pre = KE_DRL(
     operator_method=operator_method,
     operator_num_features=operator_num_features,
     operator_seed=operator_seed,
+    ratio_n_basis=ratio_n_basis,
+    ratio_basis_source=ratio_basis_source,
+    ratio_basis_seed=ratio_basis_seed,
+    ratio_lambda_reg=ratio_lambda_reg,
     device=None,
     dtype=est_dtype,
     verbose=True,
@@ -573,33 +605,8 @@ if tool is not None:
         nu=nu,
         length_scale=length_scale,
         sigma_k=sigma_k,
-        do_joint_dims=(0, 1),
-        n1=120,
-        n2=120,
-        outdir=str(plot_dir / "ind_plots"),
+        outdir=str(plot_dir),
     )
-    try:
-        tool.plot_operator_check_2d(
-            cache,
-            R=r0.to(device=Z_grid.device, dtype=Z_grid.dtype),
-            gamma=gamma_val,
-            dims=(0, 1),
-            outdir=str(plot_dir),
-        )
-    except Exception as exc:
-        print(f"Operator-check plot skipped for replicate {offline_data_id}: {exc!r}")
-    del cache
-elif RecoverAndPlot is None:
-    print("Density and loss plots skipped; mean-embedding metrics were still saved.")
-else:
-    print("Density and loss plots are only generated for offline replicate 0.")
-
-del pre
-gc.collect()
-if torch.cuda.is_available():
-    torch.cuda.empty_cache()
 
 elapsed = time.time() - start
-print("ALL DONE!")
-print(f"Computation time: {int(elapsed // 60)} minutes and {int(elapsed % 60)} seconds")
-print("=" * 70)
+print(f"Replicate {offline_data_id} finished in {elapsed:.1f}s")

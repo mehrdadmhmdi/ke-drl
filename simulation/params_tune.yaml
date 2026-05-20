@@ -38,6 +38,11 @@ target_set:
   num_points: 100
   seed_offset: 7919
   exclude_benchmark: True
+ratio:
+  n_basis: 250
+  basis_source: numerator
+  basis_seed_offset: 1729
+  lambda_reg: null
 #===========================
 optimization:
   lr: 1e-3
@@ -46,7 +51,7 @@ optimization:
   num_steps: 400
   target_batch_size: 30
   diagnostic_interval: 10
-  ridge_mode: frobenius
+  ridge_mode: rkhs
   initial_scale: 1e-3
   use_low_rank: False
   B_positive: False

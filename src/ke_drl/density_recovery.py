@@ -112,24 +112,11 @@ class RecoverAndPlot:
         if method == "bellman":
             return apply_map(phi)
         if method == "Schuster":
-            # NOTE: left as-is; untouched
-            L = torch.linalg.cholesky(A)
-            L_inv = torch.linalg.inv(L)
-            A_inv_cholesky = torch.matmul(L_inv.T, L_inv)
-
-            m = Kgg.size(0)
-            n = K_sa.size(0)
-
-            Kgg = matern_kernel(Z_grid, Z_grid, nu=nu, length_scale=length_scale, sigma=sigma_k)
-            Aux_Kgg = torch.linalg.inv(torch.linalg.cholesky(Kgg +  lambda_reg * torch.eye(m, device=Z_grid.device, dtype=Z_grid.dtype)))
-            Kgg_inv = torch.matmul(Aux_Kgg.T, Aux_Kgg)
-
-            Aux_K_sa = torch.linalg.inv(torch.linalg.cholesky(K_sa + n*lambda_reg * torch.eye(n, device=Z_grid.device, dtype=Z_grid.dtype)))
-            K_sa_inv = torch.matmul(Aux_K_sa.T, Aux_K_sa)
-
-            num = (Kgg_inv**2) * Kgg * K_sa_inv * k_sa
-            OP  = num/(m**2)
-            return OP*Kgg
+            raise NotImplementedError(
+                "The Schuster recovery branch is a work-in-progress placeholder "
+                "and references variables before they are defined. Use "
+                "'song' or 'bellman' until the closed-form formula is finalised."
+            )
         raise ValueError(f"unknown method: {method}")
 
     @torch.no_grad()

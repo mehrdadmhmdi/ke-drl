@@ -59,6 +59,9 @@ def KE_DRL(
     ratio_nu: Optional[float] = None,
     ratio_length_scale: Optional[float] = None,
     ratio_sigma: Optional[float] = None,
+    ratio_n_basis: Optional[int] = None,
+    ratio_basis_source: str = "denominator",
+    ratio_basis_seed: Optional[int] = None,
     num_grid_points: int = 200,
     # --- implementation controls ---
     hull_expand_factor: float = 1.8,
@@ -180,7 +183,16 @@ def KE_DRL(
         lambda_reg=ratio_reg,
         **ratio_params,
     )
-    alpha = ulsif.fit(s1, a1, target_p_choice, target_p_params, plot=False)
+    alpha = ulsif.fit(
+        s1,
+        a1,
+        target_p_choice,
+        target_p_params,
+        n_basis=ratio_n_basis,
+        basis_source=ratio_basis_source,
+        basis_seed=ratio_basis_seed if ratio_basis_seed is not None else random_seed,
+        plot=False,
+    )
     eta_plus_raw = ulsif.predict(s1, a1).to(dev, dtype).reshape(-1, 1)
     eta_plus = eta_plus_raw
     if eta_clip_min is not None:
@@ -336,6 +348,15 @@ def KE_DRL(
         "optimizer_diagnostics": optimizer.last_diagnostics,
         "x_kernel_params": x_params,
         "z_kernel_params": z_params,
+        "ratio_kernel_params": ratio_params,
+        "lambda_Gamma": torch.as_tensor(lambda_reg, dtype=dtype, device=dev),
+        "lambda_B": torch.as_tensor(lambda_B, dtype=dtype, device=dev),
+    }
+
+    if verbose:
+        print(f"Done in {time.time() - t0:.2f}s.")
+
+    return B_hat_torch, history_obj, history_be, pre_computed_matrices
         "ratio_kernel_params": ratio_params,
         "lambda_Gamma": torch.as_tensor(lambda_reg, dtype=dtype, device=dev),
         "lambda_B": torch.as_tensor(lambda_B, dtype=dtype, device=dev),

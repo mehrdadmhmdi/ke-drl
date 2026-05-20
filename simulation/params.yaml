@@ -33,15 +33,23 @@ d_r_method: song  #song, bellman, Schuster
 bandwidth: 1.5
 lambda_rec: 0.02
 operator_approximation:
-  method: rff
-  num_features: 128
-  seed_offset: 314159
+  method: rff           # 'rff' is the fast default; 'exact' is now vectorized
+  num_features: 128     # over L target points but still scales as L*m^2*N^2
+  seed_offset: 314159   # for the (Z, R)-only kernel block.
 # Target set for the global X objective in each offline replicate.
 target_set:
   mode: train_subset
   num_points: 150
   seed_offset: 7919
   exclude_benchmark: True
+# uLSIF density-ratio options: full-N basis is correct but O(N^3); a
+# numerator-side subsample matches the classical Kanamori (2009) construction
+# and is the recommended setting for the n_ids x n_timepoints values below.
+ratio:
+  n_basis: 400
+  basis_source: numerator
+  basis_seed_offset: 1729
+  lambda_reg: null      # null -> reuse `lambda_reg` above
 #===========================
 optimization:
   lr: 1e-3
@@ -50,7 +58,10 @@ optimization:
   num_steps: 1000
   target_batch_size: 30
   diagnostic_interval: 20
-  ridge_mode: frobenius
+  # The draft's KE-DRL loss in eq:global_B_objective_impl uses the RKHS
+  # ridge tr(B^T K_X B). 'rkhs' is faithful to the paper; 'frobenius'
+  # was an older speed-up that approximates K_X by I.
+  ridge_mode: rkhs
   initial_scale: 1e-3
   use_low_rank: False
   B_positive: False
@@ -61,8 +72,14 @@ optimization:
   Sum_one_W: False
   NonNeg_W: False
   B_ridge_penalty: False
+  # IDENTIFIABILITY DEVICE. The headline Bellman residual in
+  # eq:global_B_objective_impl is homogeneous in B, so B=0 is a trivial
+  # minimizer. The mass-anchor penalty (1^T u_l - target_mass)^2 fixes the
+  # scale at the target points without imposing a simplex or positivity
+  # constraint. Setting mass_anchor_lambda: 0 disables it; in that case the
+  # optimizer will report the warning that B=0 may be a degenerate minimizer.
   mass_anchor_lambda: 1.0
-  target_mass: 1.0  #desired 1^T w for the anchor
+  target_mass: 1.0  # desired 1^T u_l for each target point
   negativity_penalty_lambda: 0.0
   max_B_norm: null
   eta_clip_min: 0.0
