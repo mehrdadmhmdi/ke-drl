@@ -8,6 +8,8 @@ import pandas as pd
 def main() -> None:
     rows = []
     for path in sorted(Path("runs").glob("tune_global_*/metrics/tuning_result.csv")):
+        if not (path.parent / "tuning_combo_metadata.json").exists():
+            continue
         df = pd.read_csv(path)
         df["run_dir"] = str(path.parents[1])
         rows.append(df)

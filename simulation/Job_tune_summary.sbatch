@@ -34,4 +34,50 @@ echo $CUDA_VISIBLE_DEVICES
 
 set -euo pipefail
 
+BASE=$PWD
+unset KEDRL_SRC
+KEDRL_GIT_URL="${KEDRL_GIT_URL:-https://github.com/mehrdadmhmdi/ke-drl.git}"
+KEDRL_GIT_REF="${KEDRL_GIT_REF:-main}"
+KEDRL_PIP_TARGET="$BASE/runs/.kedrl_site_summary_${SLURM_JOB_ID:-manual}"
+rm -rf "$KEDRL_PIP_TARGET"
+mkdir -p "$KEDRL_PIP_TARGET"
+echo "Installing ke_drl from git: ${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
+python3 -m pip install --no-cache-dir --upgrade --force-reinstall --no-deps \
+  --target "$KEDRL_PIP_TARGET" "git+${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
+export PYTHONPATH="$KEDRL_PIP_TARGET:${PYTHONPATH:-}"
+python3 - <<'PY'
+import ke_drl
+print(f"Installed ke_drl source: {ke_drl.__file__}")
+PY
+
+shopt -s nullglob
+for RUN in "$BASE"/runs/tune_global_*; do
+  [ -d "$RUN" ] || continue
+  [ -f "$RUN/main_tune_global.py" ] || continue
+  grep -q -- "--aggregate-only" "$RUN/main_tune_global.py" || { echo "Skipping $RUN: old tuning driver."; continue; }
+  if ! compgen -G "$RUN/mu/mu_hat_*.csv" >/dev/null; then
+    echo "Skipping $RUN: no mu_hat files yet."
+    continue
+  fi
+  COMBO_ID=$(python3 - "$RUN" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+run = Path(sys.argv[1])
+meta = run / "metrics" / "tuning_combo_metadata.json"
+if meta.exists():
+    print(json.loads(meta.read_text(encoding="utf-8"))["combo_id"])
+else:
+    m = re.search(r"_([0-9]+)$", run.name)
+    if not m:
+        raise SystemExit(f"cannot infer combo id from {run}")
+    print(int(m.group(1)))
+PY
+)
+  echo "Aggregating $RUN (combo ${COMBO_ID})"
+  (cd "$RUN" && python3 main_tune_global.py --combo-id "$COMBO_ID" --aggregate-only)
+done
+
 python3 summarize_tuning.py

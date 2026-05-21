@@ -35,24 +35,51 @@ def _link_or_copy(src: Path, dst: Path) -> None:
     src = src.resolve()
     dst.parent.mkdir(parents=True, exist_ok=True)
     if dst.exists() or dst.is_symlink():
-        dst.unlink()
+        return
     try:
         os.symlink(src, dst)
+    except FileExistsError:
+        return
     except OSError:
         try:
             os.link(src, dst)
+        except FileExistsError:
+            return
         except OSError:
-            shutil.copy2(src, dst)
+            tmp = dst.with_name(f"{dst.name}.tmp.{os.getpid()}")
+            shutil.copy2(src, tmp)
+            try:
+                os.replace(tmp, dst)
+            finally:
+                if tmp.exists():
+                    tmp.unlink()
 
 
-def stage_shared_data(shared_data_dir: Path, params: dict[str, Any], n_rep: int) -> None:
-    """Stage one shared offline-data/Z_true bundle into this config run."""
+def stage_shared_data(
+    shared_data_dir: Path,
+    params: dict[str, Any],
+    n_rep: int,
+    *,
+    offline_id: int | None = None,
+) -> None:
+    """Stage one shared offline-data/Z_true bundle into this config run.
+
+    In parallel Slurm mode each array task stages only its own offline dataset
+    plus the common benchmark truth. In local fallback mode all offline
+    datasets are staged.
+    """
     shared_data_dir = shared_data_dir.resolve()
     if not shared_data_dir.is_dir():
         raise FileNotFoundError(f"shared data directory does not exist: {shared_data_dir}")
 
     benchmark_output = str((params.get("benchmark") or {}).get("output", "Z_true.pt"))
-    required = [shared_data_dir / f"offline_data_{rep_id}.pt" for rep_id in range(n_rep)]
+    if offline_id is None:
+        rep_ids = list(range(n_rep))
+    else:
+        if offline_id < 0 or offline_id >= n_rep:
+            raise ValueError(f"offline_id={offline_id} outside 0,...,{n_rep - 1}.")
+        rep_ids = [offline_id]
+    required = [shared_data_dir / f"offline_data_{rep_id}.pt" for rep_id in rep_ids]
     required.append(shared_data_dir / benchmark_output)
     required.append(shared_data_dir / "benchmark_point.csv")
     missing = [str(path) for path in required if not path.exists()]
@@ -61,11 +88,41 @@ def stage_shared_data(shared_data_dir: Path, params: dict[str, Any], n_rep: int)
         raise FileNotFoundError(f"shared data directory is incomplete; missing:\n{preview}")
 
     data_dir = Path("data")
-    for rep_id in range(n_rep):
+    for rep_id in rep_ids:
         _link_or_copy(shared_data_dir / f"offline_data_{rep_id}.pt", data_dir / f"offline_data_{rep_id}.pt")
     _link_or_copy(shared_data_dir / benchmark_output, data_dir / benchmark_output)
     _link_or_copy(shared_data_dir / "benchmark_point.csv", data_dir / "benchmark_point.csv")
-    print(f"Reusing shared data from {shared_data_dir} for {n_rep} offline replicates.", flush=True)
+    if offline_id is None:
+        print(f"Reusing shared data from {shared_data_dir} for {n_rep} offline replicates.", flush=True)
+    else:
+        print(f"Reusing shared data from {shared_data_dir} for offline replicate {offline_id}.", flush=True)
+
+
+def write_yaml_atomic(path: Path, params: dict[str, Any]) -> None:
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    with open(tmp, "w", encoding="utf-8") as f:
+        yaml.safe_dump(params, f, sort_keys=False)
+    os.replace(tmp, path)
+
+
+def write_combo_metadata(combo_id: int, combo_name: str, overrides: dict[str, Any], n_rep: int) -> None:
+    Path("metrics").mkdir(exist_ok=True)
+    meta = {
+        "combo_id": combo_id,
+        "combo_name": combo_name,
+        "overrides": overrides,
+        "num_replicates": n_rep,
+    }
+    tmp = Path("metrics") / f"tuning_combo_metadata.json.tmp.{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(meta, f, sort_keys=True, indent=2)
+    os.replace(tmp, Path("metrics") / "tuning_combo_metadata.json")
+
+
+def expected_curve_count(params: dict[str, Any]) -> int:
+    n_rep = int(params.get("experiment", {}).get("num_replicates", 1))
+    n_bench = int((params.get("benchmark") or {}).get("num_points", 1))
+    return n_rep * n_bench
 
 
 def load_combo(grid_path: Path, combo_id: int) -> tuple[str, dict[str, Any]]:
@@ -157,6 +214,8 @@ def write_result(combo_id: int, combo_name: str, overrides: dict[str, Any], elap
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--combo-id", type=int, required=True)
+    parser.add_argument("--offline-id", type=int, default=None)
+    parser.add_argument("--aggregate-only", action="store_true")
     parser.add_argument("--base-params", default="params_tune.yaml")
     parser.add_argument("--grid", default="tuning_grid.yaml")
     parser.add_argument("--shared-data-dir", default=None)
@@ -170,17 +229,42 @@ def main() -> None:
     with open(args.base_params, "r", encoding="utf-8") as f:
         params = yaml.safe_load(f)
     params = deep_update(params, overrides)
-    with open("params.yaml", "w", encoding="utf-8") as f:
-        yaml.safe_dump(params, f, sort_keys=False)
+    write_yaml_atomic(Path("params.yaml"), params)
+    n_rep = int(params.get("experiment", {}).get("num_replicates", 1))
+    write_combo_metadata(args.combo_id, combo_name, overrides, n_rep)
+
+    if args.aggregate_only:
+        expected = expected_curve_count(params)
+        actual = len(list(Path("mu").glob("mu_hat_*.csv")))
+        if actual < expected:
+            print(
+                f"Warning: aggregating with {actual}/{expected} expected benchmark-replicate curves. "
+                "Some offline jobs may still be missing.",
+                flush=True,
+            )
+        run_step([sys.executable, "mu_plot.py"])
+        write_result(args.combo_id, combo_name, overrides, time.time() - start)
+        return
 
     run_step([sys.executable, "validate_sim_config.py", "--params", "params.yaml"])
 
-    n_rep = int(params.get("experiment", {}).get("num_replicates", 1))
     shared_data_dir = args.shared_data_dir or os.environ.get("KEDRL_SHARED_DATA_DIR")
     if shared_data_dir:
-        stage_shared_data(Path(shared_data_dir), params, n_rep)
-        run_step([sys.executable, "validate_sim_config.py", "--params", "params.yaml", "--data", "data/offline_data_0.pt"])
+        stage_shared_data(Path(shared_data_dir), params, n_rep, offline_id=args.offline_id)
+        validate_id = 0 if args.offline_id is None else args.offline_id
+        run_step(
+            [
+                sys.executable,
+                "validate_sim_config.py",
+                "--params",
+                "params.yaml",
+                "--data",
+                f"data/offline_data_{validate_id}.pt",
+            ]
+        )
     else:
+        if args.offline_id is not None:
+            raise ValueError("--offline-id requires --shared-data-dir so training uses the common offline/Z_true bundle.")
         workers = int(
             params.get("offline_data_workers")
             or os.environ.get("OFFLINE_DATA_WORKERS")
@@ -191,11 +275,16 @@ def main() -> None:
         run_parallel_offline_data(n_rep, workers=max(1, min(n_rep, workers)), validate=True)
         run_step([sys.executable, "main_MonteCarloZ.py"])
 
-    for rep_id in range(n_rep):
+    rep_ids = [args.offline_id] if args.offline_id is not None else list(range(n_rep))
+    for rep_id in rep_ids:
         env = os.environ.copy()
         env["SLURM_ARRAY_TASK_ID"] = str(rep_id)
         env["OFFLINE_DATA_ID"] = str(rep_id)
         run_step([sys.executable, "main_est.py"], env=env)
+
+    if args.offline_id is not None:
+        print(f"Finished combo {args.combo_id}, offline replicate {args.offline_id}.")
+        return
 
     run_step([sys.executable, "mu_plot.py"])
     write_result(args.combo_id, combo_name, overrides, time.time() - start)

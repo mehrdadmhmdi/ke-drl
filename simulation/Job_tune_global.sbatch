@@ -12,7 +12,7 @@
 #SBATCH --partition=ghx4
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-18
+#SBATCH --array=0-1899%100
 
 echo "Job ID:    ${SLURM_JOB_ID}"
 echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
@@ -36,14 +36,37 @@ echo $CUDA_VISIBLE_DEVICES
 set -euo pipefail
 
 BASE=$PWD
-RUN="$BASE/runs/tune_global_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
+read COMBO_ID OFFLINE_ID COMBO_COUNT N_REP TOTAL_TASKS < <(python3 - <<'PY'
+import os
+import yaml
+
+task_id = int(os.environ.get("SLURM_ARRAY_TASK_ID", "0"))
+with open("params_tune.yaml", "r", encoding="utf-8") as f:
+    params = yaml.safe_load(f)
+with open("tuning_grid.yaml", "r", encoding="utf-8") as f:
+    grid = yaml.safe_load(f)
+n_rep = int((params.get("experiment") or {}).get("num_replicates", 1))
+combo_count = len(list(grid.get("combos") or []))
+combo_id = task_id // n_rep
+offline_id = task_id % n_rep
+print(combo_id, offline_id, combo_count, n_rep, combo_count * n_rep)
+PY
+)
+if [ "$COMBO_ID" -ge "$COMBO_COUNT" ]; then
+  echo "Array task ${SLURM_ARRAY_TASK_ID} is outside total tuning tasks ${TOTAL_TASKS}; exiting."
+  exit 0
+fi
+echo "Tuning combo id: ${COMBO_ID} / $((COMBO_COUNT - 1))"
+echo "Offline replicate id: ${OFFLINE_ID} / $((N_REP - 1))"
+
+RUN="$BASE/runs/tune_global_${SLURM_ARRAY_JOB_ID}_${COMBO_ID}"
 mkdir -p "$BASE/logs" "$RUN" "$RUN/data" "$RUN/logs" "$RUN/mu" "$RUN/metrics" "$RUN/plots"
 SHARED_DATA_DIR="${KEDRL_SHARED_DATA_DIR:-$BASE/runs/tune_shared_data/data}"
 
 unset KEDRL_SRC
 KEDRL_GIT_URL="${KEDRL_GIT_URL:-https://github.com/mehrdadmhmdi/ke-drl.git}"
 KEDRL_GIT_REF="${KEDRL_GIT_REF:-main}"
-KEDRL_PIP_TARGET="$RUN/.kedrl_site"
+KEDRL_PIP_TARGET="$RUN/.kedrl_site_${SLURM_ARRAY_TASK_ID}"
 rm -rf "$KEDRL_PIP_TARGET"
 mkdir -p "$KEDRL_PIP_TARGET"
 echo "Installing ke_drl from git: ${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
@@ -80,4 +103,7 @@ if [ ! -d "$SHARED_DATA_DIR" ]; then
   echo "Run Job_tune_prepare.sbatch first, or set KEDRL_SHARED_DATA_DIR." >&2
   exit 1
 fi
-python3 main_tune_global.py --combo-id "${SLURM_ARRAY_TASK_ID}" --shared-data-dir "$SHARED_DATA_DIR"
+python3 main_tune_global.py \
+  --combo-id "${COMBO_ID}" \
+  --offline-id "${OFFLINE_ID}" \
+  --shared-data-dir "$SHARED_DATA_DIR"

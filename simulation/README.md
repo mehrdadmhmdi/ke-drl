@@ -183,6 +183,33 @@ runs/smoke_<job_id>/metrics/per_run_metrics.csv
 runs/smoke_<job_id>/plots/mu_summary_UG.png
 ```
 
+## Full Tuning Architecture
+
+The full tuning run uses one shared data-preparation job and then a parallel
+training array:
+
+1. `Job_tune_prepare.sbatch` generates the shared offline data and benchmark
+   truth once. With `params_tune.yaml`, this is 100 independent offline
+   datasets, 10 benchmark points, and for each benchmark point 10,000 Monte
+   Carlo target-policy trajectories with 300 time points.
+2. `Job_tune_global.sbatch` indexes the Cartesian product of tuning
+   configuration and offline replicate. With the current 19 tuning
+   configurations and 100 offline datasets, the array is `0-1899%100`.
+   Each task fits one `B_hat` using 100 training target points that are
+   separate from the benchmark truth points.
+3. `Job_tune_summary.sbatch` aggregates the finished tasks, writes one tuning
+   result per configuration, and creates benchmark-aware plots. In the main
+   `mu_summary_UG.png`, each benchmark point has its own truth curve and its
+   own mean estimated curve across offline replicates.
+
+Typical submission sequence:
+
+```bash
+sbatch Job_tune_prepare.sbatch
+sbatch Job_tune_global.sbatch
+sbatch --dependency=afterany:<global-array-job-id> Job_tune_summary.sbatch
+```
+
 ## Tuning Run
 
 Before the full 100-replicate run, use the smaller tuning sweep:

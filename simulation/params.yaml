@@ -15,15 +15,15 @@ dtype: float32
 compute:
   device: cuda
   require_cuda: true
-# Main consistency experiment: 50 independent offline datasets D_i. The
-# benchmark point is fixed independently of every D_i, while 100 target points
-# define the empirical global Bellman loss for each fitted B_i.
+# Main consistency experiment: 100 independent offline datasets D_i. The
+# benchmark points are fixed independently of every D_i, while 100 target
+# points define the empirical global Bellman loss for each fitted B_i.
 experiment:
-  num_replicates: 50
+  num_replicates: 100
 plots:
   replicate_mode: all
 benchmark:
-  num_points: 5
+  num_points: 10
   source: fixed_config
   s_star: [0.6, -0.8, 0.7, -0.5, 0.9]
   a_star: [0.75]

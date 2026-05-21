@@ -55,7 +55,12 @@ if not summary_path.exists():
         f"Expected {summary_path} was not created. Check that matplotlib is installed in the cluster environment."
     )
 
-print(f"Aggregated {len(df)} offline replicates")
+if "benchmark_id" in df.columns:
+    n_rep = df["offline_data_id"].nunique() if "offline_data_id" in df.columns else "unknown"
+    n_bench = df["benchmark_id"].nunique()
+    print(f"Aggregated {len(df)} benchmark-replicate curves ({n_rep} offline replicates x {n_bench} benchmarks)")
+else:
+    print(f"Aggregated {len(df)} offline replicates")
 if not args.skip_replicate_plots:
     print(f"Created {rep_plot_count} per-replicate mean-vs-truth plots")
 print("ALL DONE!")

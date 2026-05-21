@@ -245,7 +245,12 @@ def monte_carlo_Z(
     dtype: torch.dtype = torch.float64,
     device: str | torch.device | None = None,
 ) -> list[torch.Tensor]:
-    """Monte Carlo discounted return samples from one or more initial (s,a) pairs."""
+    """Monte Carlo discounted finite-return samples for benchmark initial pairs.
+
+    The benchmark axis is batched on device: K benchmark points and N Monte
+    Carlo trajectories are represented as K*N rows during the Markov rollout.
+    The returned list splits the result back into K independent truth samples.
+    """
     del plot
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     n_ids = int(n_ids)
@@ -262,7 +267,6 @@ def monte_carlo_Z(
     if s_star.shape[0] != a_star.shape[0]:
         raise ValueError("s_star and a_star must have the same number of rows.")
 
-    out: list[torch.Tensor] = []
     discounts = torch.pow(
         torch.as_tensor(gamma_val, dtype=dtype, device=dev),
         torch.arange(n_timepoints, dtype=dtype, device=dev),
@@ -275,20 +279,20 @@ def monte_carlo_Z(
     chol_r = _cov_cholesky(sigma_r, device=dev, dtype=dtype)
     sampler = make_policy_sampler(policy, policy_params)
 
-    for ell in range(s_star.shape[0]):
-        states = s_star[ell : ell + 1, :].repeat(n_ids, 1)
-        actions = a_star[ell : ell + 1, :].repeat(n_ids, 1)
-        returns = torch.zeros(n_ids, reward_dim, dtype=dtype, device=dev)
+    n_benchmark = int(s_star.shape[0])
+    states = s_star[:, None, :].expand(n_benchmark, n_ids, s_star.shape[1]).reshape(n_benchmark * n_ids, -1).contiguous()
+    actions = a_star[:, None, :].expand(n_benchmark, n_ids, a_star.shape[1]).reshape(n_benchmark * n_ids, -1).contiguous()
+    returns = torch.zeros(n_benchmark * n_ids, reward_dim, dtype=dtype, device=dev)
 
-        for t in range(n_timepoints):
-            reward_t = _linear_gaussian(states, actions, W_r, b_r, chol_r)
-            returns += discounts[t] * reward_t
-            if t + 1 < n_timepoints:
-                states = _linear_gaussian(states, actions, W_s, b_s, chol_s)
-                actions = sample_policy_actions(policy, policy_params, states, actions.shape[1], sampler=sampler)
+    for t in range(n_timepoints):
+        reward_t = _linear_gaussian(states, actions, W_r, b_r, chol_r)
+        returns.add_(reward_t * discounts[t])
+        if t + 1 < n_timepoints:
+            states = _linear_gaussian(states, actions, W_s, b_s, chol_s)
+            actions = sample_policy_actions(policy, policy_params, states, actions.shape[1], sampler=sampler)
 
-        out.append(returns.detach().cpu())
-    return out
+    returns = returns.reshape(n_benchmark, n_ids, reward_dim).detach().cpu()
+    return [returns[j].contiguous() for j in range(n_benchmark)]
 
 
 def select_target_set(

@@ -37,8 +37,16 @@ set -euo pipefail
 BASE=$PWD
 RUN="${KEDRL_SHARED_RUN:-$BASE/runs/tune_shared_data}"
 mkdir -p "$BASE/logs"
+N_REP=$(python3 - <<'PY'
+import yaml
+with open("params_tune.yaml", "r", encoding="utf-8") as f:
+    p = yaml.safe_load(f)
+print(int((p.get("experiment") or {}).get("num_replicates", 1)))
+PY
+)
+LAST_REP=$((N_REP - 1))
 
-if [ -e "$RUN/data/Z_true.pt" ] && [ -e "$RUN/data/offline_data_0.pt" ] && [ -e "$RUN/data/offline_data_49.pt" ] && [ "${KEDRL_PREP_FORCE:-0}" != "1" ]; then
+if [ -e "$RUN/data/Z_true.pt" ] && [ -e "$RUN/data/offline_data_0.pt" ] && [ -e "$RUN/data/offline_data_${LAST_REP}.pt" ] && [ "${KEDRL_PREP_FORCE:-0}" != "1" ]; then
   echo "Shared tuning data already exists at $RUN"
   echo "Set KEDRL_PREP_FORCE=1 to regenerate it."
   exit 0
@@ -104,5 +112,5 @@ python3 parallel_offlinedata.py --params params.yaml
 python3 main_MonteCarloZ.py
 
 echo "Shared data outputs:"
-ls -lh data/Z_true.pt data/offline_data_0.pt data/offline_data_49.pt
+ls -lh data/Z_true.pt data/offline_data_0.pt "data/offline_data_${LAST_REP}.pt"
 echo "TUNING DATA PREP DONE"

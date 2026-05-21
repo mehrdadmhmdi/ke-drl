@@ -315,7 +315,16 @@ def plot_mu_summary(
     if per_run_path.exists():
         metrics_df = pd.read_csv(per_run_path)
 
-    _plot_four_panel_summary(H, T, run_ids=run_ids, metrics_df=metrics_df, outdir=outdir, plt=plt)
+    multi_benchmark = (
+        metrics_df is not None
+        and "benchmark_id" in metrics_df.columns
+        and metrics_df["benchmark_id"].nunique(dropna=True) > 1
+    )
+    if multi_benchmark:
+        _plot_multi_benchmark_summary(H, T, run_ids=run_ids, metrics_df=metrics_df, outdir=outdir, plt=plt)
+    else:
+        _plot_four_panel_summary(H, T, run_ids=run_ids, metrics_df=metrics_df, outdir=outdir, plt=plt)
+
     if metrics_df is not None and "benchmark_id" in metrics_df.columns:
         rid_to_benchmark = dict(zip(metrics_df["run_id"].astype(str), metrics_df["benchmark_id"]))
         benchmark_ids = sorted(pd.Series(list(rid_to_benchmark.values())).dropna().unique().tolist())
@@ -518,12 +527,175 @@ def plot_all_replicate_mu_diagnostics(
         plot_single_mu_diagnostic(
             mu_hat=np.loadtxt(hat_path, delimiter=",").reshape(-1),
             mu_true=np.loadtxt(true_path, delimiter=",").reshape(-1),
-            outdir=outdir / f"replicate_{run_id}",
+            outdir=_replicate_plot_dir(outdir, run_id),
             run_id=run_id,
             plt=plt,
         )
         count += 1
     return count
+
+
+def _replicate_plot_dir(outdir: Path, run_id: str) -> Path:
+    if "_b" in run_id:
+        rep_id, benchmark_id = run_id.rsplit("_b", 1)
+        if benchmark_id.isdigit():
+            return outdir / f"replicate_{rep_id}" / f"benchmark_{benchmark_id}"
+    return outdir / f"replicate_{run_id}"
+
+
+def _benchmark_palette(n: int) -> list[str]:
+    base = [
+        "#0072B2",
+        "#D55E00",
+        "#009E73",
+        "#CC79A7",
+        "#E69F00",
+        "#56B4E9",
+        "#F0E442",
+        "#000000",
+        "#882255",
+        "#44AA99",
+        "#AA4499",
+        "#117733",
+    ]
+    if n <= len(base):
+        return base[:n]
+    return [base[i % len(base)] for i in range(n)]
+
+
+def _plot_multi_benchmark_summary(
+    H: np.ndarray,
+    T: np.ndarray,
+    *,
+    run_ids: list[str],
+    metrics_df: pd.DataFrame,
+    outdir: Path,
+    plt,
+) -> None:
+    metrics = metrics_df.copy()
+    metrics["run_id"] = metrics["run_id"].astype(str)
+    rid_to_benchmark = dict(zip(metrics["run_id"], metrics["benchmark_id"]))
+    benchmark_ids = sorted(pd.Series(metrics["benchmark_id"]).dropna().unique().tolist())
+    colors = _benchmark_palette(len(benchmark_ids))
+    x = np.arange(H.shape[1])
+
+    fig, axs = plt.subplots(2, 2, figsize=(14, 9.5))
+
+    ax = axs[0, 0]
+    y_for_limits = []
+    for color, bid in zip(colors, benchmark_ids):
+        idx = [i for i, rid in enumerate(run_ids) if rid_to_benchmark.get(str(rid)) == bid]
+        if not idx:
+            continue
+        H_b = H[np.asarray(idx)]
+        T_b = T[np.asarray(idx)]
+        h_mean = H_b.mean(axis=0)
+        h_sd = H_b.std(axis=0, ddof=1) if H_b.shape[0] > 1 else np.zeros(H_b.shape[1])
+        t_mean = T_b.mean(axis=0)
+        ax.fill_between(x, h_mean - 1.96 * h_sd, h_mean + 1.96 * h_sd, color=color, alpha=0.10)
+        ax.plot(x, t_mean, color=color, lw=1.8, ls="--", label=f"truth {int(bid)}")
+        ax.plot(x, h_mean, color=color, lw=2.2, label=f"estimate {int(bid)}")
+        y_for_limits.extend([t_mean, h_mean, h_mean - 1.96 * h_sd, h_mean + 1.96 * h_sd])
+    lo, hi = _robust_limits(*y_for_limits, q_low=0.5, q_high=99.5, include_zero=True)
+    ax.set_ylim(lo, hi)
+    ax.set_title("(a) Benchmark-specific mean embeddings")
+    ax.set_xlabel("Index on benchmark Z grid")
+    ax.set_ylabel("Mean embedding")
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=7, ncol=2, frameon=True)
+
+    ax = axs[0, 1]
+    cal_x, cal_y = [], []
+    for color, bid in zip(colors, benchmark_ids):
+        idx = [i for i, rid in enumerate(run_ids) if rid_to_benchmark.get(str(rid)) == bid]
+        if not idx:
+            continue
+        H_b = H[np.asarray(idx)]
+        T_b = T[np.asarray(idx)]
+        t_mean = T_b.mean(axis=0)
+        h_mean = H_b.mean(axis=0)
+        order = np.argsort(t_mean)
+        bins = np.array_split(order, min(10, order.size))
+        bx = np.asarray([float(t_mean[b].mean()) for b in bins if b.size])
+        by_runs = []
+        for row in H_b:
+            by_runs.append(np.asarray([float(row[b].mean()) for b in bins if b.size]))
+        Y = np.vstack(by_runs)
+        by = Y.mean(axis=0)
+        se = Y.std(axis=0, ddof=1) / math.sqrt(Y.shape[0]) if Y.shape[0] > 1 else np.zeros(Y.shape[1])
+        ax.errorbar(bx, by, yerr=1.96 * se, color=color, marker="o", lw=1.5, capsize=2, label=f"benchmark {int(bid)}")
+        cal_x.append(bx)
+        cal_y.append(by)
+    lo, hi = _robust_limits(*cal_x, *cal_y, q_low=0, q_high=100, pad=0.15, include_zero=False, min_span=1e-4)
+    ax.plot([lo, hi], [lo, hi], "--", color="0.25", lw=1.2, label="ideal")
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.set_title("(b) Benchmark-specific calibration")
+    ax.set_xlabel("True mean embedding (bin mean)")
+    ax.set_ylabel("Estimated mean embedding (bin mean)")
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=7, ncol=2)
+
+    ax = axs[1, 0]
+    box_data, labels = [], []
+    for bid in benchmark_ids:
+        vals = pd.to_numeric(metrics.loc[metrics["benchmark_id"] == bid, "RMSE"], errors="coerce").dropna().to_numpy()
+        if vals.size:
+            box_data.append(vals)
+            labels.append(str(int(bid)))
+    if box_data:
+        bp = ax.boxplot(box_data, labels=labels, showmeans=True, patch_artist=True)
+        for patch, color in zip(bp["boxes"], colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.25)
+        ax.set_xlabel("Benchmark point")
+        ax.set_ylabel("RMSE across Z grid")
+        ax.set_title("(c) RMSE by benchmark point")
+        ylo, yhi = _robust_limits(*box_data, q_low=0, q_high=97.5, include_zero=True)
+        ax.set_ylim(ylo, yhi)
+    if "projected_bellman_test_risk" in metrics.columns:
+        ax2 = ax.twinx()
+        risk_means = []
+        risk_ses = []
+        risk_x = []
+        for pos, bid in enumerate(benchmark_ids, start=1):
+            vals = pd.to_numeric(
+                metrics.loc[metrics["benchmark_id"] == bid, "projected_bellman_test_risk"],
+                errors="coerce",
+            ).dropna().to_numpy()
+            if vals.size:
+                risk_x.append(pos)
+                risk_means.append(float(vals.mean()))
+                risk_ses.append(float(vals.std(ddof=1) / math.sqrt(vals.size)) if vals.size > 1 else 0.0)
+        if risk_x:
+            ax2.errorbar(risk_x, risk_means, yerr=[1.96 * s for s in risk_ses], color="0.15", marker="D", lw=1.4, capsize=2)
+            ax2.set_ylabel("Projected Bellman risk")
+            rlo, rhi = _robust_limits(risk_means, q_low=0, q_high=100, include_zero=True)
+            ax2.set_ylim(rlo, rhi)
+    ax.grid(axis="y", alpha=0.25)
+
+    ax = axs[1, 1]
+    for color, bid in zip(colors, benchmark_ids):
+        idx = [i for i, rid in enumerate(run_ids) if rid_to_benchmark.get(str(rid)) == bid]
+        if not idx:
+            continue
+        abs_err = np.sort(np.abs(H[np.asarray(idx)] - T[np.asarray(idx)]).reshape(-1))
+        ecdf = np.arange(1, abs_err.size + 1) / abs_err.size
+        ax.plot(abs_err, ecdf, color=color, lw=1.9, label=f"benchmark {int(bid)}")
+    ax.set_title(r"(d) ECDF of $|\hat{\mu}-\mu|$ by benchmark")
+    ax.set_xlabel(r"$|\hat{\mu}-\mu|$")
+    ax.set_ylabel("ECDF")
+    all_abs = np.abs(H - T).reshape(-1)
+    xmax = float(np.nanpercentile(all_abs, 99.5)) if all_abs.size else 1.0
+    if np.isfinite(xmax) and xmax > 0:
+        ax.set_xlim(0.0, xmax)
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=7, ncol=2)
+
+    fig.tight_layout()
+    fig.savefig(outdir / "mu_summary_UG.png", dpi=300)
+    fig.savefig(outdir / "mu_summary_benchmarks.png", dpi=300)
+    plt.close(fig)
 
 
 def _plot_four_panel_summary(
