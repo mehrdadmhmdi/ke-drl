@@ -53,8 +53,11 @@ def _summarize_tensor(name: str, x: torch.Tensor) -> None:
 
 def _check_kedrl_package_api() -> None:
     try:
+        import inspect
+        from ke_drl.KE_DRL import KE_DRL
         from ke_drl.evaluation_metric import predict_embedding_weights  # noqa: F401
         from ke_drl.operator_approx import compute_G_rff, compute_H_rff  # noqa: F401
+        from ke_drl.optimize import RKDRL_Optimizer
     except ImportError as exc:
         raise ImportError(
             "Installed ke_drl package is incompatible with these simulation scripts. "
@@ -62,7 +65,18 @@ def _check_kedrl_package_api() -> None:
             'python -m pip install --no-cache-dir --force-reinstall '
             '"git+https://github.com/mehrdadmhmdi/ke-drl.git@main"'
         ) from exc
-    print("ke_drl package API OK: prediction weights and RFF operators available")
+    missing = []
+    if "return_best" not in inspect.signature(KE_DRL).parameters:
+        missing.append("KE_DRL(return_best=...)")
+    if "return_best" not in inspect.signature(RKDRL_Optimizer.optimize).parameters:
+        missing.append("RKDRL_Optimizer.optimize(return_best=...)")
+    if missing:
+        raise ImportError(
+            "Installed ke_drl package is stale for the current simulation scripts; missing "
+            + ", ".join(missing)
+            + ". Use the current source with KEDRL_SRC=/path/to/kedrl_git/src or reinstall the package."
+        )
+    print("ke_drl package API OK: prediction weights, RFF operators, and best-checkpoint optimizer available")
 
 
 def _uniform_bounds(policy_block: dict[str, Any], s: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:

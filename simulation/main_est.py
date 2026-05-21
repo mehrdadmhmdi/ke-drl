@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gc
+import inspect
 import math
 import os
 import time
@@ -38,6 +39,12 @@ from ke_drl.Gamma_sa import Gamma_sa
 from ke_drl.Phi_sa import Phi_sa
 from ke_drl.evaluation_metric import predict_embedding_weights, projected_bellman_test_risk
 from ke_drl.matern_kernel import matern_kernel
+
+if "return_best" not in inspect.signature(KE_DRL).parameters:
+    raise ImportError(
+        "The imported ke_drl package is stale and lacks KE_DRL(return_best=...). "
+        "Set KEDRL_SRC to the current kedrl_git/src or reinstall the current package before running."
+    )
 
 try:
     from ke_drl.density_recovery import RecoverAndPlot
@@ -592,9 +599,17 @@ opt_diag = pre.get("optimizer_diagnostics", {})
 if isinstance(opt_diag, dict):
     diagnostic_steps = opt_diag.get("diagnostic_step")
 if tool is not None and history_be:
-    tool.plot_bellman_error(history_be, outdir=str(plot_dir), steps=diagnostic_steps)
+    try:
+        tool.plot_bellman_error(history_be, outdir=str(plot_dir), steps=diagnostic_steps)
+    except TypeError:
+        print("RecoverAndPlot.plot_bellman_error lacks steps= support; falling back to diagnostic-point x-axis.")
+        tool.plot_bellman_error(history_be, outdir=str(plot_dir))
 if tool is not None and history_obj:
-    tool.plot_total_loss(history_obj, outdir=str(plot_dir), steps=diagnostic_steps)
+    try:
+        tool.plot_total_loss(history_obj, outdir=str(plot_dir), steps=diagnostic_steps)
+    except TypeError:
+        print("RecoverAndPlot.plot_total_loss lacks steps= support; falling back to diagnostic-point x-axis.")
+        tool.plot_total_loss(history_obj, outdir=str(plot_dir))
 
 beta_eval = beta_for_evaluation_point(
     method=d_r_method,
