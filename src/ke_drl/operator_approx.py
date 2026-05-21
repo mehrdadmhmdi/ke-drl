@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+import os
 from typing import Optional
 
 import torch
@@ -51,8 +52,28 @@ def sample_matern_rff(
     return omega, phase, scale
 
 
+def _rff_features_core(x: torch.Tensor, omega: torch.Tensor, phase: torch.Tensor, scale: float) -> torch.Tensor:
+    """Inner RFF computation: scale * cos(x @ omega^T + phase)."""
+    return scale * torch.cos(x @ omega.transpose(0, 1) + phase)
+
+
+# Opt-in torch.compile for the RFF feature map (shares the env var with matern).
+_COMPILE_RFF = os.environ.get("KEDRL_COMPILE_MATERN", "0").strip().lower() in {
+    "1", "true", "yes", "on",
+}
+try:
+    _rff_features_compiled = torch.compile(_rff_features_core) if _COMPILE_RFF else None
+except Exception:
+    _rff_features_compiled = None
+
+
 def rff_features(x: torch.Tensor, omega: torch.Tensor, phase: torch.Tensor, scale: float) -> torch.Tensor:
-    return float(scale) * torch.cos(x @ omega.transpose(0, 1) + phase)
+    if _rff_features_compiled is not None:
+        try:
+            return _rff_features_compiled(x, omega, phase, float(scale))
+        except Exception:
+            pass
+    return _rff_features_core(x, omega, phase, float(scale))
 
 
 @torch.no_grad()
@@ -113,9 +134,13 @@ def compute_H_rff(
         - s_reward.unsqueeze(1) * s_z.unsqueeze(0)
     )
 
+    # Auto-tune batch_size: the einsum materializes (batch, L, m) per chunk.
+    # Use at least m//5 rows per batch for GPU utilization.
+    _bs = max(int(batch_size), m // 5) if m > 50 else int(batch_size)
+
     H = torch.empty((n_targets, m, m), device=device, dtype=dtype)
-    for i0 in range(0, m, int(batch_size)):
-        i1 = min(m, i0 + int(batch_size))
+    for i0 in range(0, m, _bs):
+        i1 = min(m, i0 + _bs)
         H[:, i0:i1, :] = torch.einsum("iq,ljq->lij", feat_Z[i0:i1], successor_feature_sums)
     return H
 
@@ -163,5 +188,17 @@ def compute_G_rff(
     feature_sums = float(scale) * (
         c_reward.unsqueeze(1) * c_z.unsqueeze(0)
         - s_reward.unsqueeze(1) * s_z.unsqueeze(0)
-    )
-    return torch.bmm(feature_sums, feature_sums.transpose(1, 2))
+    )                                                                # (L, m, q)
+
+    # For very large L, chunk the bmm to cap peak GPU allocation.
+    _L = feature_sums.shape[0]
+    _chunk = max(1, min(_L, 512))
+    if _L <= _chunk:
+        return torch.bmm(feature_sums, feature_sums.transpose(1, 2))
+    G = torch.empty((_L, feature_sums.shape[1], feature_sums.shape[1]),
+                     device=device, dtype=dtype)
+    for _g0 in range(0, _L, _chunk):
+        _g1 = min(_L, _g0 + _chunk)
+        fs = feature_sums[_g0:_g1]
+        G[_g0:_g1] = torch.bmm(fs, fs.transpose(1, 2))
+    return G

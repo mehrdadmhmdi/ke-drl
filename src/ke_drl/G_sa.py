@@ -82,6 +82,12 @@ def compute_G_pytorch_batched(
     m, n, d = transformed.shape
     device, dtype = transformed.device, transformed.dtype
 
+    # Auto-tune block sizes for GPU utilization.  The default block_i=1
+    # iterates one Z-row at a time which is too fine-grained for m > 50.
+    # Each iteration builds a (block_i * n, block_j) kernel block, so larger
+    # blocks amortize Python overhead and saturate GPU compute.
+    if block_i <= 1 and m > 20:
+        block_i = max(1, min(m // 10, 25))
     if block_j is None:
         block_j = n
     if block_j % n != 0:

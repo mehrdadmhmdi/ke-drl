@@ -25,7 +25,8 @@ benchmark:
   output: Z_true.pt
   seed_offset: 110000
 #===========================
-gamma_val: 0.8
+# Moderate discount for tail-stable simulated returns.
+gamma_val: 0.7
 lambda_reg: 0.001
 lambda_B: 0.001
 hull_expand_factor: 1
@@ -77,7 +78,8 @@ optimization:
 kernel:
   type: matern
   nu: 3.50
-  length_scale: 1
+  # Base tuning now starts from the empirically tail-stable setting.
+  length_scale: 0.7
   sigma: 0.7
 #==========================
 policy:

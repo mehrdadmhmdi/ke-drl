@@ -17,6 +17,14 @@ class RKDRL_Optimizer:
     where u_l = B^T k_l and v_l = B^T Phi_l, plus the state-action RKHS
     ridge lambda_B tr(B^T K_X B). The finite-grid mass anchor is enabled by
     default to avoid the homogeneous zero-embedding solution.
+
+    Large-scale support
+    -------------------
+    When H_mat and G_mat are stored on CPU (e.g. because they exceed GPU
+    memory), the optimizer automatically transfers only the needed mini-batch
+    slices to the compute device each step.  Set ``optimize_dtype`` to
+    ``torch.float32`` to run the Adam loop in single precision while keeping
+    the pre-computed operators in their native dtype.
     """
 
     def __init__(self, device=None, dtype=torch.float64):
@@ -199,37 +207,56 @@ class RKDRL_Optimizer:
             B_ridge_penalty: bool = False,
             ridge_mode: str = "rkhs",
             diagnostic_interval: int = 50,
+            optimize_dtype: Optional[torch.dtype] = None,
             verbose: bool = True,
     ) -> tuple[torch.Tensor, list[float], list[float]]:
 
         dev, dtype = self.dev, self.dtype
-        k_mat = self._ensure_target_matrix("k_sa", k_sa.to(dev, dtype))
-        phi_mat = self._ensure_target_matrix("Phi", Phi.to(dev, dtype))
+        # The optimization loop can run in a lighter dtype (e.g. float32) while
+        # the pre-computed operators stay in their native precision.
+        opt_dtype = optimize_dtype if optimize_dtype is not None else dtype
+
+        k_mat = self._ensure_target_matrix("k_sa", k_sa.to(dev, opt_dtype))
+        phi_mat = self._ensure_target_matrix("Phi", Phi.to(dev, opt_dtype))
         if k_mat.shape != phi_mat.shape:
             raise ValueError(f"k_sa and Phi must have the same shape; got {k_mat.shape} and {phi_mat.shape}.")
 
         N, L = k_mat.shape
-        K_Z = K_Zpi.to(dev, dtype)
-        H_stack = self._ensure_operator_stack("H_mat", H_mat.to(dev, dtype), L)
-        G_stack = self._ensure_operator_stack("G_mat", G_mat.to(dev, dtype), L)
+        K_Z = K_Zpi.to(dev, opt_dtype)
+
+        # H_mat and G_mat may reside on CPU when they are too large for GPU
+        # memory.  Validate shapes first, then keep them wherever they are —
+        # the training loop will transfer mini-batch slices on demand.
+        H_validated = self._ensure_operator_stack("H_mat", H_mat, L)
+        G_validated = self._ensure_operator_stack("G_mat", G_mat, L)
+        _operators_offloaded = (H_validated.device != torch.device(dev)
+                                if isinstance(dev, str) else H_validated.device != dev)
+        # For small L or when already on device, move the full stack to GPU.
+        if not _operators_offloaded:
+            H_validated = H_validated.to(dev, opt_dtype)
+            G_validated = G_validated.to(dev, opt_dtype)
+
         m = K_Z.shape[0]
         if K_Z.shape != (m, m):
             raise ValueError("K_Zpi must be square.")
-        if H_stack.shape[1:] != (m, m) or G_stack.shape[1:] != (m, m):
+        if H_validated.shape[1:] != (m, m) or G_validated.shape[1:] != (m, m):
             raise ValueError("H_mat and G_mat slices must match K_Zpi shape.")
+        # Use the validated (possibly offloaded) references from here on.
+        H_stack = H_validated
+        G_stack = G_validated
 
         if K_X is None:
-            K_X = torch.eye(N, device=dev, dtype=dtype)
+            K_X = torch.eye(N, device=dev, dtype=opt_dtype)
         else:
-            K_X = K_X.to(dev, dtype)
+            K_X = K_X.to(dev, opt_dtype)
         if K_X.shape != (N, N):
             raise ValueError(f"K_X must have shape {(N, N)}, got {tuple(K_X.shape)}.")
-        weights_full = self._normal_target_weights(target_weights, L, device=dev, dtype=dtype)
+        weights_full = self._normal_target_weights(target_weights, L, device=dev, dtype=opt_dtype)
 
         if initial_B is None:
-            B0 = self.initial_B(N, m, scale=initial_scale, seed=random_seed)
+            B0 = self.initial_B(N, m, scale=initial_scale, seed=random_seed).to(opt_dtype)
         else:
-            B0 = initial_B.to(dev, dtype)
+            B0 = initial_B.to(dev, opt_dtype)
         if B0.shape != (N, m):
             raise ValueError(f"initial_B must have shape {(N, m)}, got {tuple(B0.shape)}.")
 
@@ -248,7 +275,14 @@ class RKDRL_Optimizer:
         if verbose and max_B_norm is not None and max_B_norm > 0:
             print(f"Projecting B onto Frobenius ball with radius {float(max_B_norm):.3g}")
         if verbose:
-            print(f"Ridge mode: {ridge_mode}; diagnostic interval: {int(diagnostic_interval)}")
+            extra = []
+            if opt_dtype != dtype:
+                extra.append(f"optimize_dtype={opt_dtype}")
+            if _operators_offloaded:
+                extra.append("H/G offloaded to CPU")
+            info = "; ".join(extra) if extra else ""
+            print(f"Ridge mode: {ridge_mode}; diagnostic interval: {int(diagnostic_interval)}"
+                  + (f"; {info}" if info else ""))
 
         if target_batch_size is None or target_batch_size <= 0 or target_batch_size > L:
             target_batch_size = L
@@ -283,13 +317,22 @@ class RKDRL_Optimizer:
                 idx = torch.randperm(L, device=dev)[:target_batch_size]
             weights_batch = self._select_weights(weights_full, idx)
 
+            # When H/G are on CPU, transfer only the needed slices to GPU.
+            if _operators_offloaded:
+                idx_cpu = idx.cpu()
+                H_batch = H_stack.index_select(0, idx_cpu).to(dev, opt_dtype)
+                G_batch = G_stack.index_select(0, idx_cpu).to(dev, opt_dtype)
+            else:
+                H_batch = H_stack.index_select(0, idx)
+                G_batch = G_stack.index_select(0, idx)
+
             residuals = self._batch_residuals(
                 B,
                 k_mat[:, idx],
                 phi_mat[:, idx],
                 K_Z,
-                H_stack.index_select(0, idx),
-                G_stack.index_select(0, idx),
+                H_batch,
+                G_batch,
             )
             bellman_loss = self._weighted_average(residuals, weights_batch)
             ridge = float(lambda_B) * self._ridge_penalty(B, K_X, ridge_mode)
@@ -297,13 +340,13 @@ class RKDRL_Optimizer:
                 float(mass_anchor_lambda)
                 * self._mass_anchor_penalty(B, k_mat[:, idx], target_mass, weights_batch)
                 if mass_anchor_lambda > 0.0
-                else torch.zeros((), device=dev, dtype=dtype)
+                else torch.zeros((), device=dev, dtype=opt_dtype)
             )
             neg_penalty = (
                 float(negativity_penalty_lambda)
                 * self._negativity_penalty(B, k_mat[:, idx], weights_batch)
                 if negativity_penalty_lambda > 0.0
-                else torch.zeros((), device=dev, dtype=dtype)
+                else torch.zeros((), device=dev, dtype=opt_dtype)
             )
             loss = bellman_loss + ridge + mass_penalty + neg_penalty
 
@@ -318,20 +361,38 @@ class RKDRL_Optimizer:
                 do_diagnostics = do_report or step % diagnostic_interval == 0 or step == int(num_steps)
                 grad_norm_value: float | None = None
                 if do_diagnostics:
-                    full_residuals = self._batch_residuals(B, k_mat, phi_mat, K_Z, H_stack, G_stack)
+                    # For offloaded operators, compute diagnostics in chunks to
+                    # avoid pulling the full (L, m, m) stacks onto the GPU.
+                    if _operators_offloaded:
+                        _diag_chunk = max(1, min(target_batch_size, 256))
+                        _all_res = []
+                        for _d0 in range(0, L, _diag_chunk):
+                            _d1 = min(L, _d0 + _diag_chunk)
+                            _didx_cpu = torch.arange(_d0, _d1)
+                            _didx_dev = _didx_cpu.to(dev)
+                            _H_d = H_stack[_d0:_d1].to(dev, opt_dtype)
+                            _G_d = G_stack[_d0:_d1].to(dev, opt_dtype)
+                            _all_res.append(self._batch_residuals(
+                                B, k_mat[:, _d0:_d1], phi_mat[:, _d0:_d1],
+                                K_Z, _H_d, _G_d,
+                            ))
+                            del _H_d, _G_d
+                        full_residuals = torch.cat(_all_res, dim=0)
+                    else:
+                        full_residuals = self._batch_residuals(B, k_mat, phi_mat, K_Z, H_stack, G_stack)
                     full_bellman_raw = self._weighted_average(full_residuals, weights_full)
                     full_ridge = float(lambda_B) * self._ridge_penalty(B, K_X, ridge_mode)
                     full_mass = (
                         float(mass_anchor_lambda)
                         * self._mass_anchor_penalty(B, k_mat, target_mass, weights_full)
                         if mass_anchor_lambda > 0.0
-                        else torch.zeros((), device=dev, dtype=dtype)
+                        else torch.zeros((), device=dev, dtype=opt_dtype)
                     )
                     full_neg = (
                         float(negativity_penalty_lambda)
                         * self._negativity_penalty(B, k_mat, weights_full)
                         if negativity_penalty_lambda > 0.0
-                        else torch.zeros((), device=dev, dtype=dtype)
+                        else torch.zeros((), device=dev, dtype=opt_dtype)
                     )
                     full_bellman = full_bellman_raw.clamp_min(eps)
                     full_loss_raw = full_bellman_raw + full_ridge + full_mass + full_neg
@@ -363,4 +424,9 @@ class RKDRL_Optimizer:
                 break
 
         self.last_diagnostics = history_components
-        return B.detach(), history_obj, history_be
+        B_out = B.detach()
+        # Cast back to the original dtype if the optimization ran in a lighter
+        # precision (e.g. float32 → float64).
+        if opt_dtype != dtype:
+            B_out = B_out.to(dtype)
+        return B_out, history_obj, history_be

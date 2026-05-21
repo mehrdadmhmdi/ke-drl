@@ -83,6 +83,8 @@ def KE_DRL(
     normalize_eta: bool = False,
     device: str | torch.device | None = None,
     dtype: torch.dtype = torch.float64,
+    optimize_dtype: Optional[torch.dtype] = None,
+    offload_operators: str = "auto",
     verbose: bool = True,
     # --- legacy options kept for API compatibility; ignored by the revised estimator ---
     FP_penalty_lambda: float = 0.0,
@@ -109,6 +111,17 @@ def KE_DRL(
     X_star used to fit the global objective. By default the finite-grid
     coefficient mass is anchored at one, matching the non-degeneracy penalty in
     the revised global-B objective.
+
+    Large-scale controls
+    --------------------
+    optimize_dtype : torch.dtype or None
+        Run the Adam loop in a lighter dtype (e.g. ``torch.float32``) while
+        keeping all kernel/Cholesky work in the native ``dtype``.  The
+        returned B_hat is always cast back to ``dtype``.
+    offload_operators : str
+        ``"auto"`` (default) keeps H_stack and G_stack on GPU when they fit,
+        but moves them to CPU when their combined size exceeds 4 GB.
+        ``"cpu"`` always offloads; ``"never"`` keeps on GPU unconditionally.
     """
     t0 = time.time()
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -238,12 +251,49 @@ def KE_DRL(
     Phi_stack = Phi_sa(K_plus, Gamma_stack, eta_plus)
     stage_t = log_stage("Phi_stack", stage_t)
 
+    # ---- Auto-scaling for large problems --------------------------------
+    n_data, m_grid = r.shape[0], Z.shape[0]
+    L_targets = Gamma_stack.shape[1] if Gamma_stack.ndim == 2 else 1
+    _elem_bytes = 8 if dtype == torch.float64 else 4
+    _stack_bytes = 2 * L_targets * m_grid * m_grid * _elem_bytes  # H + G combined
+    _stack_gb = _stack_bytes / (1024 ** 3)
+
+    # Auto-select RFF when exact is infeasible (G alone is O(m^2 * N^2 * L))
     operator_method_l = str(operator_method).lower()
+    _exact_ops = float(m_grid ** 2) * float(n_data ** 2) * float(L_targets)
+    if operator_method_l in {"exact", "full"} and _exact_ops > 1e11:
+        if verbose:
+            print(
+                f"Warning: exact G operator would require ~{_exact_ops:.1e} kernel "
+                f"evaluations. Switching to operator_method='rff' with "
+                f"{operator_num_features} features for feasibility."
+            )
+        operator_method_l = "rff"
+
+    # Auto-tune H_batch_size for GPU utilization
+    if H_batch_size <= 10 and m_grid > 50:
+        H_batch_size = max(10, min(m_grid // 5, 100))
+        if verbose:
+            print(f"Auto-tuned H_batch_size={H_batch_size} for m={m_grid}")
+
+    # Decide whether to offload H/G stacks to CPU
+    offload_l = str(offload_operators).lower()
+    _GPU_BUDGET_GB = 4.0
+    _do_offload = (
+        offload_l == "cpu"
+        or (offload_l == "auto" and _stack_gb > _GPU_BUDGET_GB)
+    )
+    if _do_offload and verbose:
+        print(
+            f"H+G stack size ~{_stack_gb:.1f} GB (L={L_targets}, m={m_grid}); "
+            "offloading to CPU — optimizer will stream mini-batch slices."
+        )
+
     if operator_method_l in {"exact", "full"}:
         K_Z = matern_kernel(Z, Z, **z_params)
         stage_t = log_stage("K_Z exact", stage_t)
         if verbose:
-            n, m, L = r.shape[0], Z.shape[0], Gamma_stack.shape[1]
+            n, m, L = n_data, m_grid, L_targets
             print(
                 "Exact return-operator work estimate: "
                 f"H ~ {L * m * m * n:.3e} kernel terms, "
@@ -292,6 +342,14 @@ def KE_DRL(
     else:
         raise ValueError(f"Unknown operator_method={operator_method!r}. Use 'exact' or 'rff'.")
 
+    # Offload H/G to CPU to free GPU memory for the optimizer.
+    if _do_offload and H_stack.is_cuda:
+        H_stack = H_stack.cpu()
+        G_stack = G_stack.cpu()
+        if dev == "cuda" or (hasattr(dev, "type") and getattr(dev, "type", None) == "cuda"):
+            torch.cuda.empty_cache()
+        stage_t = log_stage("offload H/G to CPU", stage_t)
+
     optimizer = RKDRL_Optimizer(device=dev, dtype=dtype)
     B_hat, history_obj, history_be = optimizer.optimize(
         k_sa=k_star,
@@ -326,6 +384,7 @@ def KE_DRL(
         B_ridge_penalty=B_ridge_penalty,
         ridge_mode=ridge_mode,
         diagnostic_interval=diagnostic_interval,
+        optimize_dtype=optimize_dtype,
         verbose=verbose,
     )
 

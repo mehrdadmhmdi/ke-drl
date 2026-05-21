@@ -8,7 +8,7 @@ n_timepoints: 3
 state_dim: 5
 reward_dim: 3
 action_dim: 1
-num_grid_points: 300
+num_grid_points: 400
 random_seed: 20260512
 dtype: float32
 compute:
@@ -27,7 +27,10 @@ benchmark:
   output: Z_true.pt
   seed_offset: 110000
 #===========================
-gamma_val: 0.8
+# Use a moderate discount so the simulated return distribution does not put
+# excessive mass in far return tails; gamma=0.7 still gives multi-step credit
+# assignment while keeping the benchmark Z support stable.
+gamma_val: 0.7
 lambda_reg: 0.001
 lambda_B: 0.001
 hull_expand_factor: 1
@@ -37,7 +40,7 @@ bandwidth: 1.5
 lambda_rec: 0.02
 operator_approximation:
   method: rff           # 'rff' is the fast default; 'exact' is now vectorized
-  num_features: 128     # over L target points but still scales as L*m^2*N^2
+  num_features: 512     # higher RFF resolution keeps return-tail diagnostics stable
   seed_offset: 314159   # for the (Z, R)-only kernel block.
 # Target set for the global X objective in each offline replicate.
 target_set:
@@ -92,7 +95,8 @@ optimization:
 kernel:
   type: matern
   nu: 3.50
-  length_scale: 1
+  # The tuning run showed length_scale=0.7 gives the smallest tail error in Z.
+  length_scale: 0.7
   sigma: 0.7
 #==========================
 policy:

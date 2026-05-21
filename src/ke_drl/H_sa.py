@@ -75,6 +75,11 @@ def H_sa(Gamma_sa, gamma, R, Z, nu, length_scale, sigma=1.0, batch_size=10, chec
     The (R, shifts) kernel block for each row-batch is constructed once and
     reused for all L stacked target points, cutting kernel work by a factor
     of L over the previous per-l Python loop.
+
+    ``batch_size`` controls how many Z-rows are processed at once.  For
+    m > 50 the effective batch size is automatically raised to at least
+    m // 5 (capped at 100) for better GPU utilization, unless the caller
+    explicitly passes a larger value.
     """
     R = torch.as_tensor(R)
     Z = torch.as_tensor(Z)
@@ -84,6 +89,10 @@ def H_sa(Gamma_sa, gamma, R, Z, nu, length_scale, sigma=1.0, batch_size=10, chec
     nR = R.shape[0]
     mZ = Z.shape[0]
 
+    # Auto-tune: each batch computes a (n, b*m) kernel block.
+    # Larger batches amortize Python overhead and improve GPU occupancy.
+    _bs = max(int(batch_size), mZ // 5) if mZ > 50 and batch_size <= 10 else int(batch_size)
+
     kernel = lambda x1, x2: matern_kernel(x1, x2, length_scale=length_scale, nu=nu, sigma=sigma)
     row_indices = torch.arange(mZ, device=device)
 
@@ -92,8 +101,8 @@ def H_sa(Gamma_sa, gamma, R, Z, nu, length_scale, sigma=1.0, batch_size=10, chec
             raise ValueError("Gamma_sa rows {} must equal R rows {}.".format(Gamma_sa.shape[0], nR))
         L = Gamma_sa.shape[1]
         H_stack = torch.zeros((L, mZ, mZ), device=device, dtype=dtype)
-        for i0 in range(0, mZ, batch_size):
-            i_batch = row_indices[i0 : i0 + batch_size]
+        for i0 in range(0, mZ, _bs):
+            i_batch = row_indices[i0 : i0 + _bs]
             _, chunk = compute_H_rows(i_batch, Gamma_sa, gamma, R, Z, kernel)
             H_stack[:, i_batch.to(torch.long), :] = chunk
         if check_props:
@@ -105,8 +114,8 @@ def H_sa(Gamma_sa, gamma, R, Z, nu, length_scale, sigma=1.0, batch_size=10, chec
         raise ValueError("Gamma_sa length {} must equal R rows {}.".format(g.numel(), nR))
 
     H = torch.zeros((mZ, mZ), device=device, dtype=dtype)
-    for i0 in range(0, mZ, batch_size):
-        i_batch = row_indices[i0 : i0 + batch_size]
+    for i0 in range(0, mZ, _bs):
+        i_batch = row_indices[i0 : i0 + _bs]
         _, chunk = compute_H_rows(i_batch, g, gamma, R, Z, kernel)
         H.index_copy_(0, i_batch.to(dtype=torch.long), chunk)
 

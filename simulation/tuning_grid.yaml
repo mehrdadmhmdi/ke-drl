@@ -1,8 +1,9 @@
 # Global-B tuning grid. Run with Job_tune_global.sbatch.
-# This is a one-factor-at-a-time grid around params_tune.yaml.
+# This is mostly a one-factor-at-a-time grid around params_tune.yaml, with a
+# few combined tail-stability checks around the length-scale-0.7 baseline.
 # Sample size, benchmark Monte Carlo size, grid size, optimizer steps, and
 # H-batch size are fixed in params_tune.yaml so configs differ only by the
-# statistical/optimization tuning parameter named in each override.
+# statistical/optimization tuning parameters named in each override.
 combos:
   - name: base
     overrides: {}
@@ -31,15 +32,15 @@ combos:
     overrides:
       lambda_B: 0.02
 
-  - name: kernel_length_0p7
+  - name: kernel_length_0p5
     overrides:
       kernel:
-        length_scale: 0.7
+        length_scale: 0.5
 
-  - name: kernel_length_1p5
+  - name: kernel_length_1p0
     overrides:
       kernel:
-        length_scale: 1.5
+        length_scale: 1.0
 
   - name: kernel_sigma_1
     overrides:
@@ -59,6 +60,26 @@ combos:
   - name: hull_expand_1p3
     overrides:
       hull_expand_factor: 1.3
+
+  - name: tail_stable_length_0p7_hull_1p3
+    overrides:
+      hull_expand_factor: 1.3
+      kernel:
+        length_scale: 0.7
+
+  - name: tail_stable_length_0p7_mass_0p3
+    overrides:
+      kernel:
+        length_scale: 0.7
+      optimization:
+        mass_anchor_lambda: 0.3
+
+  - name: tail_stable_length_0p7_negativity_0p1
+    overrides:
+      kernel:
+        length_scale: 0.7
+      optimization:
+        negativity_penalty_lambda: 0.1
 
   - name: mass_anchor_0p3
     overrides:
