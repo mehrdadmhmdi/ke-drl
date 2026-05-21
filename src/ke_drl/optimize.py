@@ -229,8 +229,20 @@ class RKDRL_Optimizer:
         # the training loop will transfer mini-batch slices on demand.
         H_validated = self._ensure_operator_stack("H_mat", H_mat, L)
         G_validated = self._ensure_operator_stack("G_mat", G_mat, L)
-        _operators_offloaded = (H_validated.device != torch.device(dev)
-                                if isinstance(dev, str) else H_validated.device != dev)
+        dev_obj = torch.device(dev)
+
+        def _is_on_optimizer_device(x: torch.Tensor) -> bool:
+            if x.device.type != dev_obj.type:
+                return False
+            if x.device.type != "cuda":
+                return True
+            if dev_obj.index is None:
+                return True
+            return x.device.index == dev_obj.index
+
+        _operators_offloaded = not (
+            _is_on_optimizer_device(H_validated) and _is_on_optimizer_device(G_validated)
+        )
         # For small L or when already on device, move the full stack to GPU.
         if not _operators_offloaded:
             H_validated = H_validated.to(dev, opt_dtype)
@@ -319,9 +331,8 @@ class RKDRL_Optimizer:
 
             # When H/G are on CPU, transfer only the needed slices to GPU.
             if _operators_offloaded:
-                idx_cpu = idx.cpu()
-                H_batch = H_stack.index_select(0, idx_cpu).to(dev, opt_dtype)
-                G_batch = G_stack.index_select(0, idx_cpu).to(dev, opt_dtype)
+                H_batch = H_stack.index_select(0, idx.to(H_stack.device)).to(dev, opt_dtype)
+                G_batch = G_stack.index_select(0, idx.to(G_stack.device)).to(dev, opt_dtype)
             else:
                 H_batch = H_stack.index_select(0, idx)
                 G_batch = G_stack.index_select(0, idx)
