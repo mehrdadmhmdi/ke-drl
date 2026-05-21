@@ -316,9 +316,10 @@ def plot_mu_summary(
 
     fig, ax = plt.subplots(figsize=(5, 5))
     ax.scatter(T.reshape(-1), H.reshape(-1), s=6, alpha=0.25)
-    lo = min(float(T.min()), float(H.min()))
-    hi = max(float(T.max()), float(H.max()))
+    lo, hi = _robust_limits(T, H, q_low=0.5, q_high=99.5, include_zero=True)
     ax.plot([lo, hi], [lo, hi], color="black", lw=1.0)
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
     ax.set_xlabel("MC truth mean embedding")
     ax.set_ylabel("Estimated mean embedding")
     ax.grid(alpha=0.25)
@@ -341,6 +342,152 @@ def _binned_means(x: np.ndarray, y: np.ndarray, n_bins: int = 10):
         by.append(float(vals.mean()))
         se.append(float(vals.std(ddof=1) / math.sqrt(vals.size)) if vals.size > 1 else 0.0)
     return np.asarray(bx), np.asarray(by), np.asarray(se)
+
+
+def _finite_flatten(*arrays: np.ndarray | list[float] | tuple[float, ...]) -> np.ndarray:
+    vals: list[np.ndarray] = []
+    for arr in arrays:
+        if arr is None:
+            continue
+        x = np.asarray(arr, dtype=float).reshape(-1)
+        x = x[np.isfinite(x)]
+        if x.size:
+            vals.append(x)
+    return np.concatenate(vals) if vals else np.asarray([], dtype=float)
+
+
+def _robust_limits(
+    *arrays: np.ndarray | list[float] | tuple[float, ...],
+    q_low: float = 1.0,
+    q_high: float = 99.0,
+    pad: float = 0.08,
+    min_span: float = 1e-3,
+    include_zero: bool = False,
+) -> tuple[float, float]:
+    vals = _finite_flatten(*arrays)
+    if vals.size == 0:
+        return -1.0, 1.0
+    if vals.size >= 5:
+        lo, hi = np.nanpercentile(vals, [q_low, q_high])
+    else:
+        lo, hi = float(np.nanmin(vals)), float(np.nanmax(vals))
+    lo, hi = float(lo), float(hi)
+    if include_zero:
+        lo = min(lo, 0.0)
+        hi = max(hi, 0.0)
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        return -1.0, 1.0
+    if hi < lo:
+        lo, hi = hi, lo
+    if hi - lo < min_span:
+        mid = 0.5 * (lo + hi)
+        lo, hi = mid - 0.5 * min_span, mid + 0.5 * min_span
+    span = hi - lo
+    return lo - pad * span, hi + pad * span
+
+
+def plot_single_mu_diagnostic(
+    *,
+    mu_hat,
+    mu_true,
+    outdir: str | os.PathLike,
+    run_id: str | int,
+    plt=None,
+    filename: str = "mu_hat_vs_truth.png",
+) -> None:
+    """Plot one replicate's estimated benchmark embedding against MC truth."""
+    close_plt = False
+    if plt is None:
+        try:
+            import matplotlib
+
+            matplotlib.use("Agg", force=True)
+            import matplotlib.pyplot as plt  # type: ignore[no-redef]
+            _configure_times_fonts(plt)
+            close_plt = True
+        except ModuleNotFoundError as exc:
+            print(f"Replicate mu diagnostic skipped because matplotlib is unavailable: {exc}")
+            return
+
+    hat = mu_hat.detach().cpu().numpy() if hasattr(mu_hat, "detach") else np.asarray(mu_hat)
+    true = mu_true.detach().cpu().numpy() if hasattr(mu_true, "detach") else np.asarray(mu_true)
+    hat = np.asarray(hat, dtype=float).reshape(-1)
+    true = np.asarray(true, dtype=float).reshape(-1)
+    if hat.shape != true.shape:
+        raise ValueError(f"mu_hat and mu_true must have the same shape; got {hat.shape} and {true.shape}.")
+
+    diff = hat - true
+    rmse = float(np.sqrt(np.mean(diff * diff)))
+    mae = float(np.mean(np.abs(diff)))
+    corr = float(np.corrcoef(true, hat)[0, 1]) if true.size > 1 and np.std(true) > 0 and np.std(hat) > 0 else float("nan")
+
+    out_path = Path(outdir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    x = np.arange(hat.size)
+
+    fig, axs = plt.subplots(1, 2, figsize=(11, 4.4))
+    ax = axs[0]
+    ax.plot(x, true, color="#0b2a50", lw=1.7, label="MC truth")
+    ax.plot(x, hat, color="#ff5f05", lw=1.5, label="KE-DRL")
+    lo, hi = _robust_limits(true, hat, q_low=0.5, q_high=99.5, include_zero=True)
+    ax.set_ylim(lo, hi)
+    ax.set_title(f"Replicate {run_id}: embedding curve")
+    ax.set_xlabel("Index on benchmark Z grid")
+    ax.set_ylabel("Mean embedding")
+    ax.grid(alpha=0.25)
+    ax.legend()
+
+    ax = axs[1]
+    ax.scatter(true, hat, s=12, alpha=0.5, color="#ff5f05", edgecolor="none")
+    lo, hi = _robust_limits(true, hat, q_low=0.5, q_high=99.5, include_zero=True)
+    ax.plot([lo, hi], [lo, hi], "--", color="#0b2a50", lw=1.2)
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
+    ax.set_title(f"RMSE={rmse:.3g}, MAE={mae:.3g}, Corr={corr:.3g}")
+    ax.set_xlabel("MC truth mean embedding")
+    ax.set_ylabel("Estimated mean embedding")
+    ax.grid(alpha=0.25)
+
+    fig.tight_layout()
+    fig.savefig(out_path / filename, dpi=300)
+    plt.close(fig)
+    if close_plt:
+        plt.close("all")
+
+
+def plot_all_replicate_mu_diagnostics(
+    *,
+    mu_dir: str | os.PathLike = "./mu",
+    outdir: str | os.PathLike = "./plots",
+) -> int:
+    """Regenerate per-replicate mean-vs-truth plots from saved mu CSV files."""
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt
+        _configure_times_fonts(plt)
+    except ModuleNotFoundError as exc:
+        print(f"Replicate mu diagnostics skipped because matplotlib is unavailable: {exc}")
+        return 0
+
+    mu_dir = Path(mu_dir)
+    outdir = Path(outdir)
+    count = 0
+    for hat_path in sorted(mu_dir.glob("mu_hat_*.csv")):
+        run_id = hat_path.stem.replace("mu_hat_", "")
+        true_path = mu_dir / f"mu_true_{run_id}.csv"
+        if not true_path.exists():
+            continue
+        plot_single_mu_diagnostic(
+            mu_hat=np.loadtxt(hat_path, delimiter=",").reshape(-1),
+            mu_true=np.loadtxt(true_path, delimiter=",").reshape(-1),
+            outdir=outdir / f"replicate_{run_id}",
+            run_id=run_id,
+            plt=plt,
+        )
+        count += 1
+    return count
 
 
 def _plot_four_panel_summary(
@@ -367,6 +514,18 @@ def _plot_four_panel_summary(
     ax.fill_between(x, h_mean - 1.96 * h_sd, h_mean + 1.96 * h_sd, color="#ff5f05", alpha=0.20)
     ax.plot(x, h_mean, color="#ff5f05", lw=2.0, label=r"$\hat{\mu}$")
     ax.plot(x, t_mean, color="#0b2a50", lw=2.0, label=r"$\mu$")
+    lo, hi = _robust_limits(
+        H,
+        T,
+        h_mean - 1.96 * h_sd,
+        h_mean + 1.96 * h_sd,
+        t_mean - 1.96 * t_sd,
+        t_mean + 1.96 * t_sd,
+        q_low=0.5,
+        q_high=99.5,
+        include_zero=True,
+    )
+    ax.set_ylim(lo, hi)
     ax.set_title("(a) Mean +/- 1.96 SD Across Offline Samples")
     ax.set_xlabel("Index on fixed benchmark Z grid")
     ax.set_ylabel("Mean embedding")
@@ -385,10 +544,11 @@ def _plot_four_panel_summary(
     Y = np.vstack(line_values)
     by = Y.mean(axis=0)
     se = Y.std(axis=0, ddof=1) / math.sqrt(Y.shape[0]) if Y.shape[0] > 1 else np.zeros(Y.shape[1])
-    slope, intercept = _deming(T.reshape(-1), H.reshape(-1))
-    lo = min(float(np.nanmin(T)), float(np.nanmin(H)))
-    hi = max(float(np.nanmax(T)), float(np.nanmax(H)))
+    slope, intercept = _deming(bx, by)
+    lo, hi = _robust_limits(bx, by, by - 1.96 * se, by + 1.96 * se, q_low=0, q_high=100, pad=0.18, include_zero=True)
     ax.plot([lo, hi], [lo, hi], "--", color="#0b2a50", lw=1.5, label="ideal")
+    ax.set_xlim(lo, hi)
+    ax.set_ylim(lo, hi)
     ax.errorbar(
         bx,
         by,
@@ -399,7 +559,7 @@ def _plot_four_panel_summary(
         capsize=3,
         label="mean calibration +/- 95% CI",
     )
-    ax.text(0.04, 0.94, f"Deming slope={slope:.3f}, int={intercept:.3f}", transform=ax.transAxes, va="top")
+    ax.text(0.04, 0.94, f"Binned Deming slope={slope:.3f}, int={intercept:.3f}", transform=ax.transAxes, va="top")
     ax.set_title("(b) Quantile Calibration")
     ax.set_xlabel("True mean embedding (bin mean)")
     ax.set_ylabel("Estimated mean embedding (bin mean)")
@@ -431,11 +591,14 @@ def _plot_four_panel_summary(
                 else np.nan
             )
         if np.isfinite(values).any():
-            per_run[risk_label] = np.asarray(values, dtype=float)
+            risk_vals = np.asarray(values, dtype=float)
+            finite_pos = np.where(np.isfinite(risk_vals), np.maximum(risk_vals, np.finfo(float).tiny), np.nan)
+            per_run[f"log10 {risk_label}"] = np.log10(finite_pos)
     ax = axs[1, 0]
     ax.boxplot([per_run[c].to_numpy() for c in per_run.columns], labels=list(per_run.columns), showmeans=True)
     ax.set_title("(c) Per-run Error Summaries")
     ax.grid(axis="y", alpha=0.25)
+    ax.tick_params(axis="x", labelrotation=10)
 
     ax = axs[1, 1]
     abs_err = np.sort(np.abs(diff).reshape(-1))
@@ -444,6 +607,11 @@ def _plot_four_panel_summary(
     ax.set_title(r"(d) Empirical CDF of $|\hat{\mu}-\mu|$")
     ax.set_xlabel(r"$|\hat{\mu}-\mu|$")
     ax.set_ylabel("ECDF")
+    if abs_err.size:
+        xmax = float(np.nanpercentile(abs_err, 99.5))
+        if np.isfinite(xmax) and xmax > 0 and xmax < float(np.nanmax(abs_err)):
+            ax.set_xlim(0.0, xmax)
+            ax.text(0.96, 0.08, "x-axis clipped at 99.5%", transform=ax.transAxes, ha="right", fontsize=8)
     ax.grid(alpha=0.25)
 
     fig.tight_layout()

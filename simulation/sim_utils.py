@@ -205,6 +205,7 @@ def synthetic_data_generation_torch(
     b_r: torch.Tensor,
     sigma_r: torch.Tensor,
     *,
+    burn_in: int = 0,
     dtype: torch.dtype = torch.float64,
     device: str | torch.device | None = None,
 ) -> tuple[torch.Tensor, ...]:
@@ -212,6 +213,7 @@ def synthetic_data_generation_torch(
     dev = torch.device(device or ("cuda" if torch.cuda.is_available() else "cpu"))
     n_ids = int(n_ids)
     n_timepoints = int(n_timepoints)
+    burn_in = max(0, int(burn_in))
     state_dim = int(state_dim)
     reward_dim = int(reward_dim)
     action_dim = int(action_dim)
@@ -229,8 +231,14 @@ def synthetic_data_generation_torch(
     chol_r = _cov_cholesky(sigma_r, device=dev, dtype=dtype)
     sampler = make_policy_sampler(policy, policy_params)
 
-    states[:, 0, :] = torch.randn(n_ids, state_dim, dtype=dtype, device=dev)
-    actions[:, 0, :] = sample_policy_actions(policy, policy_params, states[:, 0, :], action_dim, sampler=sampler)
+    state_t = torch.randn(n_ids, state_dim, dtype=dtype, device=dev)
+    action_t = sample_policy_actions(policy, policy_params, state_t, action_dim, sampler=sampler)
+    for _ in range(burn_in):
+        state_t = _linear_gaussian(state_t, action_t, W_s, b_s, chol_s)
+        action_t = sample_policy_actions(policy, policy_params, state_t, action_dim, sampler=sampler)
+
+    states[:, 0, :] = state_t
+    actions[:, 0, :] = action_t
 
     for t in range(n_timepoints):
         rewards[:, t, :] = _linear_gaussian(states[:, t, :], actions[:, t, :], W_r, b_r, chol_r)

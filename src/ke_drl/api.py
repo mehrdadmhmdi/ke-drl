@@ -63,6 +63,7 @@ def estimate_embedding(
     B_ridge_penalty: bool = False,
     H_batch_size: int = 10,
     device: Optional[str] = None, dtype: torch.dtype = torch.float64,
+    return_best: bool = True,
     verbose: bool = True,
 ) -> Tuple[torch.Tensor, list, list, Dict[str, torch.Tensor]]:
     return KE_DRL(
@@ -93,7 +94,7 @@ def estimate_embedding(
         negativity_penalty_lambda=negativity_penalty_lambda, max_B_norm=max_B_norm,
         B_ridge_penalty=B_ridge_penalty,
         H_batch_size=H_batch_size,
-        device=device, dtype=dtype, verbose=verbose,
+        device=device, dtype=dtype, return_best=return_best, verbose=verbose,
     )
 
 # ------------- PLOT CONFIG -------------
@@ -120,15 +121,15 @@ def build_plot_config(
     }
 
 # ------------- SIMPLE PLOTS -------------
-def plot_bellman_error(history_be: list, *, config: Dict[str, Any] | None = None, outdir: str = "./plots/"):
+def plot_bellman_error(history_be: list, *, config: Dict[str, Any] | None = None, outdir: str = "./plots/", steps=None):
     tool = _recover_tool(config)
     os.makedirs(outdir, exist_ok=True)
-    tool.plot_bellman_error(history_be, outdir=outdir)
+    tool.plot_bellman_error(history_be, outdir=outdir, steps=steps)
 
-def plot_total_loss(history_obj: list, *, config: Dict[str, Any] | None = None, outdir: str = "./plots/"):
+def plot_total_loss(history_obj: list, *, config: Dict[str, Any] | None = None, outdir: str = "./plots/", steps=None):
     tool = _recover_tool(config)
     os.makedirs(outdir, exist_ok=True)
-    tool.plot_total_loss(history_obj, outdir=outdir)
+    tool.plot_total_loss(history_obj, outdir=outdir, steps=steps)
 
 
 # ------------- RECOVERY / EVAL -------------

@@ -26,6 +26,7 @@ from sim_eval import (
     fixed_point_embedding_risk,
     mean_embedding_hat,
     mean_embedding_true,
+    plot_single_mu_diagnostic,
     save_mu_outputs,
 )
 
@@ -83,7 +84,10 @@ def summarize_risk_history(history_obj: list[float], history_be: list[float]) ->
     log square-root Bellman-risk values, so squaring its exponential returns the
     empirical Bellman risk.
     """
-    out: dict[str, float] = {"risk_n_steps_recorded": float(len(history_obj))}
+    out: dict[str, float] = {
+        "risk_n_steps_recorded": float(len(history_obj)),
+        "risk_n_diagnostics_recorded": float(len(history_obj)),
+    }
     if history_obj:
         first = float(history_obj[0])
         final = float(history_obj[-1])
@@ -507,6 +511,16 @@ print("Return dictionary Z_grid shape:", tuple(Z_grid.shape))
 
 Path("metrics").mkdir(parents=True, exist_ok=True)
 risk_metrics = summarize_risk_history(history_obj, history_be)
+opt_diag = pre.get("optimizer_diagnostics", {})
+returned_bellman = opt_diag.get("returned_bellman") if isinstance(opt_diag, dict) else None
+returned_objective = opt_diag.get("returned_objective") if isinstance(opt_diag, dict) else None
+returned_step = opt_diag.get("returned_step") if isinstance(opt_diag, dict) else None
+if returned_bellman:
+    risk_metrics["risk_bellman_returned"] = float(returned_bellman[-1])
+if returned_objective:
+    risk_metrics["risk_obj_returned"] = float(returned_objective[-1])
+if returned_step:
+    risk_metrics["risk_returned_step"] = float(returned_step[-1])
 risk_metrics.update(
     {
         "offline_data_id": offline_data_id,
@@ -573,10 +587,14 @@ print("Benchmark evaluation grid shape:", tuple(Z_eval.shape))
 plot_this_replicate = should_plot_replicate(P, offline_data_id)
 tool = RecoverAndPlot(config) if RecoverAndPlot is not None and plot_this_replicate else None
 plot_dir = Path("plots") / f"replicate_{offline_data_id}"
+diagnostic_steps = None
+opt_diag = pre.get("optimizer_diagnostics", {})
+if isinstance(opt_diag, dict):
+    diagnostic_steps = opt_diag.get("diagnostic_step")
 if tool is not None and history_be:
-    tool.plot_bellman_error(history_be, outdir=str(plot_dir))
+    tool.plot_bellman_error(history_be, outdir=str(plot_dir), steps=diagnostic_steps)
 if tool is not None and history_obj:
-    tool.plot_total_loss(history_obj, outdir=str(plot_dir))
+    tool.plot_total_loss(history_obj, outdir=str(plot_dir), steps=diagnostic_steps)
 
 beta_eval = beta_for_evaluation_point(
     method=d_r_method,
@@ -636,6 +654,13 @@ metrics = save_mu_outputs(
     beta=beta_eval,
     extra_metrics=extra_metrics,
 )
+if plot_this_replicate:
+    plot_single_mu_diagnostic(
+        mu_hat=mu_hat,
+        mu_true=mu_true,
+        outdir=plot_dir,
+        run_id=offline_data_id,
+    )
 pd.DataFrame([metrics]).to_csv(f"metrics/global_eval_metrics_{offline_data_id}.csv", index=False)
 print(f"Replicate {offline_data_id} benchmark metrics:", metrics)
 

@@ -207,6 +207,7 @@ class RKDRL_Optimizer:
             B_ridge_penalty: bool = False,
             ridge_mode: str = "rkhs",
             diagnostic_interval: int = 50,
+            return_best: bool = True,
             optimize_dtype: Optional[torch.dtype] = None,
             verbose: bool = True,
     ) -> tuple[torch.Tensor, list[float], list[float]]:
@@ -311,6 +312,7 @@ class RKDRL_Optimizer:
 
         history_obj: list[float] = []
         history_be: list[float] = []
+        history_steps: list[float] = []
         history_components: dict[str, list[float]] = {
             "objective": [],
             "bellman": [],
@@ -320,6 +322,10 @@ class RKDRL_Optimizer:
             "B_norm": [],
         }
         eps = torch.finfo(dtype).eps
+        best_B = B.detach().clone()
+        best_objective = float("inf")
+        best_bellman = float("inf")
+        best_step = 0
 
         for step in range(1, int(num_steps) + 1):
             opt.zero_grad()
@@ -408,16 +414,25 @@ class RKDRL_Optimizer:
                     full_bellman = full_bellman_raw.clamp_min(eps)
                     full_loss_raw = full_bellman_raw + full_ridge + full_mass + full_neg
                     full_loss = full_loss_raw.clamp_min(eps)
-                    sched.step(full_loss.item())
-                    history_obj.append(math.log(full_loss.item()))
+                    full_loss_value = float(full_loss.item())
+                    full_loss_raw_value = float(full_loss_raw.item())
+                    full_bellman_value = float(full_bellman_raw.item())
+                    sched.step(full_loss_value)
+                    history_steps.append(float(step))
+                    history_obj.append(math.log(full_loss_value))
                     history_be.append(math.log(torch.sqrt(full_bellman).item()))
-                    history_components["objective"].append(full_loss_raw.item())
-                    history_components["bellman"].append(full_bellman_raw.item())
+                    history_components["objective"].append(full_loss_raw_value)
+                    history_components["bellman"].append(full_bellman_value)
                     history_components["rkhs_ridge"].append(full_ridge.item())
                     history_components["mass"].append(full_mass.item())
                     history_components["negativity"].append(full_neg.item())
                     history_components["B_norm"].append(torch.linalg.vector_norm(B).item())
                     grad_norm_value = grad_norm.item()
+                    if math.isfinite(full_loss_raw_value) and full_loss_raw_value < best_objective:
+                        best_objective = full_loss_raw_value
+                        best_bellman = full_bellman_value
+                        best_step = int(step)
+                        best_B = B.detach().clone()
 
             if verbose and (step == 1 or step % report_every == 0 or step == int(num_steps)):
                 if grad_norm_value is None:
@@ -434,8 +449,26 @@ class RKDRL_Optimizer:
                     print(f"Converged at step {step}: grad={grad_norm_value:.2e}")
                 break
 
+        history_components["diagnostic_step"] = history_steps
+        history_components["best_step"] = [float(best_step)]
+        history_components["best_objective"] = [float(best_objective)]
+        history_components["best_bellman"] = [float(best_bellman)]
+        use_best = bool(return_best) and best_step > 0
+        history_components["returned_step"] = [float(best_step if use_best else int(step))]
+        history_components["returned_objective"] = [
+            float(best_objective if use_best else (history_components["objective"][-1] if history_components["objective"] else float("nan")))
+        ]
+        history_components["returned_bellman"] = [
+            float(best_bellman if use_best else (history_components["bellman"][-1] if history_components["bellman"] else float("nan")))
+        ]
+        history_components["returned_best_checkpoint"] = [1.0 if use_best else 0.0]
         self.last_diagnostics = history_components
-        B_out = B.detach()
+        if verbose and use_best and best_step != int(step):
+            print(
+                f"Returning best diagnostic checkpoint from step {best_step} "
+                f"(objective={best_objective:.3e}, Bellman={best_bellman:.3e})."
+            )
+        B_out = best_B.detach() if use_best else B.detach()
         # Cast back to the original dtype if the optimization ran in a lighter
         # precision (e.g. float32 → float64).
         if opt_dtype != dtype:

@@ -85,6 +85,7 @@ def KE_DRL(
     dtype: torch.dtype = torch.float64,
     optimize_dtype: Optional[torch.dtype] = None,
     offload_operators: str = "auto",
+    return_best: bool = True,
     verbose: bool = True,
     # --- legacy options kept for API compatibility; ignored by the revised estimator ---
     FP_penalty_lambda: float = 0.0,
@@ -384,6 +385,7 @@ def KE_DRL(
         B_ridge_penalty=B_ridge_penalty,
         ridge_mode=ridge_mode,
         diagnostic_interval=diagnostic_interval,
+        return_best=return_best,
         optimize_dtype=optimize_dtype,
         verbose=verbose,
     )

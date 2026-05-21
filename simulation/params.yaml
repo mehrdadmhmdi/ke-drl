@@ -5,6 +5,7 @@
 # --------------------------------
 n_ids: 3000
 n_timepoints: 3
+offline_burn_in: 50
 state_dim: 5
 reward_dim: 3
 action_dim: 1
@@ -54,17 +55,17 @@ target_set:
 # numerator-side subsample matches the classical Kanamori (2009) construction
 # and is the recommended setting for the n_ids x n_timepoints values below.
 ratio:
-  n_basis: 250
+  n_basis: 500
   basis_source: numerator
   basis_seed_offset: 1729
   lambda_reg: null      # null -> reuse `lambda_reg` above
 #===========================
 optimization:
-  lr: 1e-3
+  lr: 3e-4
   weight_decay: 1e-4
   FP_penalty_lambda: 0.0
-  num_steps: 400
-  target_batch_size: 30
+  num_steps: 800
+  target_batch_size: 100
   diagnostic_interval: 50
   # The draft's KE-DRL loss in eq:global_B_objective_impl uses the RKHS
   # ridge tr(B^T K_X B). 'rkhs' is faithful to the paper; 'frobenius'

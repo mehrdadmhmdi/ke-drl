@@ -88,6 +88,54 @@ def _location(policy_name: str, policy_block: dict[str, Any], s: torch.Tensor) -
     return None
 
 
+def _policy_mean_coefficients(policy_name: str, policy_block: dict[str, Any], state_dim: int) -> tuple[torch.Tensor, torch.Tensor] | None:
+    if policy_name == "uniform":
+        theta_lower = torch.as_tensor(policy_block["theta_lower"], dtype=torch.float64)
+        theta_upper = torch.as_tensor(policy_block["theta_upper"], dtype=torch.float64)
+        eps_lower = torch.as_tensor(policy_block.get("epsilon_lower", [0.0]), dtype=torch.float64).reshape(-1)
+        eps_upper = torch.as_tensor(policy_block.get("epsilon_upper", [0.0]), dtype=torch.float64).reshape(-1)
+        return 0.5 * (theta_lower + theta_upper), 0.5 * (eps_lower + eps_upper)
+    if policy_name == "gaussian":
+        theta = torch.as_tensor(policy_block["theta_mean"], dtype=torch.float64)
+        eps = torch.as_tensor(policy_block.get("epsilon_mean", [0.0]), dtype=torch.float64).reshape(-1)
+        return theta, eps
+    if policy_name == "logistic":
+        theta = torch.as_tensor(policy_block["theta_loc"], dtype=torch.float64)
+        eps = torch.as_tensor(policy_block.get("epsilon_loc", [0.0]), dtype=torch.float64).reshape(-1)
+        return theta, eps
+    return None
+
+
+def _print_stationarity_diagnostic(P: dict[str, Any], policy_name: str, policy_block: dict[str, Any]) -> None:
+    state_dim = int(P["state_dim"])
+    action_dim = int(P["action_dim"])
+    W_s = torch.as_tensor(P["MDP"]["W_s"], dtype=torch.float64)
+    if W_s.shape != (state_dim, state_dim + action_dim):
+        print("Stationarity diagnostic skipped: MDP.W_s has unexpected shape.")
+        return
+    coeff = _policy_mean_coefficients(policy_name, policy_block, state_dim)
+    if coeff is None or action_dim != 1:
+        print("Stationarity diagnostic skipped: no affine behavior-policy mean available.")
+        return
+    theta, eps = coeff
+    del eps
+    theta = theta.reshape(1, state_dim)
+    A_eff = W_s[:, :state_dim] + W_s[:, state_dim:state_dim + 1] @ theta
+    spectral_radius = float(torch.linalg.eigvals(A_eff).abs().max())
+    burn_in = int(P.get("offline_burn_in", 0))
+    print(
+        "Behavior-policy linearized state-process diagnostic: "
+        f"spectral_radius={spectral_radius:.3f}, offline_burn_in={burn_in}"
+    )
+    if spectral_radius >= 1.0:
+        raise ValueError(
+            "The linearized behavior-policy state process is not stable "
+            f"(spectral radius {spectral_radius:.3f} >= 1). Adjust MDP/policy parameters."
+        )
+    if burn_in < 20:
+        print("Warning: offline_burn_in is small; recorded transitions may still reflect transient initialization.")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--params", default="params.yaml")
@@ -107,6 +155,7 @@ def main() -> None:
     print(f"Policy config OK: behavior={behavior_name}, target={target_name}, state_dim={state_dim}, action_dim={action_dim}")
     if target_name in {"logistic", "gaussian"}:
         print(f"Note: policy.{target_name}.theta_scale/theta_std are log-scale coefficients in Probability_Densities.")
+    _print_stationarity_diagnostic(P, behavior_name, behavior_block)
 
     n_rep = int((P.get("experiment") or {}).get("num_replicates", 1))
     bench_cfg = dict(P.get("benchmark") or {})

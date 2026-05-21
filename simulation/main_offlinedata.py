@@ -45,6 +45,8 @@ W_r, b_r, sigma_r = map(to_t, (P["MDP"]["W_r"], P["MDP"]["b_r"], P["MDP"]["sigma
 policy_name = P["policy"]["Behvaioral_policy"]
 beh_policy = P["policy"][policy_name]["name"]
 beh_policy_params = P["policy"][policy_name]
+offline_burn_in = int(P.get("offline_burn_in", 0))
+print(f"Offline trajectory burn-in under behavior policy: {offline_burn_in}")
 
 s0, s1, a0, a1, r0, r1, r = synthetic_data_generation_torch(
     P["n_ids"],
@@ -60,6 +62,7 @@ s0, s1, a0, a1, r0, r1, r = synthetic_data_generation_torch(
     W_r,
     b_r,
     sigma_r,
+    burn_in=offline_burn_in,
     dtype=sim_dtype,
     device=compute_device,
 )
@@ -91,6 +94,7 @@ torch.save(
         "metadata": {
             "policy": beh_policy,
             "policy_params": beh_policy_params,
+            "offline_burn_in": offline_burn_in,
             "params_file": "params.yaml",
             "stamp": str(array_id),
             "random_seed": seed,

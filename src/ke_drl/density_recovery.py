@@ -210,6 +210,41 @@ class RecoverAndPlot:
         plt.savefig(f"{outdir}/{self._fname('Loss_ADAM')}", dpi=600)
         plt.close()
 
+    @staticmethod
+    def _history_x(history, steps=None):
+        vals = np.asarray(history, dtype=float)
+        if steps is not None:
+            x = np.asarray(steps, dtype=float)
+            if x.shape[0] == vals.shape[0]:
+                return x, "Optimizer step"
+        return np.arange(vals.shape[0]), "Recorded diagnostic point"
+
+    def plot_bellman_error(self, hist_be, outdir="./plots/", steps=None):
+        plt.figure(figsize=(7, 5))
+        x, xlabel = self._history_x(hist_be, steps)
+        plt.plot(x, np.asarray(hist_be), color="#FF5F05")
+        plt.xlabel(xlabel); plt.ylabel("Log ||Bellman Error||")
+        plt.title("Log Bellman Error (ADAM diagnostics)")
+        plt.grid(alpha=0.3, linestyle="--")
+        plt.subplots_adjust(bottom=0.35)
+        plt.figtext(0.5, 0.04, self._footer(f"Last recorded log BE: {hist_be[-1]:.6e} | Last recorded BE: {math.exp(hist_be[-1]):.6e} "), ha="center", fontsize=10, wrap=True)
+        os.makedirs(outdir, exist_ok=True)
+        plt.savefig(f"{outdir}/{self._fname('BellmanError_ADAM')}", dpi=600)
+        plt.close()
+
+    def plot_total_loss(self, hist_obj, outdir="./plots/", steps=None):
+        plt.figure(figsize=(7, 5))
+        x, xlabel = self._history_x(hist_obj, steps)
+        plt.plot(x, np.asarray(hist_obj), color="#FF5F05")
+        plt.xlabel(xlabel); plt.ylabel("Log Loss (objective + penalty)")
+        plt.title("Log Total Loss (ADAM diagnostics)", fontsize=12)
+        plt.grid(alpha=0.3, linestyle="--")
+        plt.subplots_adjust(bottom=0.35)
+        plt.figtext(0.5, 0.04, self._footer(f"Last recorded log loss: {hist_obj[-1]:.6e} | Last recorded loss: {math.exp(hist_obj[-1]):.6e} "), ha="center", fontsize=10, wrap=True)
+        os.makedirs(outdir, exist_ok=True)
+        plt.savefig(f"{outdir}/{self._fname('Loss_ADAM')}", dpi=600)
+        plt.close()
+
     # -------------------- logging / csv --------------------
     @staticmethod
     def save_csv(data, filename, base_path="./LOSSvalues"):
