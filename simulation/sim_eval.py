@@ -579,7 +579,7 @@ def _plot_multi_benchmark_summary(
     colors = _benchmark_palette(len(benchmark_ids))
     x = np.arange(H.shape[1])
 
-    fig, axs = plt.subplots(2, 2, figsize=(14, 9.5))
+    fig, axs = plt.subplots(2, 3, figsize=(19, 9.5))
 
     ax = axs[0, 0]
     y_for_limits = []
@@ -636,45 +636,55 @@ def _plot_multi_benchmark_summary(
     ax.grid(alpha=0.25)
     ax.legend(fontsize=7, ncol=2)
 
-    ax = axs[1, 0]
-    box_data, labels = [], []
-    for bid in benchmark_ids:
-        vals = pd.to_numeric(metrics.loc[metrics["benchmark_id"] == bid, "RMSE"], errors="coerce").dropna().to_numpy()
-        if vals.size:
-            box_data.append(vals)
-            labels.append(str(int(bid)))
-    if box_data:
+    def metric_boxplot(ax, column: str, ylabel: str, title: str) -> None:
+        box_data, labels, used_colors = [], [], []
+        if column not in metrics.columns:
+            ax.axis("off")
+            ax.text(0.5, 0.5, f"{column} not available", ha="center", va="center", transform=ax.transAxes)
+            return
+        for color, bid in zip(colors, benchmark_ids):
+            vals = pd.to_numeric(metrics.loc[metrics["benchmark_id"] == bid, column], errors="coerce").dropna().to_numpy()
+            if vals.size:
+                box_data.append(vals)
+                labels.append(str(int(bid)))
+                used_colors.append(color)
+        if not box_data:
+            ax.axis("off")
+            ax.text(0.5, 0.5, f"{column} not available", ha="center", va="center", transform=ax.transAxes)
+            return
         bp = ax.boxplot(box_data, labels=labels, showmeans=True, patch_artist=True)
-        for patch, color in zip(bp["boxes"], colors):
+        for patch, color in zip(bp["boxes"], used_colors):
             patch.set_facecolor(color)
             patch.set_alpha(0.25)
         ax.set_xlabel("Benchmark point")
-        ax.set_ylabel("RMSE across Z grid")
-        ax.set_title("(c) RMSE by benchmark point")
+        ax.set_ylabel(ylabel)
+        ax.set_title(title)
         ylo, yhi = _robust_limits(*box_data, q_low=0, q_high=97.5, include_zero=True)
         ax.set_ylim(ylo, yhi)
-    if "projected_bellman_test_risk" in metrics.columns:
-        ax2 = ax.twinx()
-        risk_means = []
-        risk_ses = []
-        risk_x = []
-        for pos, bid in enumerate(benchmark_ids, start=1):
-            vals = pd.to_numeric(
-                metrics.loc[metrics["benchmark_id"] == bid, "projected_bellman_test_risk"],
-                errors="coerce",
-            ).dropna().to_numpy()
-            if vals.size:
-                risk_x.append(pos)
-                risk_means.append(float(vals.mean()))
-                risk_ses.append(float(vals.std(ddof=1) / math.sqrt(vals.size)) if vals.size > 1 else 0.0)
-        if risk_x:
-            ax2.errorbar(risk_x, risk_means, yerr=[1.96 * s for s in risk_ses], color="0.15", marker="D", lw=1.4, capsize=2)
-            ax2.set_ylabel("Projected Bellman risk")
-            rlo, rhi = _robust_limits(risk_means, q_low=0, q_high=100, include_zero=True)
-            ax2.set_ylim(rlo, rhi)
-    ax.grid(axis="y", alpha=0.25)
+        if any(float(np.nanmax(vals)) > yhi for vals in box_data if vals.size):
+            ax.text(0.96, 0.92, "y-axis clipped at 97.5%", transform=ax.transAxes, ha="right", fontsize=8)
+        ax.grid(axis="y", alpha=0.25)
 
-    ax = axs[1, 1]
+    metric_boxplot(
+        axs[0, 2],
+        "MAE",
+        "MAE across Z grid",
+        "(c) MAE by benchmark point",
+    )
+    metric_boxplot(
+        axs[1, 0],
+        "RMSE",
+        "RMSE across Z grid",
+        "(d) RMSE by benchmark point",
+    )
+    metric_boxplot(
+        axs[1, 1],
+        "projected_bellman_test_risk",
+        "Projected Bellman risk",
+        "(e) Projected Bellman risk by benchmark point",
+    )
+
+    ax = axs[1, 2]
     for color, bid in zip(colors, benchmark_ids):
         idx = [i for i, rid in enumerate(run_ids) if rid_to_benchmark.get(str(rid)) == bid]
         if not idx:
@@ -682,7 +692,7 @@ def _plot_multi_benchmark_summary(
         abs_err = np.sort(np.abs(H[np.asarray(idx)] - T[np.asarray(idx)]).reshape(-1))
         ecdf = np.arange(1, abs_err.size + 1) / abs_err.size
         ax.plot(abs_err, ecdf, color=color, lw=1.9, label=f"benchmark {int(bid)}")
-    ax.set_title(r"(d) ECDF of $|\hat{\mu}-\mu|$ by benchmark")
+    ax.set_title(r"(f) ECDF of $|\hat{\mu}-\mu|$ by benchmark")
     ax.set_xlabel(r"$|\hat{\mu}-\mu|$")
     ax.set_ylabel("ECDF")
     all_abs = np.abs(H - T).reshape(-1)
