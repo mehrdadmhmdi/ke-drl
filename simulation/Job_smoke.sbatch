@@ -38,28 +38,20 @@ BASE=$PWD
 RUN="$BASE/runs/smoke_${SLURM_JOB_ID}"
 mkdir -p "$BASE/logs" "$RUN" "$RUN/data" "$RUN/logs" "$RUN/mu" "$RUN/metrics" "$RUN/plots"
 
-if [ -z "${KEDRL_SRC:-}" ] && [ -d "$BASE/../src" ]; then
-  KEDRL_SRC="$BASE/../src"
-elif [ -z "${KEDRL_SRC:-}" ] && [ -d "$BASE/../kedrl_git/src" ]; then
-  KEDRL_SRC="$BASE/../kedrl_git/src"
-fi
-if [ -n "${KEDRL_SRC:-}" ] && [ -d "$KEDRL_SRC" ]; then
-  export KEDRL_SRC
-  export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"
-  echo "KEDRL_SRC: $KEDRL_SRC"
-else
-  echo "KEDRL_SRC=${KEDRL_SRC:-unset} not found; using installed ke_drl package." >&2
-  if [ "${KEDRL_REINSTALL_FROM_GIT:-0}" = "1" ]; then
-    python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"
-  fi
-  python - <<'PY'
-import importlib.util
-spec = importlib.util.find_spec("ke_drl")
-if spec is None:
-    raise SystemExit('ke_drl is not installed. Run: python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"')
-print(f"Installed ke_drl source: {spec.origin}")
+unset KEDRL_SRC
+KEDRL_GIT_URL="${KEDRL_GIT_URL:-https://github.com/mehrdadmhmdi/ke-drl.git}"
+KEDRL_GIT_REF="${KEDRL_GIT_REF:-main}"
+KEDRL_PIP_TARGET="$RUN/.kedrl_site"
+rm -rf "$KEDRL_PIP_TARGET"
+mkdir -p "$KEDRL_PIP_TARGET"
+echo "Installing ke_drl from git: ${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
+python3 -m pip install --no-cache-dir --upgrade --force-reinstall --no-deps \
+  --target "$KEDRL_PIP_TARGET" "git+${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
+export PYTHONPATH="$KEDRL_PIP_TARGET:${PYTHONPATH:-}"
+python3 - <<'PY'
+import ke_drl
+print(f"Installed ke_drl source: {ke_drl.__file__}")
 PY
-fi
 
 export VISPY_GL_BACKEND=egl
 export VISPY_USE_APP=headless

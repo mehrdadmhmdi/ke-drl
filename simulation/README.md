@@ -153,22 +153,20 @@ The smoke test uses `params_smoke.yaml`:
 - 10 target points per replicate for the global loss.
 - 50 return-grid points and 80 optimizer steps.
 
-Every Slurm script prints `KEDRL_SRC` and every Python stage prints the
-resolved `ke_drl import source`. These should point to the cloned repository's
-`src/ke_drl` when the full clone is present. If only the `simulation/` folder is
-on the cluster, the scripts fall back to the installed `ke_drl` package and
-print its import path.
+Every Slurm script installs `ke_drl` from Git into a job-local `.kedrl_site`
+directory and every Python stage prints the resolved `ke_drl import source`.
+This avoids accidental use of a local checkout or stale user-site package.
 
-To force a reinstall from GitHub inside a Slurm job, submit with:
+By default the scripts install from `main`:
 
 ```bash
-sbatch --export=ALL,KEDRL_REINSTALL_FROM_GIT=1 Job_smoke.sbatch
+python -m pip install --no-deps --target .kedrl_site "git+https://github.com/mehrdadmhmdi/ke-drl.git@main"
 ```
 
-The reinstall command used by the scripts is:
+To run a branch or tag instead, submit with:
 
 ```bash
-python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"
+sbatch --export=ALL,KEDRL_GIT_REF=<branch-or-tag> Job_smoke.sbatch
 ```
 
 Expected output is under:

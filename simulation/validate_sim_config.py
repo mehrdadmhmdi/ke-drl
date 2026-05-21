@@ -75,7 +75,7 @@ def _check_kedrl_package_api() -> None:
         raise ImportError(
             "Installed ke_drl package is stale for the current simulation scripts; missing "
             + ", ".join(missing)
-            + ". Use the current source with KEDRL_SRC=/path/to/kedrl_git/src or reinstall the package."
+            + ". Reinstall the current package from Git before running."
         )
     print("ke_drl package API OK: prediction weights, RFF operators, rank diagnostics, and best-checkpoint optimizer available")
 

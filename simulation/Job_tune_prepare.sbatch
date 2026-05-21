@@ -53,27 +53,20 @@ fi
 
 mkdir -p "$RUN" "$RUN/data" "$RUN/logs"
 
-if [ -z "${KEDRL_SRC:-}" ]; then
-  for candidate in \
-    "$BASE/../src" \
-    "$BASE/../kedrl_git/src" \
-    "$BASE/src" \
-    "/work/nvme/bfez/${USER}/DistRL/src" \
-    "/work/nvme/bfez/${USER}/DistRL/kedrl_git/src"; do
-    if [ -d "$candidate/ke_drl" ]; then
-      KEDRL_SRC="$candidate"
-      break
-    fi
-  done
-fi
-if [ -n "${KEDRL_SRC:-}" ] && [ -d "$KEDRL_SRC" ]; then
-  export KEDRL_SRC
-  export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"
-  echo "KEDRL_SRC: $KEDRL_SRC"
-else
-  echo "Could not find current ke_drl source. Set KEDRL_SRC=/path/to/kedrl_git/src before sbatch." >&2
-  exit 1
-fi
+unset KEDRL_SRC
+KEDRL_GIT_URL="${KEDRL_GIT_URL:-https://github.com/mehrdadmhmdi/ke-drl.git}"
+KEDRL_GIT_REF="${KEDRL_GIT_REF:-main}"
+KEDRL_PIP_TARGET="$RUN/.kedrl_site"
+rm -rf "$KEDRL_PIP_TARGET"
+mkdir -p "$KEDRL_PIP_TARGET"
+echo "Installing ke_drl from git: ${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
+python3 -m pip install --no-cache-dir --upgrade --force-reinstall --no-deps \
+  --target "$KEDRL_PIP_TARGET" "git+${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
+export PYTHONPATH="$KEDRL_PIP_TARGET:${PYTHONPATH:-}"
+python3 - <<'PY'
+import ke_drl
+print(f"Installed ke_drl source: {ke_drl.__file__}")
+PY
 
 export VISPY_GL_BACKEND=egl
 export VISPY_USE_APP=headless

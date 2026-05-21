@@ -2,51 +2,18 @@ from __future__ import annotations
 
 import importlib.util
 import os
-import sys
 from pathlib import Path
 from typing import Any, Iterable
 
 import torch
 
 
-def _kedrl_src_candidates() -> list[Path]:
-    candidates: list[Path] = []
-    env_src = os.environ.get("KEDRL_SRC")
-    if env_src:
-        candidates.append(Path(env_src))
-
-    here = Path(__file__).resolve().parent
-    cwd = Path.cwd().resolve()
-    for base in (here, cwd, *here.parents, *cwd.parents):
-        candidates.extend(
-            [
-                base / "src",
-                base / "kedrl_git" / "src",
-                base / ".." / "kedrl_git" / "src",
-                base / ".." / ".." / "kedrl_git" / "src",
-            ]
-        )
-    return candidates
-
-
 def bootstrap_kedrl() -> None:
-    """Prefer the checked-out package source over any installed ke_drl wheel."""
-    seen: set[str] = set()
-    for cand in _kedrl_src_candidates():
-        src = cand.resolve()
-        src_s = str(src)
-        if src_s in seen:
-            continue
-        seen.add(src_s)
-        if (src / "ke_drl").is_dir():
-            if src_s in sys.path:
-                sys.path.remove(src_s)
-            sys.path.insert(0, src_s)
-            return
+    """Require the installed ke_drl package selected by the active Python path."""
     if importlib.util.find_spec("ke_drl") is None:
         raise ModuleNotFoundError(
-            "Could not find local src/ke_drl or an installed ke_drl package. "
-            "Set KEDRL_SRC to the repository src directory before running simulations."
+            "Could not import ke_drl. Install it from Git before running simulations, "
+            'for example: python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"'
         )
 
 

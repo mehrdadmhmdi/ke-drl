@@ -40,27 +40,20 @@ echo $CUDA_VISIBLE_DEVICES
 
 set -euo pipefail
 
-if [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../src" ]; then
-  export KEDRL_SRC="$PWD/../src"
-elif [ -z "${KEDRL_SRC:-}" ] && [ -d "$PWD/../kedrl_git/src" ]; then
-  export KEDRL_SRC="$PWD/../kedrl_git/src"
-fi
-if [ -n "${KEDRL_SRC:-}" ] && [ -d "$KEDRL_SRC" ]; then
-  export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"
-  echo "KEDRL_SRC: $KEDRL_SRC"
-else
-  echo "KEDRL_SRC=${KEDRL_SRC:-unset} not found; using installed ke_drl package." >&2
-  if [ "${KEDRL_REINSTALL_FROM_GIT:-0}" = "1" ]; then
-    python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"
-  fi
-  python - <<'PY'
-import importlib.util
-spec = importlib.util.find_spec("ke_drl")
-if spec is None:
-    raise SystemExit('ke_drl is not installed. Run: python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"')
-print(f"Installed ke_drl source: {spec.origin}")
+unset KEDRL_SRC
+KEDRL_GIT_URL="${KEDRL_GIT_URL:-https://github.com/mehrdadmhmdi/ke-drl.git}"
+KEDRL_GIT_REF="${KEDRL_GIT_REF:-main}"
+KEDRL_PIP_TARGET="$PWD/.kedrl_site_${SLURM_JOB_ID:-manual}_${SLURM_ARRAY_TASK_ID:-0}"
+rm -rf "$KEDRL_PIP_TARGET"
+mkdir -p "$KEDRL_PIP_TARGET"
+echo "Installing ke_drl from git: ${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
+python3 -m pip install --no-cache-dir --upgrade --force-reinstall --no-deps \
+  --target "$KEDRL_PIP_TARGET" "git+${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
+export PYTHONPATH="$KEDRL_PIP_TARGET:${PYTHONPATH:-}"
+python3 - <<'PY'
+import ke_drl
+print(f"Installed ke_drl source: {ke_drl.__file__}")
 PY
-fi
 
 python3 validate_sim_config.py --params params.yaml
 python3 main_offlinedata.py

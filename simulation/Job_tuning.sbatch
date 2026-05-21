@@ -43,28 +43,20 @@ export PYTORCH_ALLOC_CONF="expandable_segments:True,max_split_size_mb:64,garbage
 
 BASE="${SLURM_SUBMIT_DIR:-$PWD}"
 echo "SUBMIT_DIR: $BASE"
-if [ -z "${KEDRL_SRC:-}" ] && [ -d "$BASE/../src" ]; then
-  KEDRL_SRC="$BASE/../src"
-elif [ -z "${KEDRL_SRC:-}" ]; then
-  KEDRL_SRC="$BASE/../kedrl_git/src"
-fi
-if [ -d "$KEDRL_SRC" ]; then
-  export KEDRL_SRC
-  export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"
-  echo "KEDRL_SRC: $KEDRL_SRC"
-else
-  echo "KEDRL_SRC=$KEDRL_SRC not found; using installed ke_drl package." >&2
-  if [ "${KEDRL_REINSTALL_FROM_GIT:-0}" = "1" ]; then
-    python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"
-  fi
-  python - <<'PY'
-import importlib.util
-spec = importlib.util.find_spec("ke_drl")
-if spec is None:
-    raise SystemExit('ke_drl is not installed. Run: python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"')
-print(f"Installed ke_drl source: {spec.origin}")
+unset KEDRL_SRC
+KEDRL_GIT_URL="${KEDRL_GIT_URL:-https://github.com/mehrdadmhmdi/ke-drl.git}"
+KEDRL_GIT_REF="${KEDRL_GIT_REF:-main}"
+KEDRL_PIP_TARGET="$BASE/.kedrl_site_${SLURM_JOB_ID:-manual}"
+rm -rf "$KEDRL_PIP_TARGET"
+mkdir -p "$KEDRL_PIP_TARGET"
+echo "Installing ke_drl from git: ${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
+python3 -m pip install --no-cache-dir --upgrade --force-reinstall --no-deps \
+  --target "$KEDRL_PIP_TARGET" "git+${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
+export PYTHONPATH="$KEDRL_PIP_TARGET:${PYTHONPATH:-}"
+python3 - <<'PY'
+import ke_drl
+print(f"Installed ke_drl source: {ke_drl.__file__}")
 PY
-fi
 
 mkdir -p tunning/runs logs
 
@@ -176,7 +168,7 @@ while read -r CFG; do
   echo "Submitting estimation array job"
   EST_OUTPUT=$(submit_with_retry \
     "sbatch --job-name=EST_RUN --parsable --account=bfez-dtai-gh \
-     --export=ALL,BASE=\"$RUN\",KEDRL_SRC=\"$KEDRL_SRC\" --array=0-100 --chdir=\"$RUN\" \"$RUN/Job_est.sbatch\"")
+     --export=ALL,BASE=\"$RUN\",KEDRL_GIT_URL=\"$KEDRL_GIT_URL\",KEDRL_GIT_REF=\"$KEDRL_GIT_REF\" --array=0-100 --chdir=\"$RUN\" \"$RUN/Job_est.sbatch\"")
   EST_RET=$?
   echo "sbatch EST output: $EST_OUTPUT"
   if [ $EST_RET -ne 0 ]; then
@@ -198,7 +190,7 @@ while read -r CFG; do
     "sbatch --job-name=PLOT_RUN --parsable --account=bfez-dtai-gh \
      --output=\"$RUN/logs/AGG_%j.log\" \
      --time=00:08:00 --nodes=1 --gres=gpu:1 --mem=8g --cpus-per-task=4 --partition=ghx4 --mail-type=ALL \
-     --mail-user=mehrdad3@illinois.edu --export=ALL,BASE=\"$RUN\",KEDRL_SRC=\"$KEDRL_SRC\" --dependency=afterany:$EST --chdir=\"$RUN\" \
+     --mail-user=mehrdad3@illinois.edu --export=ALL,BASE=\"$RUN\",KEDRL_GIT_URL=\"$KEDRL_GIT_URL\",KEDRL_GIT_REF=\"$KEDRL_GIT_REF\" --dependency=afterany:$EST --chdir=\"$RUN\" \
      \"$RUN/Job_plot.sbatch\"")
   AGG_RET=$?
   echo "sbatch AGG output: $AGG_OUTPUT"

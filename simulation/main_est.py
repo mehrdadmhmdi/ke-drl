@@ -44,7 +44,7 @@ from ke_drl.rank_diagnostics import matrix_rank_diagnostics
 if "return_best" not in inspect.signature(KE_DRL).parameters:
     raise ImportError(
         "The imported ke_drl package is stale and lacks KE_DRL(return_best=...). "
-        "Set KEDRL_SRC to the current kedrl_git/src or reinstall the current package before running."
+        "Reinstall the current package from Git before running."
     )
 
 try:
