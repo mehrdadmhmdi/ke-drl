@@ -30,6 +30,7 @@ from .api import (
     predict_embedding_weights,
     projected_bellman_test_risk,
     projected_bellman_test_risk_from_inputs,
+    matrix_rank_diagnostics,
 )
 
 __all__ = [
@@ -51,6 +52,7 @@ __all__ = [
     "predict_embedding_weights",
     "projected_bellman_test_risk",
     "projected_bellman_test_risk_from_inputs",
+    "matrix_rank_diagnostics",
 ]
 
 

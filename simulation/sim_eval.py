@@ -246,6 +246,22 @@ def export_metrics_tables(
         agg[f"{col}_mean"] = float(df[col].mean())
         agg[f"{col}_sd"] = float(df[col].std(ddof=1)) if len(df) > 1 else 0.0
     pd.DataFrame([agg]).to_csv(metrics_dir / "aggregate_metrics.csv", index=False)
+    if "benchmark_id" in df.columns:
+        numeric_cols = [
+            c for c in df.columns
+            if c not in {"run_id", "benchmark_point_source", "benchmark_z_path"}
+            and pd.api.types.is_numeric_dtype(df[c])
+        ]
+        grouped_rows = []
+        for bid, g in df.groupby("benchmark_id", dropna=False):
+            row = {"benchmark_id": bid, "n_rows": int(len(g))}
+            for col in numeric_cols:
+                if col == "benchmark_id":
+                    continue
+                row[f"{col}_mean"] = float(g[col].mean())
+                row[f"{col}_sd"] = float(g[col].std(ddof=1)) if len(g) > 1 else 0.0
+            grouped_rows.append(row)
+        pd.DataFrame(grouped_rows).to_csv(metrics_dir / "per_benchmark_aggregate_metrics.csv", index=False)
 
     cal = {
         "deming_slope": float(df["deming_slope"].mean()),
@@ -300,6 +316,25 @@ def plot_mu_summary(
         metrics_df = pd.read_csv(per_run_path)
 
     _plot_four_panel_summary(H, T, run_ids=run_ids, metrics_df=metrics_df, outdir=outdir, plt=plt)
+    if metrics_df is not None and "benchmark_id" in metrics_df.columns:
+        rid_to_benchmark = dict(zip(metrics_df["run_id"].astype(str), metrics_df["benchmark_id"]))
+        benchmark_ids = sorted(pd.Series(list(rid_to_benchmark.values())).dropna().unique().tolist())
+        if len(benchmark_ids) > 1:
+            for bid in benchmark_ids:
+                idx = [i for i, rid in enumerate(run_ids) if rid_to_benchmark.get(str(rid)) == bid]
+                if not idx:
+                    continue
+                group_dir = outdir / f"benchmark_{int(bid)}"
+                group_dir.mkdir(parents=True, exist_ok=True)
+                group_metrics = metrics_df[metrics_df["benchmark_id"] == bid].copy()
+                _plot_four_panel_summary(
+                    H[np.asarray(idx)],
+                    T[np.asarray(idx)],
+                    run_ids=[run_ids[i] for i in idx],
+                    metrics_df=group_metrics,
+                    outdir=group_dir,
+                    plt=plt,
+                )
 
     fig, ax = plt.subplots(figsize=(10, 5))
     ax.plot(x, t_mean, lw=1.7, color="black", label="MC truth")
@@ -316,10 +351,11 @@ def plot_mu_summary(
 
     fig, ax = plt.subplots(figsize=(5, 5))
     ax.scatter(T.reshape(-1), H.reshape(-1), s=6, alpha=0.25)
-    lo, hi = _robust_limits(T, H, q_low=0.5, q_high=99.5, include_zero=True)
+    lo, hi = _robust_limits(T, H, q_low=2.5, q_high=97.5, include_zero=False)
     ax.plot([lo, hi], [lo, hi], color="black", lw=1.0)
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
+    ax.text(0.96, 0.06, "axes use central 95%", transform=ax.transAxes, ha="right", fontsize=8)
     ax.set_xlabel("MC truth mean embedding")
     ax.set_ylabel("Estimated mean embedding")
     ax.grid(alpha=0.25)
@@ -545,7 +581,7 @@ def _plot_four_panel_summary(
     by = Y.mean(axis=0)
     se = Y.std(axis=0, ddof=1) / math.sqrt(Y.shape[0]) if Y.shape[0] > 1 else np.zeros(Y.shape[1])
     slope, intercept = _deming(bx, by)
-    lo, hi = _robust_limits(bx, by, by - 1.96 * se, by + 1.96 * se, q_low=0, q_high=100, pad=0.18, include_zero=True)
+    lo, hi = _robust_limits(bx, by, q_low=0, q_high=100, pad=0.15, include_zero=False, min_span=1e-4)
     ax.plot([lo, hi], [lo, hi], "--", color="#0b2a50", lw=1.5, label="ideal")
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
@@ -560,6 +596,7 @@ def _plot_four_panel_summary(
         label="mean calibration +/- 95% CI",
     )
     ax.text(0.04, 0.94, f"Binned Deming slope={slope:.3f}, int={intercept:.3f}", transform=ax.transAxes, va="top")
+    ax.text(0.96, 0.06, "axes centered on binned means", transform=ax.transAxes, ha="right", fontsize=8)
     ax.set_title("(b) Quantile Calibration")
     ax.set_xlabel("True mean embedding (bin mean)")
     ax.set_ylabel("Estimated mean embedding (bin mean)")
@@ -592,13 +629,18 @@ def _plot_four_panel_summary(
             )
         if np.isfinite(values).any():
             risk_vals = np.asarray(values, dtype=float)
-            finite_pos = np.where(np.isfinite(risk_vals), np.maximum(risk_vals, np.finfo(float).tiny), np.nan)
-            per_run[f"log10 {risk_label}"] = np.log10(finite_pos)
+            per_run[risk_label] = risk_vals
     ax = axs[1, 0]
     ax.boxplot([per_run[c].to_numpy() for c in per_run.columns], labels=list(per_run.columns), showmeans=True)
     ax.set_title("(c) Per-run Error Summaries")
     ax.grid(axis="y", alpha=0.25)
     ax.tick_params(axis="x", labelrotation=10)
+    ylo, yhi = _robust_limits(*[per_run[c].to_numpy() for c in per_run.columns], q_low=0, q_high=97.5, include_zero=True)
+    ax.set_ylim(ylo, yhi)
+    if np.isfinite(per_run.to_numpy(dtype=float)).any():
+        raw_max = float(np.nanmax(per_run.to_numpy(dtype=float)))
+        if raw_max > yhi:
+            ax.text(0.96, 0.92, "y-axis clipped at 97.5%", transform=ax.transAxes, ha="right", fontsize=8)
 
     ax = axs[1, 1]
     abs_err = np.sort(np.abs(diff).reshape(-1))

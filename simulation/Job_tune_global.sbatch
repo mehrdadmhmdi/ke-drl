@@ -40,27 +40,26 @@ RUN="$BASE/runs/tune_global_${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}"
 mkdir -p "$BASE/logs" "$RUN" "$RUN/data" "$RUN/logs" "$RUN/mu" "$RUN/metrics" "$RUN/plots"
 SHARED_DATA_DIR="${KEDRL_SHARED_DATA_DIR:-$BASE/runs/tune_shared_data/data}"
 
-if [ -z "${KEDRL_SRC:-}" ] && [ -d "$BASE/../src" ]; then
-  KEDRL_SRC="$BASE/../src"
-elif [ -z "${KEDRL_SRC:-}" ] && [ -d "$BASE/../kedrl_git/src" ]; then
-  KEDRL_SRC="$BASE/../kedrl_git/src"
+if [ -z "${KEDRL_SRC:-}" ]; then
+  for candidate in \
+    "$BASE/../src" \
+    "$BASE/../kedrl_git/src" \
+    "$BASE/src" \
+    "/work/nvme/bfez/${USER}/DistRL/src" \
+    "/work/nvme/bfez/${USER}/DistRL/kedrl_git/src"; do
+    if [ -d "$candidate/ke_drl" ]; then
+      KEDRL_SRC="$candidate"
+      break
+    fi
+  done
 fi
 if [ -n "${KEDRL_SRC:-}" ] && [ -d "$KEDRL_SRC" ]; then
   export KEDRL_SRC
   export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"
   echo "KEDRL_SRC: $KEDRL_SRC"
 else
-  echo "KEDRL_SRC=${KEDRL_SRC:-unset} not found; using installed ke_drl package." >&2
-  if [ "${KEDRL_REINSTALL_FROM_GIT:-0}" = "1" ]; then
-    python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"
-  fi
-  python - <<'PY'
-import importlib.util
-spec = importlib.util.find_spec("ke_drl")
-if spec is None:
-    raise SystemExit('ke_drl is not installed. Run: python -m pip install "git+https://github.com/mehrdadmhmdi/ke-drl.git"')
-print(f"Installed ke_drl source: {spec.origin}")
-PY
+  echo "Could not find current ke_drl source. Set KEDRL_SRC=/path/to/kedrl_git/src before sbatch." >&2
+  exit 1
 fi
 
 export VISPY_GL_BACKEND=egl

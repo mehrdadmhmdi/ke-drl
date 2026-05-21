@@ -13,6 +13,7 @@ from .evaluation_metric import (
     projected_bellman_test_risk,
     projected_bellman_test_risk_from_inputs,
 )
+from .rank_diagnostics import matrix_rank_diagnostics
 
 
 def _recover_tool(config: Dict[str, Any] | None = None):

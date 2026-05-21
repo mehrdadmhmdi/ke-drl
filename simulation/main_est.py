@@ -39,6 +39,7 @@ from ke_drl.Gamma_sa import Gamma_sa
 from ke_drl.Phi_sa import Phi_sa
 from ke_drl.evaluation_metric import predict_embedding_weights, projected_bellman_test_risk
 from ke_drl.matern_kernel import matern_kernel
+from ke_drl.rank_diagnostics import matrix_rank_diagnostics
 
 if "return_best" not in inspect.signature(KE_DRL).parameters:
     raise ImportError(
@@ -144,12 +145,28 @@ def load_benchmark_truth(data_dir: Path, cfg: dict[str, Any]) -> dict[str, Any]:
     meta = blob.get("metadata", {})
     if "s_star" not in meta or "a_star" not in meta:
         raise ValueError(f"{path} metadata must contain the benchmark s_star and a_star.")
+    s_all = torch.as_tensor(meta["s_star"], dtype=torch.float64)
+    a_all = torch.as_tensor(meta["a_star"], dtype=torch.float64)
+    if s_all.ndim == 1:
+        s_all = s_all.reshape(1, -1)
+    if a_all.ndim == 1:
+        a_all = a_all.reshape(1, -1)
+    Z_true_list = [torch.as_tensor(z, dtype=torch.float64) for z in Z_list]
+    n = len(Z_true_list)
+    if s_all.shape[0] != n or a_all.shape[0] != n:
+        raise ValueError(
+            f"{path} has {n} Z_true samples but metadata has "
+            f"{s_all.shape[0]} s_star rows and {a_all.shape[0]} a_star rows."
+        )
     return {
         "path": path,
-        "Z_true": torch.as_tensor(Z_list[0], dtype=torch.float64),
+        "Z_true": Z_true_list[0],
+        "Z_true_list": Z_true_list,
         "metadata": meta,
-        "s_eval": torch.as_tensor(meta["s_star"], dtype=torch.float64).reshape(1, -1),
-        "a_eval": torch.as_tensor(meta["a_star"], dtype=torch.float64).reshape(1, -1),
+        "s_eval": s_all[0:1],
+        "a_eval": a_all[0:1],
+        "s_eval_all": s_all,
+        "a_eval_all": a_all,
     }
 
 
@@ -398,7 +415,10 @@ print(f"offline shapes: s0={tuple(s0.shape)}, a0={tuple(a0.shape)}, r0={tuple(r0
 print(f"fixed benchmark point source: {benchmark_point_source}")
 print(f"benchmark row excluded from this offline data: {benchmark_exclude_idx}")
 print(f"global loss target set shape: s_star={tuple(s_star.shape)}, a_star={tuple(a_star.shape)}")
-print(f"benchmark true-Z shape: {tuple(truth['Z_true'].shape)}")
+print(
+    f"benchmark true-Z count={len(truth['Z_true_list'])}, "
+    f"shape each={tuple(truth['Z_true_list'][0].shape)}"
+)
 print(f"target policy: {target_policy}")
 print(f"behavior policy: {beh_policy}")
 print(f"lambda_Gamma={lambda_reg}, lambda_B={lambda_B}, d_r_method={d_r_method}")
@@ -477,6 +497,10 @@ B_hat, history_obj, history_be, pre = KE_DRL(
 
 print("KE-DRL global estimation is done.")
 print("B_hat shape:", tuple(B_hat.shape))
+B_rank_diag = matrix_rank_diagnostics(B_hat, prefix="B_", return_singular_values=True)
+B_singular_values = B_rank_diag.pop("B_singular_values")
+B_rank_diag = {k: float(v) if isinstance(v, float) else int(v) for k, v in B_rank_diag.items()}
+print("B_hat rank diagnostics:", B_rank_diag)
 
 with torch.no_grad():
     k_star_fit = pre["k_star"].to(device=B_hat.device, dtype=B_hat.dtype)
@@ -510,6 +534,8 @@ torch.save(
         "target_policy": target_policy,
         "target_policy_params": target_policy_params,
         "target_mass_diagnostics": target_mass_diag,
+        "B_rank_diagnostics": B_rank_diag,
+        "B_singular_values": B_singular_values,
         "optimizer_diagnostics": pre.get("optimizer_diagnostics", {}),
     },
     data_dir / f"fit_{offline_data_id}.pt",
@@ -537,6 +563,7 @@ risk_metrics.update(
         "lambda_B": lambda_B,
         "num_steps": num_steps,
         **target_mass_diag,
+        **B_rank_diag,
     }
 )
 opt_diag = pre.get("optimizer_diagnostics", {}) or {}
@@ -586,11 +613,6 @@ config = {
     "plot_replicate_mode": str((P.get("plots") or {}).get("replicate_mode", "first")),
 }
 
-Z_true_tensor = truth["Z_true"][:, : config["reward_dim"]].to(device=Z_grid.device, dtype=Z_grid.dtype)
-Z_eval = common_eval_grid(Z_true_tensor, as_int(P["num_grid_points"])).to(device=Z_grid.device, dtype=Z_grid.dtype)
-torch.save(Z_eval.detach().cpu(), data_dir / f"Zeval_{offline_data_id}.pt")
-print("Benchmark evaluation grid shape:", tuple(Z_eval.shape))
-
 plot_this_replicate = should_plot_replicate(P, offline_data_id)
 tool = RecoverAndPlot(config) if RecoverAndPlot is not None and plot_this_replicate else None
 plot_dir = Path("plots") / f"replicate_{offline_data_id}"
@@ -611,96 +633,122 @@ if tool is not None and history_obj:
         print("RecoverAndPlot.plot_total_loss lacks steps= support; falling back to diagnostic-point x-axis.")
         tool.plot_total_loss(history_obj, outdir=str(plot_dir))
 
-beta_eval = beta_for_evaluation_point(
-    method=d_r_method,
-    B_hat=B_hat,
-    pre=pre,
-    s_eval=s_eval,
-    a_eval=a_eval,
-    lambda_reg=lambda_reg,
-)
-mu_hat = mean_embedding_hat(
-    beta_eval,
-    Z_grid,
-    nu=nu,
-    length_scale=length_scale,
-    sigma=sigma_k,
-    eval_grid=Z_eval,
-)
-mu_true = mean_embedding_true(
-    Z_eval,
-    Z_true_tensor,
-    nu=nu,
-    length_scale=length_scale,
-    sigma=sigma_k,
-)
-benchmark_embedding_risk = fixed_point_embedding_risk(
-    beta_eval,
-    Z_grid,
-    Z_true_tensor,
-    nu=nu,
-    length_scale=length_scale,
-    sigma=sigma_k,
-)
-projected_bellman_test = projected_bellman_risk_for_evaluation_point(
-    B_hat=B_hat,
-    pre=pre,
-    s_eval=s_eval,
-    a_eval=a_eval,
-    lambda_reg=lambda_reg,
-)
-extra_metrics = {
-    "offline_data_id": offline_data_id,
-    "benchmark_point_source": benchmark_point_source,
-    "target_set_size": int(s_star.shape[0]),
-    "benchmark_z_path": str(truth["path"]),
-    "projected_bellman_test_risk": float(projected_bellman_test.detach().cpu()),
-    "oracle_embedding_risk": float(benchmark_embedding_risk.detach().cpu()),
-    # Deprecated name retained for old readers; this is the oracle Monte Carlo
-    # prediction risk, not the zero-baseline evaluation metric.
-    "benchmark_embedding_risk": float(benchmark_embedding_risk.detach().cpu()),
-    "risk_bellman_final": risk_metrics.get("risk_bellman_final"),
-    "risk_obj_final": risk_metrics.get("risk_obj_final"),
-}
-metrics = save_mu_outputs(
-    run_id=offline_data_id,
-    mu_hat=mu_hat,
-    mu_true=mu_true,
-    beta=beta_eval,
-    extra_metrics=extra_metrics,
-)
-if plot_this_replicate:
-    plot_single_mu_diagnostic(
+Z_true_list = truth["Z_true_list"]
+s_eval_all = truth["s_eval_all"]
+a_eval_all = truth["a_eval_all"]
+point_sources = list(meta_z.get("point_sources") or [benchmark_point_source] * len(Z_true_list))
+multi_benchmark = len(Z_true_list) > 1
+metrics_rows = []
+
+for benchmark_id, Z_true_raw in enumerate(Z_true_list):
+    s_eval_j = s_eval_all[benchmark_id : benchmark_id + 1]
+    a_eval_j = a_eval_all[benchmark_id : benchmark_id + 1]
+    point_source_j = point_sources[benchmark_id] if benchmark_id < len(point_sources) else benchmark_point_source
+    run_id = f"{offline_data_id}_b{benchmark_id}" if multi_benchmark else str(offline_data_id)
+    benchmark_plot_dir = plot_dir / f"benchmark_{benchmark_id}" if multi_benchmark else plot_dir
+
+    Z_true_tensor = Z_true_raw[:, : config["reward_dim"]].to(device=Z_grid.device, dtype=Z_grid.dtype)
+    Z_eval = common_eval_grid(Z_true_tensor, as_int(P["num_grid_points"])).to(device=Z_grid.device, dtype=Z_grid.dtype)
+    torch.save(Z_eval.detach().cpu(), data_dir / f"Zeval_{run_id}.pt")
+    if benchmark_id == 0:
+        torch.save(Z_eval.detach().cpu(), data_dir / f"Zeval_{offline_data_id}.pt")
+    print(f"Benchmark {benchmark_id} evaluation grid shape:", tuple(Z_eval.shape))
+
+    beta_eval = beta_for_evaluation_point(
+        method=d_r_method,
+        B_hat=B_hat,
+        pre=pre,
+        s_eval=s_eval_j,
+        a_eval=a_eval_j,
+        lambda_reg=lambda_reg,
+    )
+    mu_hat = mean_embedding_hat(
+        beta_eval,
+        Z_grid,
+        nu=nu,
+        length_scale=length_scale,
+        sigma=sigma_k,
+        eval_grid=Z_eval,
+    )
+    mu_true = mean_embedding_true(
+        Z_eval,
+        Z_true_tensor,
+        nu=nu,
+        length_scale=length_scale,
+        sigma=sigma_k,
+    )
+    benchmark_embedding_risk = fixed_point_embedding_risk(
+        beta_eval,
+        Z_grid,
+        Z_true_tensor,
+        nu=nu,
+        length_scale=length_scale,
+        sigma=sigma_k,
+    )
+    projected_bellman_test = projected_bellman_risk_for_evaluation_point(
+        B_hat=B_hat,
+        pre=pre,
+        s_eval=s_eval_j,
+        a_eval=a_eval_j,
+        lambda_reg=lambda_reg,
+    )
+    extra_metrics = {
+        "offline_data_id": offline_data_id,
+        "benchmark_id": benchmark_id,
+        "benchmark_point_source": point_source_j,
+        "target_set_size": int(s_star.shape[0]),
+        "benchmark_z_path": str(truth["path"]),
+        "projected_bellman_test_risk": float(projected_bellman_test.detach().cpu()),
+        "oracle_embedding_risk": float(benchmark_embedding_risk.detach().cpu()),
+        # Deprecated name retained for old readers; this is the oracle Monte Carlo
+        # prediction risk, not the zero-baseline evaluation metric.
+        "benchmark_embedding_risk": float(benchmark_embedding_risk.detach().cpu()),
+        "risk_bellman_final": risk_metrics.get("risk_bellman_final"),
+        "risk_obj_final": risk_metrics.get("risk_obj_final"),
+        **B_rank_diag,
+    }
+    metrics = save_mu_outputs(
+        run_id=run_id,
         mu_hat=mu_hat,
         mu_true=mu_true,
-        outdir=plot_dir,
-        run_id=offline_data_id,
+        beta=beta_eval,
+        extra_metrics=extra_metrics,
     )
-pd.DataFrame([metrics]).to_csv(f"metrics/global_eval_metrics_{offline_data_id}.csv", index=False)
-print(f"Replicate {offline_data_id} benchmark metrics:", metrics)
+    metrics_rows.append(metrics)
+    if plot_this_replicate:
+        plot_single_mu_diagnostic(
+            mu_hat=mu_hat,
+            mu_true=mu_true,
+            outdir=benchmark_plot_dir,
+            run_id=run_id,
+        )
+    pd.DataFrame([metrics]).to_csv(f"metrics/global_eval_metrics_{run_id}.csv", index=False)
+    print(f"Replicate {offline_data_id}, benchmark {benchmark_id} metrics:", metrics)
 
-if tool is not None:
-    fz, grid_dict = tool.marginals_from_beta(
-        beta_eval,
-        Z_grid,
-        reward_dim=config["reward_dim"],
-        nu=nu,
-        length_scale=length_scale,
-        sigma_k=sigma_k,
-        lambda_rec=lambda_rec,
-        bandwidth=bandwidth,
-        n_grid=400,
-        margin_factor=0.25,
-    )
-    tool.plot_densities(fz, grid_dict, outdir=str(plot_dir))
-    cache, _ = tool.mean_embedding_all(
-        beta_eval,
-        Z_grid,
-        nu=nu,
-        length_scale=length_scale,
-        sigma_k=sigma_k,
-        outdir=str(plot_dir),
-    )
+    if tool is not None and benchmark_id == 0:
+        fz, grid_dict = tool.marginals_from_beta(
+            beta_eval,
+            Z_grid,
+            reward_dim=config["reward_dim"],
+            nu=nu,
+            length_scale=length_scale,
+            sigma_k=sigma_k,
+            lambda_rec=lambda_rec,
+            bandwidth=bandwidth,
+            n_grid=400,
+            margin_factor=0.25,
+        )
+        tool.plot_densities(fz, grid_dict, outdir=str(plot_dir))
+        cache, _ = tool.mean_embedding_all(
+            beta_eval,
+            Z_grid,
+            nu=nu,
+            length_scale=length_scale,
+            sigma_k=sigma_k,
+            outdir=str(plot_dir),
+        )
+
+pd.DataFrame(metrics_rows).to_csv(f"metrics/global_eval_metrics_{offline_data_id}.csv", index=False)
 
 elapsed = time.time() - start
 print(f"Replicate {offline_data_id} finished in {elapsed:.1f}s")

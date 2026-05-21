@@ -58,6 +58,7 @@ def _check_kedrl_package_api() -> None:
         from ke_drl.evaluation_metric import predict_embedding_weights  # noqa: F401
         from ke_drl.operator_approx import compute_G_rff, compute_H_rff  # noqa: F401
         from ke_drl.optimize import RKDRL_Optimizer
+        from ke_drl.rank_diagnostics import matrix_rank_diagnostics  # noqa: F401
     except ImportError as exc:
         raise ImportError(
             "Installed ke_drl package is incompatible with these simulation scripts. "
@@ -76,7 +77,7 @@ def _check_kedrl_package_api() -> None:
             + ", ".join(missing)
             + ". Use the current source with KEDRL_SRC=/path/to/kedrl_git/src or reinstall the package."
         )
-    print("ke_drl package API OK: prediction weights, RFF operators, and best-checkpoint optimizer available")
+    print("ke_drl package API OK: prediction weights, RFF operators, rank diagnostics, and best-checkpoint optimizer available")
 
 
 def _uniform_bounds(policy_block: dict[str, Any], s: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -178,20 +179,28 @@ def main() -> None:
     target_points = int(target_cfg.get("num_points", 1))
     if n_rep < 1:
         raise ValueError("experiment.num_replicates must be at least 1.")
-    if bench_points != 1:
-        raise ValueError("This simulation architecture expects one fixed benchmark point: benchmark.num_points: 1.")
+    if bench_points < 1:
+        raise ValueError("benchmark.num_points must be at least 1.")
     if ("s_star" in bench_cfg) != ("a_star" in bench_cfg):
         raise ValueError("benchmark.s_star and benchmark.a_star must either both be present or both be omitted.")
     if "s_star" in bench_cfg:
-        if len(_as_list(bench_cfg["s_star"])) != state_dim:
-            raise ValueError(f"benchmark.s_star has length {len(_as_list(bench_cfg['s_star']))}, expected {state_dim}.")
-        if len(_as_list(bench_cfg["a_star"])) != action_dim:
-            raise ValueError(f"benchmark.a_star has length {len(_as_list(bench_cfg['a_star']))}, expected {action_dim}.")
+        s_cfg = torch.as_tensor(bench_cfg["s_star"], dtype=torch.float64)
+        a_cfg = torch.as_tensor(bench_cfg["a_star"], dtype=torch.float64)
+        if s_cfg.ndim == 1:
+            s_cfg = s_cfg.reshape(1, -1)
+        if a_cfg.ndim == 1:
+            a_cfg = a_cfg.reshape(1, -1)
+        if s_cfg.ndim != 2 or s_cfg.shape[1] != state_dim:
+            raise ValueError(f"benchmark.s_star must have shape ({state_dim},) or (n,{state_dim}), got {tuple(s_cfg.shape)}.")
+        if a_cfg.ndim != 2 or a_cfg.shape[1] != action_dim:
+            raise ValueError(f"benchmark.a_star must have shape ({action_dim},) or (n,{action_dim}), got {tuple(a_cfg.shape)}.")
+        if s_cfg.shape[0] != a_cfg.shape[0]:
+            raise ValueError("benchmark.s_star and benchmark.a_star must have the same number of rows.")
     if target_points < 1 and str(target_cfg.get("mode", "train_subset")).lower() not in {"all", "train_all"}:
         raise ValueError("target_set.num_points must be at least 1.")
     print(
         "Replicate config OK: "
-        f"num_replicates={n_rep}, fixed benchmark points=1 independent of D_i, "
+        f"num_replicates={n_rep}, benchmark points={bench_points} independent of D_i, "
         f"loss target points={target_points}"
     )
     n_train = int(P.get("n_ids", 1)) * max(1, int(P.get("n_timepoints", 2)) - 1)
@@ -214,20 +223,29 @@ def main() -> None:
                 "Set operator_approximation.method: rff or reduce n_ids/num_grid_points/target_set.num_points."
             )
     if "s_star" in bench_cfg:
-        s_bench = torch.as_tensor(bench_cfg["s_star"], dtype=torch.float64).reshape(1, -1)
-        a_bench = torch.as_tensor(bench_cfg["a_star"], dtype=torch.float64).reshape(1, -1)
-        print(f"Fixed benchmark point: s_star={s_bench.reshape(-1).tolist()}, a_star={a_bench.reshape(-1).tolist()}")
+        s_bench = torch.as_tensor(bench_cfg["s_star"], dtype=torch.float64)
+        a_bench = torch.as_tensor(bench_cfg["a_star"], dtype=torch.float64)
+        if s_bench.ndim == 1:
+            s_bench = s_bench.reshape(1, -1)
+        if a_bench.ndim == 1:
+            a_bench = a_bench.reshape(1, -1)
+        print(
+            f"Fixed benchmark config rows={s_bench.shape[0]} "
+            f"(benchmark.num_points={bench_points}; additional points are independent target-policy draws if needed)"
+        )
+        print(f"Fixed benchmark point 0: s_star={s_bench[0].reshape(-1).tolist()}, a_star={a_bench[0].reshape(-1).tolist()}")
         if behavior_name == "uniform" and action_dim == 1:
             lower, upper = _uniform_bounds(behavior_block, s_bench)
             print(
-                "Fixed benchmark behavior-support interval: "
-                f"[{lower.item():.4g}, {upper.item():.4g}], a_star={a_bench.item():.4g}"
+                "Fixed benchmark behavior-support interval for configured rows: "
+                f"min_lower={lower.min().item():.4g}, max_upper={upper.max().item():.4g}"
             )
-            if not (lower.item() <= a_bench.item() <= upper.item()):
-                raise ValueError("benchmark.a_star is outside the behavior-policy support at benchmark.s_star.")
+            inside_config = ((a_bench.reshape(-1) >= lower) & (a_bench.reshape(-1) <= upper)).double().mean().item()
+            if inside_config < 1.0:
+                raise ValueError("At least one configured benchmark.a_star is outside the behavior-policy support.")
         loc = _location(target_name, target_block, s_bench)
         if loc is not None:
-            print(f"Fixed benchmark target-policy location at s_star: {loc.item():.4g}")
+            print(f"Fixed benchmark target-policy location range: [{loc.min().item():.4g}, {loc.max().item():.4g}]")
 
     if args.data is None:
         return
