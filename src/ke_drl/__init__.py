@@ -28,6 +28,8 @@ from .api import (
     embedding_test_risk,
     embedding_test_risk_from_inputs,
     predict_embedding_weights,
+    projected_bellman_test_risk,
+    projected_bellman_test_risk_from_inputs,
 )
 
 __all__ = [
@@ -47,6 +49,8 @@ __all__ = [
     "embedding_test_risk",
     "embedding_test_risk_from_inputs",
     "predict_embedding_weights",
+    "projected_bellman_test_risk",
+    "projected_bellman_test_risk_from_inputs",
 ]
 
 

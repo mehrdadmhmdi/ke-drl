@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import shutil
 import subprocess
@@ -127,7 +128,11 @@ def write_result(combo_id: int, combo_name: str, overrides: dict[str, Any], elap
         + 0.05 * float(agg["SupNorm_mean"])
         + 0.02 * abs(float(cal["deming_slope"]) - 1.0)
     )
-    score_risk = float(risk.get("risk_log_obj_final_mean", float("nan")))
+    score_projected_bellman = float(agg.get("projected_bellman_test_risk_mean", float("nan")))
+    score_optimizer_risk = float(risk.get("risk_log_obj_final_mean", float("nan")))
+    score_risk = score_projected_bellman
+    if math.isnan(score_risk):
+        score_risk = score_optimizer_risk
     score_mass = float(risk.get("target_mass_rmse_to_target_mean", float("nan")))
     row = {
         "combo_id": combo_id,
@@ -135,6 +140,8 @@ def write_result(combo_id: int, combo_name: str, overrides: dict[str, Any], elap
         "score": score_true_z,
         "score_true_z": score_true_z,
         "score_risk": score_risk,
+        "score_projected_bellman": score_projected_bellman,
+        "score_optimizer_risk": score_optimizer_risk,
         "score_mass": score_mass,
         "elapsed_sec": elapsed,
         "overrides_json": json.dumps(overrides, sort_keys=True),

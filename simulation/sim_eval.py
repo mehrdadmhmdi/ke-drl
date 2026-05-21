@@ -81,7 +81,11 @@ def fixed_point_embedding_risk(
     sigma: float,
     batch_size: int = 2000,
 ) -> torch.Tensor:
-    """Compute E||k(.,Z)-mu_hat||^2 for one fixed evaluation point."""
+    """Compute the simulation-only oracle risk E||k(., Z)-mu_hat||^2.
+
+    This includes the irreducible self-kernel term sigma^2, so it is not the
+    zero-baseline projected Bellman diagnostic used for tuning.
+    """
     beta = torch.as_tensor(beta, dtype=Z_grid.dtype, device=Z_grid.device).reshape(-1)
     Z_grid = torch.as_tensor(Z_grid, dtype=beta.dtype, device=beta.device)
     Z_test = torch.as_tensor(Z_test, dtype=beta.dtype, device=beta.device)
@@ -233,6 +237,8 @@ def export_metrics_tables(
         "beta_neg_frac",
         "risk_bellman_final",
         "risk_obj_final",
+        "projected_bellman_test_risk",
+        "oracle_embedding_risk",
         "benchmark_embedding_risk",
     ]:
         if col not in df:
@@ -407,17 +413,25 @@ def _plot_four_panel_summary(
             "RMSE": np.sqrt(np.mean(diff * diff, axis=1)),
         }
     )
-    if metrics_df is not None and "benchmark_embedding_risk" in metrics_df.columns:
+    risk_col = None
+    risk_label = None
+    if metrics_df is not None and "projected_bellman_test_risk" in metrics_df.columns:
+        risk_col = "projected_bellman_test_risk"
+        risk_label = "Projected Bellman risk"
+    elif metrics_df is not None and "benchmark_embedding_risk" in metrics_df.columns:
+        risk_col = "benchmark_embedding_risk"
+        risk_label = "Oracle embedding risk"
+    if metrics_df is not None and risk_col is not None:
         risk_lookup = metrics_df.assign(run_id=metrics_df["run_id"].astype(str)).set_index("run_id")
         values = []
         for rid in run_ids:
             values.append(
-                float(risk_lookup.loc[str(rid), "benchmark_embedding_risk"])
+                float(risk_lookup.loc[str(rid), risk_col])
                 if str(rid) in risk_lookup.index
                 else np.nan
             )
         if np.isfinite(values).any():
-            per_run["Embedding test risk"] = np.asarray(values, dtype=float)
+            per_run[risk_label] = np.asarray(values, dtype=float)
     ax = axs[1, 0]
     ax.boxplot([per_run[c].to_numpy() for c in per_run.columns], labels=list(per_run.columns), showmeans=True)
     ax.set_title("(c) Per-run Error Summaries")

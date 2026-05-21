@@ -14,11 +14,13 @@ dtype: float32
 compute:
   device: cuda
   require_cuda: true
-# Main consistency experiment: 100 independent offline datasets D_i. The
-# benchmark point is fixed independently of every D_i, while 150 target points
+# Main consistency experiment: 50 independent offline datasets D_i. The
+# benchmark point is fixed independently of every D_i, while 100 target points
 # define the empirical global Bellman loss for each fitted B_i.
 experiment:
-  num_replicates: 100
+  num_replicates: 50
+plots:
+  replicate_mode: all
 benchmark:
   num_points: 1
   source: fixed_config
@@ -34,7 +36,7 @@ gamma_val: 0.7
 lambda_reg: 0.001
 lambda_B: 0.001
 hull_expand_factor: 1
-H_batch_size: 30
+H_batch_size: 16
 d_r_method: song  #song, bellman, Schuster
 bandwidth: 1.5
 lambda_rec: 0.02
@@ -45,14 +47,14 @@ operator_approximation:
 # Target set for the global X objective in each offline replicate.
 target_set:
   mode: train_subset
-  num_points: 150
+  num_points: 100
   seed_offset: 7919
   exclude_benchmark: True
 # uLSIF density-ratio options: full-N basis is correct but O(N^3); a
 # numerator-side subsample matches the classical Kanamori (2009) construction
 # and is the recommended setting for the n_ids x n_timepoints values below.
 ratio:
-  n_basis: 400
+  n_basis: 250
   basis_source: numerator
   basis_seed_offset: 1729
   lambda_reg: null      # null -> reuse `lambda_reg` above
@@ -61,9 +63,9 @@ optimization:
   lr: 1e-3
   weight_decay: 1e-4
   FP_penalty_lambda: 0.0
-  num_steps: 1000
+  num_steps: 400
   target_batch_size: 30
-  diagnostic_interval: 20
+  diagnostic_interval: 50
   # The draft's KE-DRL loss in eq:global_B_objective_impl uses the RKHS
   # ridge tr(B^T K_X B). 'rkhs' is faithful to the paper; 'frobenius'
   # was an older speed-up that approximates K_X by I.
@@ -156,5 +158,5 @@ MDP:
     - [0.03, 0.02, 0.3]
 #===========================
 Z_sim:
-  n_ids: 100000
+  n_ids: 10000
   n_timepoints: 300

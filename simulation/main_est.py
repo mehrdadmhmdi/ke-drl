@@ -35,7 +35,7 @@ bootstrap_kedrl()
 from ke_drl.KE_DRL import KE_DRL
 from ke_drl.Gamma_sa import Gamma_sa
 from ke_drl.Phi_sa import Phi_sa
-from ke_drl.evaluation_metric import predict_embedding_weights
+from ke_drl.evaluation_metric import predict_embedding_weights, projected_bellman_test_risk
 from ke_drl.matern_kernel import matern_kernel
 
 try:
@@ -199,6 +199,38 @@ def beta_for_evaluation_point(
 
     print(f"Warning: method={method!r} is not supported in the simulation wrapper; using song weights.")
     return predict_embedding_weights(pre["X_train"], x_eval, B_hat, **pre["x_kernel_params"]).reshape(-1)
+
+
+@torch.no_grad()
+def projected_bellman_risk_for_evaluation_point(
+    *,
+    B_hat: torch.Tensor,
+    pre: dict[str, Any],
+    s_eval: torch.Tensor,
+    a_eval: torch.Tensor,
+    lambda_reg: float,
+) -> torch.Tensor:
+    x_eval = torch.cat([s_eval.reshape(1, -1), a_eval.reshape(1, -1)], dim=1).to(
+        device=B_hat.device, dtype=B_hat.dtype
+    )
+    k_eval = matern_kernel(pre["X_train"], x_eval, **pre["x_kernel_params"])
+    gamma_eval = Gamma_sa(pre["K_X"], k_eval, lambda_reg)
+    phi_eval = Phi_sa(pre["K_plus"], gamma_eval, pre["eta_plus"])
+    return projected_bellman_test_risk(
+        k_current=k_eval,
+        phi_current=phi_eval,
+        B_hat_torch=B_hat,
+        K_Z=pre["K_Z"],
+    )
+
+
+def should_plot_replicate(params: dict[str, Any], offline_data_id: int) -> bool:
+    mode = str((params.get("plots") or {}).get("replicate_mode", "first")).strip().lower()
+    if mode in {"all", "each", "every", "true", "yes", "1"}:
+        return True
+    if mode in {"none", "false", "no", "0"}:
+        return False
+    return offline_data_id == 0
 
 
 start = time.time()
@@ -530,6 +562,7 @@ config = {
     "behavioral_policy": beh_policy,
     "target_policy": target_policy,
     "target_set_size": int(s_star.shape[0]),
+    "plot_replicate_mode": str((P.get("plots") or {}).get("replicate_mode", "first")),
 }
 
 Z_true_tensor = truth["Z_true"][:, : config["reward_dim"]].to(device=Z_grid.device, dtype=Z_grid.dtype)
@@ -537,11 +570,13 @@ Z_eval = common_eval_grid(Z_true_tensor, as_int(P["num_grid_points"])).to(device
 torch.save(Z_eval.detach().cpu(), data_dir / f"Zeval_{offline_data_id}.pt")
 print("Benchmark evaluation grid shape:", tuple(Z_eval.shape))
 
-tool = RecoverAndPlot(config) if RecoverAndPlot is not None and offline_data_id == 0 else None
+plot_this_replicate = should_plot_replicate(P, offline_data_id)
+tool = RecoverAndPlot(config) if RecoverAndPlot is not None and plot_this_replicate else None
+plot_dir = Path("plots") / f"replicate_{offline_data_id}"
 if tool is not None and history_be:
-    tool.plot_bellman_error(history_be, outdir="plots")
+    tool.plot_bellman_error(history_be, outdir=str(plot_dir))
 if tool is not None and history_obj:
-    tool.plot_total_loss(history_obj, outdir="plots")
+    tool.plot_total_loss(history_obj, outdir=str(plot_dir))
 
 beta_eval = beta_for_evaluation_point(
     method=d_r_method,
@@ -574,11 +609,22 @@ benchmark_embedding_risk = fixed_point_embedding_risk(
     length_scale=length_scale,
     sigma=sigma_k,
 )
+projected_bellman_test = projected_bellman_risk_for_evaluation_point(
+    B_hat=B_hat,
+    pre=pre,
+    s_eval=s_eval,
+    a_eval=a_eval,
+    lambda_reg=lambda_reg,
+)
 extra_metrics = {
     "offline_data_id": offline_data_id,
     "benchmark_point_source": benchmark_point_source,
     "target_set_size": int(s_star.shape[0]),
     "benchmark_z_path": str(truth["path"]),
+    "projected_bellman_test_risk": float(projected_bellman_test.detach().cpu()),
+    "oracle_embedding_risk": float(benchmark_embedding_risk.detach().cpu()),
+    # Deprecated name retained for old readers; this is the oracle Monte Carlo
+    # prediction risk, not the zero-baseline evaluation metric.
     "benchmark_embedding_risk": float(benchmark_embedding_risk.detach().cpu()),
     "risk_bellman_final": risk_metrics.get("risk_bellman_final"),
     "risk_obj_final": risk_metrics.get("risk_obj_final"),
@@ -594,7 +640,6 @@ pd.DataFrame([metrics]).to_csv(f"metrics/global_eval_metrics_{offline_data_id}.c
 print(f"Replicate {offline_data_id} benchmark metrics:", metrics)
 
 if tool is not None:
-    plot_dir = Path("plots") / f"replicate_{offline_data_id}"
     fz, grid_dict = tool.marginals_from_beta(
         beta_eval,
         Z_grid,

@@ -300,8 +300,10 @@ The four panels show:
 
 - Mean estimated embeddings across `D_i` against the fixed Monte Carlo truth.
 - Quantile calibration lines, one gray line per `D_i`, plus their mean line.
-- Per-replicate error summaries, including the benchmark embedding test risk
-  when available.
+- Per-replicate error summaries, including the projected Bellman diagnostic
+  `projected_bellman_test_risk` when available. The older
+  `benchmark_embedding_risk` column is retained only as a simulation-oracle
+  prediction risk against Monte Carlo returns and is not zero-baseline.
 - ECDF of absolute mean-embedding error.
 
 This is different from aggregating across the target points. The target
@@ -324,10 +326,10 @@ sim_utils.py            data generation, policy sampling, target-set selection
 sim_eval.py             mean-embedding metrics and plots
 validate_sim_config.py  policy and run-shape validation
 
-Job_data.sbatch          offline data array, 0-99
+Job_data.sbatch          offline data array, 0-49 for the default 50-replicate setup
 Job_Z.sbatch             shared benchmark true-Z job
 Job_E_P_sa.sbatch        master launcher for estimator and plotting
-Job_est.sbatch           global-B estimator array, 0-99
+Job_est.sbatch           global-B estimator array, 0-49 for the default 50-replicate setup
 Job_plot.sbatch          aggregation and plotting job
 Job_smoke.sbatch         end-to-end small smoke test
 Job_tune_global.sbatch   tuning array over combo ids
