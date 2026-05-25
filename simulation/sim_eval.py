@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 import math
 import os
 from pathlib import Path
+import textwrap
 
 import numpy as np
 import pandas as pd
 import torch
+import yaml
 
 from sim_utils import bootstrap_kedrl
 
@@ -321,7 +324,21 @@ def plot_mu_summary(
         and metrics_df["benchmark_id"].nunique(dropna=True) > 1
     )
     if multi_benchmark:
-        _plot_multi_benchmark_summary(H, T, run_ids=run_ids, metrics_df=metrics_df, outdir=outdir, plt=plt)
+        caption = _build_summary_caption(
+            mu_dir=mu_dir,
+            metrics_dir=Path(metrics_dir),
+            outdir=outdir,
+            metrics_df=metrics_df,
+        )
+        _plot_multi_benchmark_summary(
+            H,
+            T,
+            run_ids=run_ids,
+            metrics_df=metrics_df,
+            outdir=outdir,
+            plt=plt,
+            caption=caption,
+        )
     else:
         _plot_four_panel_summary(H, T, run_ids=run_ids, metrics_df=metrics_df, outdir=outdir, plt=plt)
 
@@ -350,7 +367,7 @@ def plot_mu_summary(
     ax.fill_between(x, t_mean - 1.96 * t_sd, t_mean + 1.96 * t_sd, color="black", alpha=0.08)
     ax.plot(x, h_mean, lw=1.7, color="#1f77b4", label="KE-DRL")
     ax.fill_between(x, h_mean - 1.96 * h_sd, h_mean + 1.96 * h_sd, color="#1f77b4", alpha=0.16)
-    ax.set_xlabel("Index on benchmark Z grid")
+    ax.set_xlabel("Index on evaluation-target Z grid")
     ax.set_ylabel("Mean embedding")
     ax.grid(alpha=0.25)
     ax.legend()
@@ -440,7 +457,7 @@ def plot_single_mu_diagnostic(
     plt=None,
     filename: str = "mu_hat_vs_truth.png",
 ) -> None:
-    """Plot one replicate's estimated benchmark embedding against MC truth."""
+    """Plot one replicate's estimated evaluation-target embedding against MC truth."""
     close_plt = False
     if plt is None:
         try:
@@ -477,7 +494,7 @@ def plot_single_mu_diagnostic(
     lo, hi = _robust_limits(true, hat, q_low=0.5, q_high=99.5, include_zero=True)
     ax.set_ylim(lo, hi)
     ax.set_title(f"Replicate {run_id}: embedding curve")
-    ax.set_xlabel("Index on benchmark Z grid")
+    ax.set_xlabel("Index on evaluation-target Z grid")
     ax.set_ylabel("Mean embedding")
     ax.grid(alpha=0.25)
     ax.legend()
@@ -543,6 +560,157 @@ def _replicate_plot_dir(outdir: Path, run_id: str) -> Path:
     return outdir / f"replicate_{run_id}"
 
 
+def _format_num(x, digits: int = 3) -> str:
+    try:
+        val = float(x)
+    except (TypeError, ValueError):
+        return str(x)
+    if not np.isfinite(val):
+        return str(x)
+    return f"{val:.{digits}g}"
+
+
+def _format_vector(values, digits: int = 3) -> str:
+    return "(" + ", ".join(_format_num(v, digits=digits) for v in values) + ")"
+
+
+def _candidate_run_roots(*paths: Path) -> list[Path]:
+    roots: list[Path] = [Path.cwd()]
+    for path in paths:
+        try:
+            roots.append(path.resolve().parent)
+        except OSError:
+            roots.append(path.parent)
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for root in roots:
+        key = str(root)
+        if key not in seen:
+            unique.append(root)
+            seen.add(key)
+    return unique
+
+
+def _load_params_for_caption(mu_dir: Path, metrics_dir: Path, outdir: Path) -> dict | None:
+    for root in _candidate_run_roots(mu_dir, metrics_dir, outdir):
+        for name in ("params.yaml", "params_tune.yaml"):
+            path = root / name
+            if path.exists():
+                with open(path, "r", encoding="utf-8") as f:
+                    return yaml.safe_load(f)
+    return None
+
+
+def _load_combo_metadata(metrics_dir: Path) -> dict:
+    path = metrics_dir / "tuning_combo_metadata.json"
+    if not path.exists():
+        return {}
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _load_evaluation_points(mu_dir: Path, metrics_dir: Path, outdir: Path) -> pd.DataFrame | None:
+    for root in _candidate_run_roots(mu_dir, metrics_dir, outdir):
+        path = root / "data" / "benchmark_point.csv"
+        if path.exists():
+            try:
+                return pd.read_csv(path)
+            except OSError:
+                return None
+    return None
+
+
+def _format_evaluation_points(points: pd.DataFrame | None, params: dict | None) -> str:
+    if points is not None and not points.empty:
+        s_cols = sorted([c for c in points.columns if c.startswith("s")], key=lambda x: int(x[1:]))
+        a_cols = sorted([c for c in points.columns if c.startswith("a")], key=lambda x: int(x[1:]))
+        pieces = []
+        for _, row in points.sort_values("benchmark_id").iterrows():
+            bid = int(row["benchmark_id"]) if "benchmark_id" in row and pd.notna(row["benchmark_id"]) else len(pieces)
+            pieces.append(
+                f"Evaluation Target Point {bid}: s={_format_vector([row[c] for c in s_cols])}, "
+                f"a={_format_vector([row[c] for c in a_cols])}"
+            )
+        return "; ".join(pieces)
+
+    bench = (params or {}).get("benchmark") or {}
+    s_star = bench.get("s_star") or []
+    a_star = bench.get("a_star") or []
+    pieces = []
+    for bid, (s, a) in enumerate(zip(s_star, a_star)):
+        pieces.append(f"Evaluation Target Point {bid}: s={_format_vector(s)}, a={_format_vector(a)}")
+    return "; ".join(pieces) if pieces else "Evaluation target point values unavailable"
+
+
+def _actual_replicate_count(metrics_df: pd.DataFrame | None) -> int | None:
+    if metrics_df is None or "run_id" not in metrics_df.columns:
+        return None
+    reps = set()
+    for rid in metrics_df["run_id"].astype(str):
+        reps.add(rid.split("_b", 1)[0])
+    return len(reps) if reps else None
+
+
+def _build_summary_caption(
+    *,
+    mu_dir: Path,
+    metrics_dir: Path,
+    outdir: Path,
+    metrics_df: pd.DataFrame | None,
+) -> str | None:
+    params = _load_params_for_caption(mu_dir, metrics_dir, outdir)
+    if params is None:
+        return None
+
+    meta = _load_combo_metadata(metrics_dir)
+    points = _load_evaluation_points(mu_dir, metrics_dir, outdir)
+    bench = params.get("benchmark") or {}
+    target_set = params.get("target_set") or {}
+    z_sim = params.get("Z_sim") or {}
+    opt = params.get("optimization") or {}
+    kernel = params.get("kernel") or {}
+    op = params.get("operator_approximation") or {}
+    ratio = params.get("ratio") or {}
+    policy = params.get("policy") or {}
+    n_rep_actual = _actual_replicate_count(metrics_df)
+    n_rep_requested = (params.get("experiment") or {}).get("num_replicates")
+    if n_rep_actual is None:
+        rep_part = f"{n_rep_requested} requested offline replicates"
+    else:
+        rep_part = f"{n_rep_actual} completed offline replicates"
+    if n_rep_requested is not None and n_rep_actual is not None and n_rep_actual != int(n_rep_requested):
+        rep_part += f" of {n_rep_requested} requested"
+
+    combo = "configuration"
+    if meta:
+        combo = f"configuration {meta.get('combo_id', 'NA')} ({meta.get('combo_name', 'unnamed')})"
+        overrides = meta.get("overrides") or {}
+        if overrides:
+            combo += f", overrides={json.dumps(overrides, sort_keys=True)}"
+
+    specs = [
+        f"{combo}.",
+        f"Offline data: n_ids={params.get('n_ids')}, n_timepoints={params.get('n_timepoints')}, "
+        f"burn_in={params.get('offline_burn_in')}, {rep_part}.",
+        f"Training targets: {target_set.get('num_points')} points, mode={target_set.get('mode')}, "
+        f"exclude_evaluation_targets={target_set.get('exclude_benchmark')}.",
+        f"Evaluation targets: {bench.get('num_points')} points; {_format_evaluation_points(points, params)}.",
+        f"Monte Carlo truth: {z_sim.get('n_ids')} trajectories, {z_sim.get('n_timepoints')} time points; "
+        f"gamma={params.get('gamma_val')}; Z grid={params.get('num_grid_points')}; reward_dim={params.get('reward_dim')}.",
+        f"Kernel/operator: {kernel.get('type')} nu={kernel.get('nu')}, length_scale={kernel.get('length_scale')}, "
+        f"sigma={kernel.get('sigma')}; operator={op.get('method')} with {op.get('num_features')} features; "
+        f"uLSIF basis={ratio.get('n_basis')}.",
+        f"Optimization: steps={opt.get('num_steps')}, lr={opt.get('lr')}, weight_decay={opt.get('weight_decay')}, "
+        f"target_batch_size={opt.get('target_batch_size')}, lambda_reg={params.get('lambda_reg')}, "
+        f"lambda_B={params.get('lambda_B')}, mass_anchor_lambda={opt.get('mass_anchor_lambda')}, "
+        f"eta_clip=[{opt.get('eta_clip_min')}, {opt.get('eta_clip_max')}].",
+        f"Policies: behavior={policy.get('Behvaioral_policy')}, evaluation_target={policy.get('evaluation_Target_policy')}.",
+    ]
+    return " ".join(specs)
+
+
 def _benchmark_palette(n: int) -> list[str]:
     base = [
         "#0072B2",
@@ -571,6 +739,7 @@ def _plot_multi_benchmark_summary(
     metrics_df: pd.DataFrame,
     outdir: Path,
     plt,
+    caption: str | None = None,
 ) -> None:
     metrics = metrics_df.copy()
     metrics["run_id"] = metrics["run_id"].astype(str)
@@ -579,11 +748,10 @@ def _plot_multi_benchmark_summary(
     colors = _benchmark_palette(len(benchmark_ids))
     markers = ["o", "s", "^", "D", "P", "X", "v", "<", ">", "h", "*", "p"]
 
-    fig, axs = plt.subplots(2, 3, figsize=(19, 9.5))
+    fig, axs = plt.subplots(2, 3, figsize=(19, 12.0))
 
-    ax = axs[0, 1]
+    ax = axs[0, 0]
     cal_x, cal_y = [], []
-    calibration_notes: list[str] = []
     for j, (color, bid) in enumerate(zip(colors, benchmark_ids)):
         idx = [i for i, rid in enumerate(run_ids) if rid_to_benchmark.get(str(rid)) == bid]
         if not idx:
@@ -600,52 +768,31 @@ def _plot_multi_benchmark_summary(
             by_runs.append(np.asarray([float(row[b].mean()) for b in bins if b.size]))
         Y = np.vstack(by_runs)
         by = Y.mean(axis=0)
-        se = Y.std(axis=0, ddof=1) / math.sqrt(Y.shape[0]) if Y.shape[0] > 1 else np.zeros(Y.shape[1])
-        for y_run in Y:
-            ax.plot(bx, y_run, color=color, lw=0.8, alpha=0.18)
-        slope, _ = _deming(bx, by)
-        mean_bias = float(np.nanmean(by - bx))
-        if np.isfinite(slope):
-            calibration_notes.append(f"b{int(bid)}: slope={slope:.2f}, bias={mean_bias:+.3g}")
-        ax.errorbar(
+        ax.plot(
             bx,
             by,
-            yerr=1.96 * se,
             color=color,
             marker=markers[j % len(markers)],
             markerfacecolor=color,
             markeredgecolor="white",
             markeredgewidth=0.6,
-            lw=1.6,
-            capsize=2,
-            label=f"benchmark {int(bid)}",
+            lw=1.8,
+            label=f"Evaluation Target Point {int(bid)}",
         )
         cal_x.append(bx)
         cal_y.append(by)
-    lo, hi = _robust_limits(*cal_x, *cal_y, q_low=0, q_high=100, pad=0.15, include_zero=False, min_span=1e-4)
+    lo, hi = _robust_limits(*cal_x, *cal_y, q_low=0, q_high=100, pad=0.10, include_zero=False, min_span=1e-4)
     ax.plot([lo, hi], [lo, hi], "--", color="0.25", lw=1.2, label="ideal")
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
-    ax.set_title("(b) Benchmark-specific calibration")
+    ax.set_title("(a) Evaluation-target calibration")
     ax.set_xlabel("True mean embedding (bin mean)")
     ax.set_ylabel("Estimated mean embedding (bin mean)")
     ax.grid(alpha=0.25)
-    ax.legend(fontsize=7, ncol=2)
-    if calibration_notes:
-        ax.text(
-            0.98,
-            0.04,
-            "\n".join(calibration_notes),
-            transform=ax.transAxes,
-            ha="right",
-            va="bottom",
-            fontsize=7,
-            bbox={"boxstyle": "round,pad=0.25", "facecolor": "white", "edgecolor": "0.75", "alpha": 0.85},
-        )
+    ax.legend(fontsize=7, ncol=2, frameon=True, loc="best")
 
     def metric_boxplot(ax, column: str, ylabel: str, title: str) -> None:
         from matplotlib.lines import Line2D
-        from matplotlib.patches import Patch
 
         box_data, labels, used_colors, used_bids = [], [], [], []
         if column not in metrics.columns:
@@ -681,7 +828,7 @@ def _plot_multi_benchmark_summary(
             patch.set_alpha(0.25)
         if column == "Bias":
             ax.axhline(0.0, color="0.35", lw=1.0, ls="--", alpha=0.75)
-        ax.set_xlabel("Benchmark point")
+        ax.set_xlabel("Evaluation Target Point")
         ax.set_ylabel(ylabel)
         ax.set_title(title)
         ylo, yhi = _robust_limits(*box_data, q_low=0, q_high=97.5, include_zero=True)
@@ -693,50 +840,44 @@ def _plot_multi_benchmark_summary(
             ax.text(0.96, 0.92, "y-axis clipped at 97.5%", transform=ax.transAxes, ha="right", fontsize=8)
         ax.grid(axis="y", alpha=0.25)
         handles = [
-            Patch(facecolor=color, edgecolor="0.35", alpha=0.25, label=f"benchmark {int(bid)}")
-            for color, bid in zip(used_colors, used_bids)
+            Line2D(
+                [0],
+                [0],
+                marker="^",
+                color="none",
+                markerfacecolor="#2ca02c",
+                markeredgecolor="#2ca02c",
+                markersize=5,
+                label="mean",
+            ),
+            Line2D([0], [0], color="#ff7f0e", lw=1.2, label="median"),
         ]
-        handles.extend(
-            [
-                Line2D(
-                    [0],
-                    [0],
-                    marker="^",
-                    color="none",
-                    markerfacecolor="#2ca02c",
-                    markeredgecolor="#2ca02c",
-                    markersize=5,
-                    label="mean",
-                ),
-                Line2D([0], [0], color="#ff7f0e", lw=1.2, label="median"),
-            ]
-        )
         ax.legend(handles=handles, fontsize=6.5, ncol=2, frameon=True, loc="best")
 
     metric_boxplot(
-        axs[0, 0],
+        axs[0, 1],
         "Bias",
         r"Bias across Z grid ($\hat{\mu}-\mu$)",
-        "(a) Bias by benchmark point",
+        "(b) Bias by Evaluation Target Point",
     )
 
     metric_boxplot(
         axs[0, 2],
         "MAE",
         "MAE across Z grid",
-        "(c) MAE by benchmark point",
+        "(c) MAE by Evaluation Target Point",
     )
     metric_boxplot(
         axs[1, 0],
         "RMSE",
         "RMSE across Z grid",
-        "(d) RMSE by benchmark point",
+        "(d) RMSE by Evaluation Target Point",
     )
     metric_boxplot(
         axs[1, 1],
         "projected_bellman_test_risk",
         "Projected Bellman risk",
-        "(e) Projected Bellman risk by benchmark point",
+        "(e) Projected Bellman risk by Evaluation Target Point",
     )
 
     ax = axs[1, 2]
@@ -746,8 +887,8 @@ def _plot_multi_benchmark_summary(
             continue
         abs_err = np.sort(np.abs(H[np.asarray(idx)] - T[np.asarray(idx)]).reshape(-1))
         ecdf = np.arange(1, abs_err.size + 1) / abs_err.size
-        ax.plot(abs_err, ecdf, color=color, lw=1.9, label=f"benchmark {int(bid)}")
-    ax.set_title(r"(f) ECDF of $|\hat{\mu}-\mu|$ by benchmark")
+        ax.plot(abs_err, ecdf, color=color, lw=1.9, label=f"Evaluation Target Point {int(bid)}")
+    ax.set_title(r"(f) ECDF of $|\hat{\mu}-\mu|$ by Evaluation Target Point")
     ax.set_xlabel(r"$|\hat{\mu}-\mu|$")
     ax.set_ylabel("ECDF")
     all_abs = np.abs(H - T).reshape(-1)
@@ -757,7 +898,20 @@ def _plot_multi_benchmark_summary(
     ax.grid(alpha=0.25)
     ax.legend(fontsize=7, ncol=2)
 
-    fig.tight_layout()
+    if caption:
+        wrapped = textwrap.fill(caption, width=215)
+        fig.text(
+            0.5,
+            0.035,
+            wrapped,
+            ha="center",
+            va="bottom",
+            fontsize=7.2,
+            linespacing=1.22,
+        )
+        fig.tight_layout(rect=(0.0, 0.23, 1.0, 0.985))
+    else:
+        fig.tight_layout()
     fig.savefig(outdir / "mu_summary_UG.png", dpi=300)
     fig.savefig(outdir / "mu_summary_benchmarks.png", dpi=300)
     plt.close(fig)
@@ -800,7 +954,7 @@ def _plot_four_panel_summary(
     )
     ax.set_ylim(lo, hi)
     ax.set_title("(a) Mean +/- 1.96 SD Across Offline Samples")
-    ax.set_xlabel("Index on fixed benchmark Z grid")
+    ax.set_xlabel("Index on evaluation-target Z grid")
     ax.set_ylabel("Mean embedding")
     ax.grid(alpha=0.25)
     ax.legend()
@@ -813,24 +967,20 @@ def _plot_four_panel_summary(
     for tr, hr in zip(T, H):
         by_run = np.asarray([float(hr[b].mean()) for b in bins if b.size])
         line_values.append(by_run)
-        ax.plot(bx, by_run, color="0.6", lw=0.8, alpha=0.25)
     Y = np.vstack(line_values)
     by = Y.mean(axis=0)
-    se = Y.std(axis=0, ddof=1) / math.sqrt(Y.shape[0]) if Y.shape[0] > 1 else np.zeros(Y.shape[1])
     slope, intercept = _deming(bx, by)
     lo, hi = _robust_limits(bx, by, q_low=0, q_high=100, pad=0.15, include_zero=False, min_span=1e-4)
     ax.plot([lo, hi], [lo, hi], "--", color="#0b2a50", lw=1.5, label="ideal")
     ax.set_xlim(lo, hi)
     ax.set_ylim(lo, hi)
-    ax.errorbar(
+    ax.plot(
         bx,
         by,
-        yerr=1.96 * se,
         color="#ff5f05",
         marker="o",
         lw=2.0,
-        capsize=3,
-        label="mean calibration +/- 95% CI",
+        label="mean calibration",
     )
     ax.text(0.04, 0.94, f"Binned Deming slope={slope:.3f}, int={intercept:.3f}", transform=ax.transAxes, va="top")
     ax.text(0.96, 0.06, "axes centered on binned means", transform=ax.transAxes, ha="right", fontsize=8)

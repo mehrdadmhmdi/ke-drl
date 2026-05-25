@@ -193,8 +193,8 @@ training array:
    datasets, 10 benchmark points, and for each benchmark point 50,000 Monte
    Carlo target-policy trajectories with 400 time points.
 2. `Job_tune_global.sbatch` indexes the Cartesian product of tuning
-   configuration and offline replicate. With the current 2 tuning
-   configurations and 100 offline datasets, the array is `0-199%10`.
+   configuration and offline replicate. With the current 7 tuning
+   configurations and 100 offline datasets, the array is `0-699%10`.
    Each task fits one `B_hat` using 100 training target points that are
    separate from the benchmark truth points.
 3. `Job_tune_summary.sbatch` aggregates the finished tasks, writes one tuning
@@ -206,7 +206,7 @@ Typical submission sequence:
 
 ```bash
 sbatch Job_tune_prepare.sbatch
-sbatch --array=0-199%10 Job_tune_global.sbatch
+sbatch --array=0-699%10 Job_tune_global.sbatch
 sbatch --dependency=afterany:<global-array-job-id> Job_tune_summary.sbatch
 ```
 
@@ -230,7 +230,7 @@ Z_sim: {n_ids: 50000, n_timepoints: 400}
 gamma_val: 0.7
 target_set.num_points: 100
 num_grid_points: 800
-optimization.num_steps: 1000
+optimization.num_steps: 4000
 optimization.target_batch_size: 100
 lambda_reg: 0.005
 lambda_B: 0.01
@@ -239,8 +239,9 @@ kernel: {nu: 3.5, length_scale: 0.7, sigma: 0.7}
 operator_approximation.num_features: 512
 ```
 
-The tuning grid currently has 2 configurations: the base setting and the
-`length_scale=1.0` comparison.
+The tuning grid currently has 7 configurations: the base setting plus
+one-factor checks for kernel length scale, kernel amplitude, `lambda_B`, and
+the mass-anchor penalty.
 The summary job writes:
 
 ```text
