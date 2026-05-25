@@ -577,36 +577,14 @@ def _plot_multi_benchmark_summary(
     rid_to_benchmark = dict(zip(metrics["run_id"], metrics["benchmark_id"]))
     benchmark_ids = sorted(pd.Series(metrics["benchmark_id"]).dropna().unique().tolist())
     colors = _benchmark_palette(len(benchmark_ids))
-    x = np.arange(H.shape[1])
+    markers = ["o", "s", "^", "D", "P", "X", "v", "<", ">", "h", "*", "p"]
 
     fig, axs = plt.subplots(2, 3, figsize=(19, 9.5))
 
-    ax = axs[0, 0]
-    y_for_limits = []
-    for color, bid in zip(colors, benchmark_ids):
-        idx = [i for i, rid in enumerate(run_ids) if rid_to_benchmark.get(str(rid)) == bid]
-        if not idx:
-            continue
-        H_b = H[np.asarray(idx)]
-        T_b = T[np.asarray(idx)]
-        h_mean = H_b.mean(axis=0)
-        h_sd = H_b.std(axis=0, ddof=1) if H_b.shape[0] > 1 else np.zeros(H_b.shape[1])
-        t_mean = T_b.mean(axis=0)
-        ax.fill_between(x, h_mean - 1.96 * h_sd, h_mean + 1.96 * h_sd, color=color, alpha=0.10)
-        ax.plot(x, t_mean, color=color, lw=1.8, ls="--", label=f"truth {int(bid)}")
-        ax.plot(x, h_mean, color=color, lw=2.2, label=f"estimate {int(bid)}")
-        y_for_limits.extend([t_mean, h_mean, h_mean - 1.96 * h_sd, h_mean + 1.96 * h_sd])
-    lo, hi = _robust_limits(*y_for_limits, q_low=0.5, q_high=99.5, include_zero=True)
-    ax.set_ylim(lo, hi)
-    ax.set_title("(a) Benchmark-specific mean embeddings")
-    ax.set_xlabel("Index on benchmark Z grid")
-    ax.set_ylabel("Mean embedding")
-    ax.grid(alpha=0.25)
-    ax.legend(fontsize=7, ncol=2, frameon=True)
-
     ax = axs[0, 1]
     cal_x, cal_y = [], []
-    for color, bid in zip(colors, benchmark_ids):
+    calibration_notes: list[str] = []
+    for j, (color, bid) in enumerate(zip(colors, benchmark_ids)):
         idx = [i for i, rid in enumerate(run_ids) if rid_to_benchmark.get(str(rid)) == bid]
         if not idx:
             continue
@@ -623,7 +601,25 @@ def _plot_multi_benchmark_summary(
         Y = np.vstack(by_runs)
         by = Y.mean(axis=0)
         se = Y.std(axis=0, ddof=1) / math.sqrt(Y.shape[0]) if Y.shape[0] > 1 else np.zeros(Y.shape[1])
-        ax.errorbar(bx, by, yerr=1.96 * se, color=color, marker="o", lw=1.5, capsize=2, label=f"benchmark {int(bid)}")
+        for y_run in Y:
+            ax.plot(bx, y_run, color=color, lw=0.8, alpha=0.18)
+        slope, _ = _deming(bx, by)
+        mean_bias = float(np.nanmean(by - bx))
+        if np.isfinite(slope):
+            calibration_notes.append(f"b{int(bid)}: slope={slope:.2f}, bias={mean_bias:+.3g}")
+        ax.errorbar(
+            bx,
+            by,
+            yerr=1.96 * se,
+            color=color,
+            marker=markers[j % len(markers)],
+            markerfacecolor=color,
+            markeredgecolor="white",
+            markeredgewidth=0.6,
+            lw=1.6,
+            capsize=2,
+            label=f"benchmark {int(bid)}",
+        )
         cal_x.append(bx)
         cal_y.append(by)
     lo, hi = _robust_limits(*cal_x, *cal_y, q_low=0, q_high=100, pad=0.15, include_zero=False, min_span=1e-4)
@@ -635,9 +631,23 @@ def _plot_multi_benchmark_summary(
     ax.set_ylabel("Estimated mean embedding (bin mean)")
     ax.grid(alpha=0.25)
     ax.legend(fontsize=7, ncol=2)
+    if calibration_notes:
+        ax.text(
+            0.98,
+            0.04,
+            "\n".join(calibration_notes),
+            transform=ax.transAxes,
+            ha="right",
+            va="bottom",
+            fontsize=7,
+            bbox={"boxstyle": "round,pad=0.25", "facecolor": "white", "edgecolor": "0.75", "alpha": 0.85},
+        )
 
     def metric_boxplot(ax, column: str, ylabel: str, title: str) -> None:
-        box_data, labels, used_colors = [], [], []
+        from matplotlib.lines import Line2D
+        from matplotlib.patches import Patch
+
+        box_data, labels, used_colors, used_bids = [], [], [], []
         if column not in metrics.columns:
             ax.axis("off")
             ax.text(0.5, 0.5, f"{column} not available", ha="center", va="center", transform=ax.transAxes)
@@ -648,22 +658,67 @@ def _plot_multi_benchmark_summary(
                 box_data.append(vals)
                 labels.append(str(int(bid)))
                 used_colors.append(color)
+                used_bids.append(bid)
         if not box_data:
             ax.axis("off")
             ax.text(0.5, 0.5, f"{column} not available", ha="center", va="center", transform=ax.transAxes)
             return
-        bp = ax.boxplot(box_data, labels=labels, showmeans=True, patch_artist=True)
+        bp = ax.boxplot(
+            box_data,
+            labels=labels,
+            showmeans=True,
+            patch_artist=True,
+            meanprops={
+                "marker": "^",
+                "markerfacecolor": "#2ca02c",
+                "markeredgecolor": "#2ca02c",
+                "markersize": 5,
+            },
+            medianprops={"color": "#ff7f0e", "linewidth": 1.2},
+        )
         for patch, color in zip(bp["boxes"], used_colors):
             patch.set_facecolor(color)
             patch.set_alpha(0.25)
+        if column == "Bias":
+            ax.axhline(0.0, color="0.35", lw=1.0, ls="--", alpha=0.75)
         ax.set_xlabel("Benchmark point")
         ax.set_ylabel(ylabel)
         ax.set_title(title)
         ylo, yhi = _robust_limits(*box_data, q_low=0, q_high=97.5, include_zero=True)
+        if column == "Bias":
+            span = max(abs(ylo), abs(yhi), 1e-4)
+            ylo, yhi = -span, span
         ax.set_ylim(ylo, yhi)
         if any(float(np.nanmax(vals)) > yhi for vals in box_data if vals.size):
             ax.text(0.96, 0.92, "y-axis clipped at 97.5%", transform=ax.transAxes, ha="right", fontsize=8)
         ax.grid(axis="y", alpha=0.25)
+        handles = [
+            Patch(facecolor=color, edgecolor="0.35", alpha=0.25, label=f"benchmark {int(bid)}")
+            for color, bid in zip(used_colors, used_bids)
+        ]
+        handles.extend(
+            [
+                Line2D(
+                    [0],
+                    [0],
+                    marker="^",
+                    color="none",
+                    markerfacecolor="#2ca02c",
+                    markeredgecolor="#2ca02c",
+                    markersize=5,
+                    label="mean",
+                ),
+                Line2D([0], [0], color="#ff7f0e", lw=1.2, label="median"),
+            ]
+        )
+        ax.legend(handles=handles, fontsize=6.5, ncol=2, frameon=True, loc="best")
+
+    metric_boxplot(
+        axs[0, 0],
+        "Bias",
+        r"Bias across Z grid ($\hat{\mu}-\mu$)",
+        "(a) Bias by benchmark point",
+    )
 
     metric_boxplot(
         axs[0, 2],

@@ -318,18 +318,21 @@ runs/main_<master_job_id>/plots/mu_summary_UG.png
 
 `mu_summary_UG.png` aggregates across offline replicates. It is appropriate for
 checking consistency of the estimated global `B` because each curve is produced
-from a fresh offline dataset and a fresh global fit, but evaluated at the same
-fixed benchmark point.
+from a fresh offline dataset and a fresh global fit, then evaluated at fixed
+benchmark points that are independent of those offline datasets.
 
-The four panels show:
+For multi-benchmark runs, the six panels show:
 
-- Mean estimated embeddings across `D_i` against the fixed Monte Carlo truth.
-- Quantile calibration lines, one gray line per `D_i`, plus their mean line.
-- Per-replicate error summaries, including the projected Bellman diagnostic
-  `projected_bellman_test_risk` when available. The older
-  `benchmark_embedding_risk` column is retained only as a simulation-oracle
-  prediction risk against Monte Carlo returns and is not zero-baseline.
-- ECDF of absolute mean-embedding error.
+- Signed bias by benchmark point, with benchmark-color legends plus mean and
+  median markers.
+- Benchmark-specific calibration curves. Faint lines show individual offline
+  replicates, the darker points show benchmark means, and the annotation reports
+  benchmark-specific calibration slopes and biases.
+- MAE, RMSE, and projected Bellman diagnostic box plots by benchmark point. The
+  older `benchmark_embedding_risk` column is retained only as a
+  simulation-oracle prediction risk against Monte Carlo returns and is not
+  zero-baseline.
+- ECDF of absolute mean-embedding error by benchmark point.
 
 This is different from aggregating across the target points. The target
 points are used inside the global loss; they are not the evaluation objects in
