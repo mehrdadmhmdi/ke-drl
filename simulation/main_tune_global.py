@@ -187,14 +187,17 @@ def write_result(combo_id: int, combo_name: str, overrides: dict[str, Any], elap
     )
     score_projected_bellman = float(agg.get("projected_bellman_test_risk_mean", float("nan")))
     score_optimizer_risk = float(risk.get("risk_log_obj_final_mean", float("nan")))
+    score_mass = float(risk.get("target_mass_rmse_to_target_mean", float("nan")))
     score_risk = score_projected_bellman
     if math.isnan(score_risk):
         score_risk = score_optimizer_risk
-    score_mass = float(risk.get("target_mass_rmse_to_target_mean", float("nan")))
+    score = score_true_z
+    if not math.isnan(score_mass):
+        score += 0.05 * score_mass
     row = {
         "combo_id": combo_id,
         "combo_name": combo_name,
-        "score": score_true_z,
+        "score": score,
         "score_true_z": score_true_z,
         "score_risk": score_risk,
         "score_projected_bellman": score_projected_bellman,

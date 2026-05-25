@@ -129,6 +129,25 @@ def sample_policy_actions(
     return actions.repeat(1, reps)[:, :action_dim]
 
 
+def uniform_policy_bounds(policy_params: dict, states: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """Return state-dependent Uniform behavior-policy bounds on the action."""
+    theta_lower = torch.as_tensor(policy_params["theta_lower"], dtype=states.dtype, device=states.device)
+    theta_upper = torch.as_tensor(policy_params["theta_upper"], dtype=states.dtype, device=states.device)
+    eps_lower = torch.as_tensor(policy_params.get("epsilon_lower", 0.0), dtype=states.dtype, device=states.device)
+    eps_upper = torch.as_tensor(policy_params.get("epsilon_upper", 0.0), dtype=states.dtype, device=states.device)
+    lower = states @ theta_lower + eps_lower
+    upper = states @ theta_upper + eps_upper
+    upper = torch.where(upper <= lower, lower + 1.0, upper)
+    return lower.reshape(-1), upper.reshape(-1)
+
+
+def actions_in_uniform_support(policy_params: dict, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+    """Indicator that one-dimensional actions are inside the behavior Uniform support."""
+    lower, upper = uniform_policy_bounds(policy_params, states)
+    action_flat = actions.reshape(-1).to(dtype=states.dtype, device=states.device)
+    return (action_flat >= lower) & (action_flat <= upper)
+
+
 def _cov_cholesky(cov: torch.Tensor, *, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
     cov = cov.to(device=device, dtype=dtype)
     dim = cov.shape[0]

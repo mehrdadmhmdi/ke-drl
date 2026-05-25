@@ -39,7 +39,7 @@ benchmark:
 # Moderate discount for tail-stable simulated returns.
 gamma_val: 0.7
 lambda_reg: 0.005
-lambda_B: 0.01
+lambda_B: 0.02
 hull_expand_factor: 1
 H_batch_size: 16
 d_r_method: song
@@ -78,7 +78,7 @@ optimization:
   Sum_one_W: False
   NonNeg_W: False
   B_ridge_penalty: False
-  mass_anchor_lambda: 0.3
+  mass_anchor_lambda: 1.0
   target_mass: 1.0
   negativity_penalty_lambda: 0.0
   max_B_norm: null
@@ -88,10 +88,9 @@ optimization:
 #===========================
 kernel:
   type: matern
-  nu: 3.50
-  # Base tuning now starts from the empirically tail-stable setting.
-  length_scale: 0.7
-  sigma: 0.7
+  nu: 5.5
+  length_scale: 1.0
+  sigma: 1.0
 #==========================
 policy:
   evaluation_Target_policy: logistic

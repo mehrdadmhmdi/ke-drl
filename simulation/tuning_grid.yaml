@@ -1,35 +1,33 @@
-# Final simulation tuning grid. Run with Job_tune_global.sbatch.
-# Each config reuses the shared offline data and benchmark truth from
-# Job_tune_prepare.sbatch.
+# Final tuning grid. Run with Job_tune_prepare.sbatch once, then Job_tune_global.sbatch.
+# The baseline is defined in params_tune.yaml:
+# lambda_B=0.02, kernel.nu=5.5, kernel.length_scale=1.0, kernel.sigma=1.0.
 combos:
   - name: base
     overrides: {}
 
-  - name: kernel_length_1p0
+  - name: lambda_B_0.002
+    overrides:
+      lambda_B: 0.002
+
+  - name: lambda_B_0.00002
+    overrides:
+      lambda_B: 0.00002
+
+  - name: kernel_nu_7.5
     overrides:
       kernel:
-        length_scale: 1.0
+        nu: 7.5
 
-  - name: kernel_length_0p5
+  - name: kernel_length_1.5
     overrides:
       kernel:
-        length_scale: 0.5
+        length_scale: 1.5
 
-  - name: kernel_sigma_0p5
+  - name: kernel_sigma_0.7
     overrides:
       kernel:
-        sigma: 0.5
+        sigma: 0.7
 
-  - name: kernel_sigma_1p0
+  - name: lambda_B_0.2
     overrides:
-      kernel:
-        sigma: 1.0
-
-  - name: lambda_B_0p02
-    overrides:
-      lambda_B: 0.02
-
-  - name: mass_anchor_1p0
-    overrides:
-      optimization:
-        mass_anchor_lambda: 1.0
+      lambda_B: 0.2

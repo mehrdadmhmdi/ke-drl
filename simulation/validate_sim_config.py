@@ -7,7 +7,7 @@ from typing import Any
 import torch
 import yaml
 
-from sim_utils import clean_policy_params, kedrl_import_info, sample_policy_actions
+from sim_utils import actions_in_uniform_support, clean_policy_params, kedrl_import_info, sample_policy_actions
 
 
 REQUIRED = {
@@ -49,6 +49,43 @@ def _summarize_tensor(name: str, x: torch.Tensor) -> None:
         f"{name}: mean={x.mean().item():.4g}, sd={x.std().item():.4g}, "
         f"q0/q10/q50/q90/q100={qs.tolist()}"
     )
+
+
+def _check_full_benchmark_truth_support(
+    data_dir: Path,
+    bench_cfg: dict[str, Any],
+    behavior_name: str,
+    behavior_block: dict[str, Any],
+    action_dim: int,
+) -> None:
+    """Validate every generated benchmark point saved with Z_true."""
+    z_path = data_dir / str(bench_cfg.get("output", "Z_true.pt"))
+    if not z_path.exists():
+        return
+    z_blob = torch.load(z_path, map_location="cpu")
+    metadata = dict(z_blob.get("metadata") or {})
+    if "s_star" not in metadata or "a_star" not in metadata:
+        return
+    s_all = torch.as_tensor(metadata["s_star"], dtype=torch.float64)
+    a_all = torch.as_tensor(metadata["a_star"], dtype=torch.float64)
+    if s_all.ndim == 1:
+        s_all = s_all.reshape(1, -1)
+    if a_all.ndim == 1:
+        a_all = a_all.reshape(1, -1)
+    if behavior_name == "uniform" and action_dim == 1:
+        mask = actions_in_uniform_support(behavior_block, s_all, a_all).detach().cpu()
+        if bool((~mask).any()):
+            bad = torch.nonzero(~mask, as_tuple=False).reshape(-1).tolist()
+            raise ValueError(
+                "Generated benchmark_point/Z_true contains evaluation point(s) outside "
+                "behavior-policy support: "
+                + ", ".join(str(int(j)) for j in bad[:20])
+            )
+        lower, upper = _uniform_bounds(behavior_block, s_all)
+        print(
+            "Full benchmark support check OK: "
+            f"{s_all.shape[0]} points, min_lower={lower.min().item():.4g}, max_upper={upper.max().item():.4g}"
+        )
 
 
 def _check_kedrl_package_api() -> None:
@@ -231,7 +268,7 @@ def main() -> None:
             a_bench = a_bench.reshape(1, -1)
         print(
             f"Fixed benchmark config rows={s_bench.shape[0]} "
-            f"(benchmark.num_points={bench_points}; additional points are independent target-policy draws if needed)"
+            f"(benchmark.num_points={bench_points}; additional points are support-safe target-policy draws if needed)"
         )
         print(f"Fixed benchmark point 0: s_star={s_bench[0].reshape(-1).tolist()}, a_star={a_bench[0].reshape(-1).tolist()}")
         if behavior_name == "uniform" and action_dim == 1:
@@ -253,6 +290,13 @@ def main() -> None:
     blob = torch.load(Path(args.data), map_location="cpu")
     s0 = torch.as_tensor(blob["s0"], dtype=torch.float64)
     a0 = torch.as_tensor(blob["a0"], dtype=torch.float64)
+    _check_full_benchmark_truth_support(
+        Path(args.data).parent,
+        bench_cfg,
+        behavior_name,
+        behavior_block,
+        action_dim,
+    )
     available_targets = s0.shape[0] - (1 if bool(target_cfg.get("exclude_benchmark", False)) and s0.shape[0] > 1 else 0)
     if str(target_cfg.get("mode", "train_subset")).lower() not in {"all", "train_all"} and target_points > available_targets:
         raise ValueError(

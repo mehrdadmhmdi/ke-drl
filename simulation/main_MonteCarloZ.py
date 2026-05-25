@@ -9,6 +9,7 @@ import torch
 import yaml
 
 from sim_utils import (
+    actions_in_uniform_support,
     clean_policy_params,
     kedrl_import_info,
     monte_carlo_Z,
@@ -52,6 +53,9 @@ W_r, b_r, sigma_r = map(to_t, (P["MDP"]["W_r"], P["MDP"]["b_r"], P["MDP"]["sigma
 target_policy_name = P["policy"]["evaluation_Target_policy"]
 target_policy = P["policy"][target_policy_name]["name"]
 target_policy_params = P["policy"][target_policy_name]
+behavior_policy_name = P["policy"]["Behvaioral_policy"]
+behavior_policy = P["policy"][behavior_policy_name]["name"]
+behavior_policy_params = P["policy"][behavior_policy_name]
 
 design_seed = int(P.get("random_seed", 20260512)) + int(bench_cfg.get("seed_offset", 110000))
 num_benchmark_points = int(bench_cfg.get("num_points", 1))
@@ -68,23 +72,72 @@ def _as_rows(x, dim: int, name: str) -> torch.Tensor:
     return out
 
 
+def _candidate_states(n_points: int, seed0: int) -> torch.Tensor:
+    """Draw candidate evaluation states from the empirical offline support when available."""
+    offline_path = Path("data") / "offline_data_0.pt"
+    generator = torch.Generator(device="cpu")
+    generator.manual_seed(seed0)
+    if offline_path.exists():
+        blob = torch.load(offline_path, map_location="cpu")
+        s0 = torch.as_tensor(blob["s0"], dtype=sim_dtype)
+        if s0.ndim != 2 or s0.shape[1] != int(P["state_dim"]):
+            raise ValueError(f"{offline_path} has invalid s0 shape {tuple(s0.shape)}.")
+        idx = torch.randint(s0.shape[0], (n_points,), generator=generator)
+        return s0[idx].clone()
+    return torch.randn(n_points, int(P["state_dim"]), generator=generator, dtype=sim_dtype)
+
+
+def _support_mask(s: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+    if behavior_policy == "uniform" and int(P["action_dim"]) == 1:
+        return actions_in_uniform_support(behavior_policy_params, s, a)
+    return torch.ones(s.shape[0], dtype=torch.bool, device=s.device)
+
+
+def _validate_benchmark_support(s: torch.Tensor, a: torch.Tensor) -> None:
+    mask = _support_mask(s, a).detach().cpu()
+    if bool((~mask).any()):
+        bad = torch.nonzero(~mask, as_tuple=False).reshape(-1).tolist()
+        raise ValueError(
+            "Benchmark evaluation point(s) outside behavior-policy support: "
+            + ", ".join(str(int(j)) for j in bad[:20])
+        )
+    print(f"All {s.shape[0]} benchmark evaluation points are inside behavior-policy support.")
+
+
 def _draw_benchmark_points(n_points: int, seed0: int) -> tuple[torch.Tensor, torch.Tensor]:
     if n_points <= 0:
         return (
             torch.empty(0, int(P["state_dim"]), dtype=sim_dtype),
             torch.empty(0, int(P["action_dim"]), dtype=sim_dtype),
         )
-    generator = torch.Generator(device="cpu")
-    generator.manual_seed(seed0)
-    s = torch.randn(n_points, int(P["state_dim"]), generator=generator, dtype=sim_dtype)
-    torch.manual_seed(seed0 + 1)
-    a = sample_policy_actions(
-        target_policy,
-        clean_policy_params(target_policy, target_policy_params),
-        s,
-        int(P["action_dim"]),
-    ).reshape(n_points, int(P["action_dim"]))
-    return s, a
+    states: list[torch.Tensor] = []
+    actions: list[torch.Tensor] = []
+    remaining = n_points
+    attempt = 0
+    while remaining > 0 and attempt < 100:
+        attempt += 1
+        batch_n = max(256, remaining * 32)
+        s_batch = _candidate_states(batch_n, seed0 + 1009 * attempt)
+        torch.manual_seed(seed0 + 2003 * attempt)
+        a_batch = sample_policy_actions(
+            target_policy,
+            clean_policy_params(target_policy, target_policy_params),
+            s_batch,
+            int(P["action_dim"]),
+        ).reshape(batch_n, int(P["action_dim"]))
+        keep = _support_mask(s_batch, a_batch)
+        if bool(keep.any()):
+            s_keep = s_batch[keep][:remaining]
+            a_keep = a_batch[keep][:remaining]
+            states.append(s_keep)
+            actions.append(a_keep)
+            remaining -= int(s_keep.shape[0])
+    if remaining > 0:
+        raise RuntimeError(
+            f"Could not draw {n_points} support-safe benchmark points; "
+            f"{remaining} still missing after {attempt} attempts."
+        )
+    return torch.cat(states, dim=0), torch.cat(actions, dim=0)
 
 
 if "s_star" in bench_cfg and "a_star" in bench_cfg:
@@ -100,16 +153,17 @@ if "s_star" in bench_cfg and "a_star" in bench_cfg:
         s_extra, a_extra = _draw_benchmark_points(num_benchmark_points - s_fixed.shape[0], design_seed + 1000)
         s_star = torch.cat([s_fixed, s_extra], dim=0)
         a_star = torch.cat([a_fixed, a_extra], dim=0)
-        point_sources = ["fixed_config"] * int(s_fixed.shape[0]) + ["independent_target_policy_draw"] * int(s_extra.shape[0])
-    point_source = "fixed_config" if len(set(point_sources)) == 1 else "fixed_config_plus_independent_target_policy_draws"
+        point_sources = ["fixed_config"] * int(s_fixed.shape[0]) + ["support_safe_target_policy_draw"] * int(s_extra.shape[0])
+    point_source = "fixed_config" if len(set(point_sources)) == 1 else "fixed_config_plus_support_safe_target_policy_draws"
 else:
     s_star, a_star = _draw_benchmark_points(num_benchmark_points, design_seed)
-    point_source = "independent_target_policy_draw"
+    point_source = "support_safe_target_policy_draw"
     point_sources = [point_source] * num_benchmark_points
 if s_star.shape != (num_benchmark_points, int(P["state_dim"])):
     raise ValueError(f"benchmark s_star has shape {tuple(s_star.shape)}, expected ({num_benchmark_points}, {P['state_dim']}).")
 if a_star.shape != (num_benchmark_points, int(P["action_dim"])):
     raise ValueError(f"benchmark a_star has shape {tuple(a_star.shape)}, expected ({num_benchmark_points}, {P['action_dim']}).")
+_validate_benchmark_support(s_star, a_star)
 print(f"Fixed MC benchmark point source: {point_source}")
 print(f"num_benchmark_points={num_benchmark_points}")
 print(f"s_star={s_star.tolist()}")

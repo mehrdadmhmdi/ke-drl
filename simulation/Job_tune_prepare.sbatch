@@ -51,14 +51,26 @@ print(int((p.get("experiment") or {}).get("num_replicates", 1)))
 PY
 )
 LAST_REP=$((N_REP - 1))
+CURRENT_FINGERPRINT=$(sha256sum \
+  params_tune.yaml \
+  main_MonteCarloZ.py \
+  sim_utils.py \
+  validate_sim_config.py \
+  parallel_offlinedata.py \
+  main_offlinedata.py \
+  | sha256sum | awk '{print $1}')
+FINGERPRINT_FILE="$RUN/data/prep_fingerprint.sha256"
 
 if [ -e "$RUN/data/Z_true.pt" ] && [ -e "$RUN/data/offline_data_0.pt" ] && [ -e "$RUN/data/offline_data_${LAST_REP}.pt" ] && [ "${KEDRL_PREP_FORCE:-0}" != "1" ]; then
-  echo "Shared tuning data already exists at $RUN"
-  echo "Set KEDRL_PREP_FORCE=1 to regenerate it."
-  exit 0
+  if [ -e "$FINGERPRINT_FILE" ] && [ "$(cat "$FINGERPRINT_FILE")" = "$CURRENT_FINGERPRINT" ]; then
+    echo "Shared tuning data already exists at $RUN and matches current parameters/scripts."
+    echo "Set KEDRL_PREP_FORCE=1 to regenerate it."
+    exit 0
+  fi
+  echo "Shared tuning data exists but parameters/scripts changed; regenerating $RUN."
 fi
 
-if [ "${KEDRL_PREP_FORCE:-0}" = "1" ] && [ -d "$RUN" ]; then
+if [ -d "$RUN" ] && { [ "${KEDRL_PREP_FORCE:-0}" = "1" ] || [ ! -e "$FINGERPRINT_FILE" ] || [ "$(cat "$FINGERPRINT_FILE" 2>/dev/null || true)" != "$CURRENT_FINGERPRINT" ]; }; then
   case "$(realpath "$RUN")" in
     "$(realpath "$BASE")"/runs/tune_shared_data*) rm -rf "$RUN" ;;
     *) echo "Refusing to remove unexpected path: $RUN" >&2; exit 1 ;;
@@ -116,6 +128,7 @@ PY
 python3 validate_sim_config.py --params params.yaml
 python3 parallel_offlinedata.py --params params.yaml
 python3 main_MonteCarloZ.py
+printf '%s\n' "$CURRENT_FINGERPRINT" > data/prep_fingerprint.sha256
 
 echo "Shared data outputs:"
 ls -lh data/Z_true.pt data/offline_data_0.pt "data/offline_data_${LAST_REP}.pt"

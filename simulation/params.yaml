@@ -35,7 +35,7 @@ benchmark:
 # assignment while keeping the benchmark Z support stable.
 gamma_val: 0.7
 lambda_reg: 0.001
-lambda_B: 0.001
+lambda_B: 0.02
 hull_expand_factor: 1
 H_batch_size: 16
 d_r_method: song  #song, bellman, Schuster
@@ -97,10 +97,9 @@ optimization:
 #===========================
 kernel:
   type: matern
-  nu: 3.50
-  # The tuning run showed length_scale=0.7 gives the smallest tail error in Z.
-  length_scale: 0.7
-  sigma: 0.7
+  nu: 5.5
+  length_scale: 1.0
+  sigma: 1.0
 #==========================
 policy:
   evaluation_Target_policy: logistic    # choose one:  #"uniform" or "gaussian" or "logistic"
