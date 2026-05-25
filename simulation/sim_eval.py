@@ -377,11 +377,19 @@ def plot_mu_summary(
 
     fig, ax = plt.subplots(figsize=(5, 5))
     ax.scatter(T.reshape(-1), H.reshape(-1), s=6, alpha=0.25)
-    lo, hi = _robust_limits(T, H, q_low=2.5, q_high=97.5, include_zero=False)
-    ax.plot([lo, hi], [lo, hi], color="black", lw=1.0)
-    ax.set_xlim(lo, hi)
-    ax.set_ylim(lo, hi)
-    ax.text(0.96, 0.06, "axes use central 95%", transform=ax.transAxes, ha="right", fontsize=8)
+    _set_calibration_axes(
+        ax,
+        [T.reshape(-1)],
+        [H.reshape(-1)],
+        q_low=2.5,
+        q_high=97.5,
+        include_zero=False,
+        ideal_color="black",
+        ideal_lw=1.0,
+        ideal_ls="-",
+        ideal_label=None,
+    )
+    ax.text(0.96, 0.06, "axes use separate central 95%", transform=ax.transAxes, ha="right", fontsize=8)
     ax.set_xlabel("MC truth mean embedding")
     ax.set_ylabel("Estimated mean embedding")
     ax.grid(alpha=0.25)
@@ -448,6 +456,53 @@ def _robust_limits(
     return lo - pad * span, hi + pad * span
 
 
+def _set_calibration_axes(
+    ax,
+    x_arrays: list[np.ndarray],
+    y_arrays: list[np.ndarray],
+    *,
+    q_low: float = 0.0,
+    q_high: float = 100.0,
+    pad: float = 0.10,
+    include_zero: bool = False,
+    min_span: float = 1e-4,
+    ideal_color: str = "0.25",
+    ideal_lw: float = 1.2,
+    ideal_ls: str = "--",
+    ideal_label: str | None = "ideal",
+) -> tuple[float, float, float, float]:
+    """Set calibration axes independently while keeping the y=x reference visible."""
+    xlo, xhi = _robust_limits(
+        *x_arrays,
+        q_low=q_low,
+        q_high=q_high,
+        pad=pad,
+        include_zero=include_zero,
+        min_span=min_span,
+    )
+    ideal_y = np.asarray([xlo, xhi], dtype=float)
+    ylo, yhi = _robust_limits(
+        *y_arrays,
+        ideal_y,
+        q_low=q_low,
+        q_high=q_high,
+        pad=pad,
+        include_zero=include_zero,
+        min_span=min_span,
+    )
+    ax.plot(
+        [xlo, xhi],
+        [xlo, xhi],
+        ideal_ls,
+        color=ideal_color,
+        lw=ideal_lw,
+        label=ideal_label,
+    )
+    ax.set_xlim(xlo, xhi)
+    ax.set_ylim(ylo, yhi)
+    return xlo, xhi, ylo, yhi
+
+
 def plot_single_mu_diagnostic(
     *,
     mu_hat,
@@ -501,10 +556,18 @@ def plot_single_mu_diagnostic(
 
     ax = axs[1]
     ax.scatter(true, hat, s=12, alpha=0.5, color="#ff5f05", edgecolor="none")
-    lo, hi = _robust_limits(true, hat, q_low=0.5, q_high=99.5, include_zero=True)
-    ax.plot([lo, hi], [lo, hi], "--", color="#0b2a50", lw=1.2)
-    ax.set_xlim(lo, hi)
-    ax.set_ylim(lo, hi)
+    _set_calibration_axes(
+        ax,
+        [true],
+        [hat],
+        q_low=0.5,
+        q_high=99.5,
+        include_zero=True,
+        min_span=1e-3,
+        ideal_color="#0b2a50",
+        ideal_lw=1.2,
+        ideal_label=None,
+    )
     ax.set_title(f"RMSE={rmse:.3g}, MAE={mae:.3g}, Corr={corr:.3g}")
     ax.set_xlabel("MC truth mean embedding")
     ax.set_ylabel("Estimated mean embedding")
@@ -781,10 +844,19 @@ def _plot_multi_benchmark_summary(
         )
         cal_x.append(bx)
         cal_y.append(by)
-    lo, hi = _robust_limits(*cal_x, *cal_y, q_low=0, q_high=100, pad=0.10, include_zero=False, min_span=1e-4)
-    ax.plot([lo, hi], [lo, hi], "--", color="0.25", lw=1.2, label="ideal")
-    ax.set_xlim(lo, hi)
-    ax.set_ylim(lo, hi)
+    _set_calibration_axes(
+        ax,
+        cal_x,
+        cal_y,
+        q_low=0,
+        q_high=100,
+        pad=0.10,
+        include_zero=False,
+        min_span=1e-4,
+        ideal_color="0.25",
+        ideal_lw=1.2,
+        ideal_label="ideal",
+    )
     ax.set_title("(a) Evaluation-target calibration")
     ax.set_xlabel("True mean embedding (bin mean)")
     ax.set_ylabel("Estimated mean embedding (bin mean)")
@@ -970,10 +1042,19 @@ def _plot_four_panel_summary(
     Y = np.vstack(line_values)
     by = Y.mean(axis=0)
     slope, intercept = _deming(bx, by)
-    lo, hi = _robust_limits(bx, by, q_low=0, q_high=100, pad=0.15, include_zero=False, min_span=1e-4)
-    ax.plot([lo, hi], [lo, hi], "--", color="#0b2a50", lw=1.5, label="ideal")
-    ax.set_xlim(lo, hi)
-    ax.set_ylim(lo, hi)
+    _set_calibration_axes(
+        ax,
+        [bx],
+        [by],
+        q_low=0,
+        q_high=100,
+        pad=0.15,
+        include_zero=False,
+        min_span=1e-4,
+        ideal_color="#0b2a50",
+        ideal_lw=1.5,
+        ideal_label="ideal",
+    )
     ax.plot(
         bx,
         by,
