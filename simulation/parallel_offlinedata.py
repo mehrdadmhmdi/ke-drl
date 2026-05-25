@@ -45,10 +45,10 @@ def _run_one(rep_id: int, *, python: str, validate: bool) -> Path:
     env = os.environ.copy()
     env["SLURM_ARRAY_TASK_ID"] = str(rep_id)
     env["OFFLINE_DATA_ID"] = str(rep_id)
-    env.setdefault("OMP_NUM_THREADS", "1")
-    env.setdefault("MKL_NUM_THREADS", "1")
-    env.setdefault("OPENBLAS_NUM_THREADS", "1")
-    env.setdefault("NUMEXPR_NUM_THREADS", "1")
+    env["OMP_NUM_THREADS"] = "1"
+    env["MKL_NUM_THREADS"] = "1"
+    env["OPENBLAS_NUM_THREADS"] = "1"
+    env["NUMEXPR_NUM_THREADS"] = "1"
 
     log_path = Path("logs") / f"offline_data_{rep_id}.log"
     log_path.parent.mkdir(parents=True, exist_ok=True)

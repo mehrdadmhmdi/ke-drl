@@ -3,11 +3,11 @@
 #SBATCH --account=bfez-dtai-gh
 #SBATCH --job-name=KEDRL_TUNE_SUM
 #SBATCH --output=logs/tune_summary.%j.log
-#SBATCH --time=00:05:00
+#SBATCH --time=00:30:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
-#SBATCH --mem=2g
-#SBATCH --cpus-per-task=1
+#SBATCH --mem=32g
+#SBATCH --cpus-per-task=64
 ##SBATCH --partition=gpuA100x8
 #SBATCH --partition=ghx4
 #SBATCH --mail-type=END,FAIL
@@ -31,6 +31,11 @@ module load python/miniforge3_pytorch/2.7.0
 #conda activate delta_env
 echo $SLURM_JOB_PARTITION
 echo $CUDA_VISIBLE_DEVICES
+
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-64}"
+export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-64}"
+export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK:-64}"
+export NUMEXPR_NUM_THREADS="${SLURM_CPUS_PER_TASK:-64}"
 
 set -euo pipefail
 

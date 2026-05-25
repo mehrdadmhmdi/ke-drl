@@ -6,13 +6,13 @@
 #SBATCH --time=12:00:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
-#SBATCH --mem=32g
-#SBATCH --cpus-per-task=4
+#SBATCH --mem=128g
+#SBATCH --cpus-per-task=64
 ##SBATCH --partition=gpuA100x8
 #SBATCH --partition=ghx4
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-9%10
+#SBATCH --array=0-199%10
 
 echo "Job ID:    ${SLURM_JOB_ID}"
 echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
@@ -32,6 +32,12 @@ module load python/miniforge3_pytorch/2.7.0
 #conda activate delta_env
 echo $SLURM_JOB_PARTITION
 echo $CUDA_VISIBLE_DEVICES
+
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-64}"
+export MKL_NUM_THREADS="${SLURM_CPUS_PER_TASK:-64}"
+export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK:-64}"
+export NUMEXPR_NUM_THREADS="${SLURM_CPUS_PER_TASK:-64}"
+export TORCH_NUM_THREADS="${SLURM_CPUS_PER_TASK:-64}"
 
 set -euo pipefail
 
