@@ -1,0 +1,193 @@
+"""Unconstrained Least-Squares Importance Fitting (uLSIF) estimator.
+
+Implements the kernel-based ratio estimator used to recover the target/behavior
+density ratio eta(x) = pi(a | s) / beta(a | s) entering Phi(x) = K_+ D_eta Gamma(x)
+in draft2.tex. Two basis choices are supported:
+
+- ``basis_source="denominator"`` with ``n_basis=None``: every behavior sample is
+  a basis function (kernel-ridge-flavored uLSIF, the original repository
+  behavior). Cost O(N^3) per fit; cleaner for small N.
+- ``basis_source="numerator"`` (or ``"denominator"``) with ``n_basis=b`` for b < N:
+  classical uLSIF with a randomly sampled subset of b centers (Kanamori et al.
+  2009). Cost O(b^2 N + b^3) per fit; the standard speed-up for large N.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Optional
+
+import torch
+
+from .Probability_Densities import Probability_Densities
+from .matern_kernel import matern_kernel
+
+
+class ULSIFEstimator:
+    def __init__(
+        self,
+        kernel_func=matern_kernel,
+        lambda_reg: float = 1e-3,
+        nu: float = 1.5,
+        length_scale: float = 1.0,
+        sigma: float = 1.0,
+    ):
+        self.kernel_func = kernel_func
+        self.lambda_reg = float(lambda_reg)
+        self.kernel_kwargs = {"nu": float(nu), "length_scale": float(length_scale), "sigma": float(sigma)}
+        self.alpha: Optional[torch.Tensor] = None      # (n_basis, 1)
+        self._X_basis: Optional[torch.Tensor] = None   # (n_basis, d)
+
+    # ------------------------------------------------------------------
+    def _sample_target(
+        self,
+        action_dim: int,
+        s: torch.Tensor,
+        target_p_choice: str,
+        target_p_params: dict,
+    ) -> torch.Tensor:
+        if not target_p_params:
+            raise ValueError("target_p_params must be provided for Torch sampling.")
+        prob_density = Probability_Densities(**target_p_params)
+
+        if s.ndim != 2:
+            raise ValueError("s must be (n, d_s).")
+        n = s.shape[0]
+
+        sample = prob_density.sample_pdf(target_p_choice, s)
+        if sample is None:
+            raise RuntimeError("sample_pdf returned None; check target_p_choice/params.")
+        sample = torch.as_tensor(sample, device=s.device, dtype=s.dtype).reshape(n, -1)
+
+        k = sample.shape[1]
+        if k == action_dim:
+            return sample
+        if k == 1:
+            return sample.repeat(1, action_dim)
+        reps = (action_dim + k - 1) // k
+        return sample.repeat(1, reps)[:, :action_dim]
+
+    # ------------------------------------------------------------------
+    def fit(
+        self,
+        S: torch.Tensor,
+        A: torch.Tensor,
+        target_p_choice: str,
+        target_p_params: dict,
+        *,
+        n_basis: Optional[int] = None,
+        basis_source: str = "denominator",
+        basis_seed: Optional[int] = None,
+        plot: bool = False,
+    ) -> torch.Tensor:
+        """Fit the uLSIF coefficients.
+
+        Args:
+            S, A: behavior samples, both 2D tensors of shape (N, d_s) and (N, d_a).
+            target_p_choice, target_p_params: configuration for sampling the
+                target-policy action used to form the numerator points.
+            n_basis: number of basis centers. ``None`` keeps the original
+                behavior of using every denominator sample as a basis (cost
+                grows as O(N^3)).
+            basis_source: ``"denominator"`` (default) or ``"numerator"``. The
+                latter matches the canonical uLSIF construction.
+            basis_seed: optional integer seed for the basis subsample.
+            plot: optional diagnostic plots; off by default to keep cluster runs
+                lightweight.
+        """
+        if S.ndim != 2 or A.ndim != 2:
+            raise ValueError("S and A must be 2D tensors.")
+        device = S.device
+        dtype = S.dtype
+        n, d_a = A.shape
+
+        X_beta = torch.cat([S, A], dim=1).to(device=device, dtype=dtype)             # denominator
+        a_pi = self._sample_target(d_a, S.to(device, dtype), target_p_choice, target_p_params)
+        X_pi = torch.cat([S.to(device, dtype), a_pi], dim=1)                          # numerator
+
+        basis_source_l = str(basis_source).lower()
+        if basis_source_l not in {"denominator", "numerator"}:
+            raise ValueError("basis_source must be 'denominator' or 'numerator'.")
+        source_pool = X_beta if basis_source_l == "denominator" else X_pi
+
+        if n_basis is None or int(n_basis) <= 0 or int(n_basis) >= source_pool.shape[0]:
+            X_basis = source_pool
+        else:
+            gen = torch.Generator(device="cpu")
+            if basis_seed is not None:
+                gen.manual_seed(int(basis_seed))
+            idx = torch.randperm(source_pool.shape[0], generator=gen)[: int(n_basis)]
+            X_basis = source_pool.index_select(0, idx.to(device))
+
+        self._X_basis = X_basis
+        b = X_basis.shape[0]
+        n_de = X_beta.shape[0]
+        n_nu = X_pi.shape[0]
+
+        K_basis_de = self.kernel_func(X_basis, X_beta, **self.kernel_kwargs)          # (b, n_de)
+        K_basis_nu = self.kernel_func(X_basis, X_pi, **self.kernel_kwargs)            # (b, n_nu)
+
+        H = (K_basis_de @ K_basis_de.transpose(0, 1)) / float(n_de)                   # (b, b)
+        h = K_basis_nu.mean(dim=1)                                                    # (b,)
+
+        I_b = torch.eye(b, device=device, dtype=dtype)
+        A_mat = H + self.lambda_reg * I_b
+        jitter = 1e-8 * torch.trace(A_mat).clamp_min(1.0) / float(b)
+        try:
+            L = torch.linalg.cholesky(A_mat + jitter * I_b)
+            alpha = torch.cholesky_solve(h.unsqueeze(1), L).squeeze(1)
+        except RuntimeError:
+            alpha = torch.linalg.solve(A_mat + jitter * I_b, h)
+
+        self.alpha = alpha.reshape(-1, 1)
+
+        with torch.no_grad():
+            eta_hat = (K_basis_de.transpose(0, 1) @ self.alpha).squeeze(1)
+            neg = (eta_hat < 0).float().mean().item()
+            print(
+                "[uLSIF] basis={}/{} ({}); eta_hat min={:.3e} max={:.3e} neg%={:.2f}".format(
+                    b, source_pool.shape[0], basis_source_l,
+                    eta_hat.min().item(), eta_hat.max().item(), 100.0 * neg,
+                )
+            )
+
+        if plot:
+            import matplotlib.pyplot as plt
+            import seaborn as sns
+
+            Path("plots").mkdir(parents=True, exist_ok=True)
+            with torch.no_grad():
+                eta_train = (K_basis_de.transpose(0, 1) @ self.alpha).squeeze(1)
+            plt.figure()
+            sns.histplot(eta_train.detach().cpu().numpy(), kde=True, bins=30)
+            plt.title(f"uLSIF eta on denominator (target={target_p_choice})")
+            plt.savefig(f"./plots/eta_uLSIF_{S.shape[1]}_{A.shape[1]}.png")
+            plt.close()
+
+            plt.figure()
+            sns.histplot(self.alpha.squeeze(1).detach().cpu().numpy(), kde=True, bins=30)
+            plt.title(f"uLSIF alpha (target={target_p_choice})")
+            plt.savefig(f"./plots/alpha_uLSIF_{S.shape[1]}_{A.shape[1]}.png")
+            plt.close()
+
+        return self.alpha
+
+    # ------------------------------------------------------------------
+    def predict(self, S_new: torch.Tensor, A_new: torch.Tensor) -> torch.Tensor:
+        if self.alpha is None or self._X_basis is None:
+            raise RuntimeError("Call fit() first.")
+        if S_new.ndim != 2 or A_new.ndim != 2:
+            raise ValueError("S_new and A_new must be 2D tensors.")
+        X_new = torch.cat([S_new, A_new], dim=1).to(device=self._X_basis.device, dtype=self._X_basis.dtype)
+        K_basis_new = self.kernel_func(self._X_basis, X_new, **self.kernel_kwargs)    # (b, n_new)
+        return (K_basis_new.transpose(0, 1) @ self.alpha).reshape(-1, 1)              # (n_new, 1)
+
+    # ------------------------------------------------------------------
+    def compute_ess(self, S: torch.Tensor, A: torch.Tensor) -> float:
+        """Effective sample size for the predicted (nonnegative) weights."""
+        eta = self.predict(S, A).reshape(-1)
+        w = torch.clamp(eta, min=0.0)
+        sw = w.sum()
+        if sw <= 0:
+            return 0.0
+        return float(((sw * sw) / (w.pow(2).sum() + 1e-12)).item())
