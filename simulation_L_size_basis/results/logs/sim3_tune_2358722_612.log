@@ -1,0 +1,318 @@
+Job ID:    2359432
+Array idx: 612
+CPUs/node: 64
+Mem/node:  131072
+Using CC = cc 
+Using CXX = CC 
+Using FC = ftn 
+Using F77 = ftn 
+Using F90 = ftn 
+cuda/12.6.1 is deprecated; loading cudatoolkit/25.5_12.9 instead.
+Using CC = /opt/nvidia/hpc_sdk/Linux_aarch64/25.5/compilers/bin/nvc 
+Using CXX = /opt/nvidia/hpc_sdk/Linux_aarch64/25.5/compilers/bin/nvc++ 
+Using FC = /opt/nvidia/hpc_sdk/Linux_aarch64/25.5/compilers/bin/nvfortran 
+Using F77 = /opt/nvidia/hpc_sdk/Linux_aarch64/25.5/compilers/bin/nvfortran 
+Using F90 = /opt/nvidia/hpc_sdk/Linux_aarch64/25.5/compilers/bin/nvfortran 
+Using CC = /opt/nvidia/hpc_sdk/Linux_aarch64/25.5/compilers/bin/nvc 
+Using CXX = /opt/nvidia/hpc_sdk/Linux_aarch64/25.5/compilers/bin/nvc++ 
+Using FC = /opt/nvidia/hpc_sdk/Linux_aarch64/25.5/compilers/bin/nvfortran 
+Using F77 = /opt/nvidia/hpc_sdk/Linux_aarch64/25.5/compilers/bin/nvfortran 
+Using F90 = /opt/nvidia/hpc_sdk/Linux_aarch64/25.5/compilers/bin/nvfortran 
+
+Lmod is automatically replacing "gcc-native/14" with "gcc/14.2.0".
+
+ghx4
+0
+Tuning combo id: 6 / 6
+Offline replicate id: 12 / 99
+Installing ke_drl from git: https://github.com/mehrdadmhmdi/ke-drl.git@main
+Collecting git+https://github.com/mehrdadmhmdi/ke-drl.git@main
+  Cloning https://github.com/mehrdadmhmdi/ke-drl.git (to revision main) to /tmp/pip-req-build-dmxo32c4
+  Running command git clone --filter=blob:none --quiet https://github.com/mehrdadmhmdi/ke-drl.git /tmp/pip-req-build-dmxo32c4
+  Resolved https://github.com/mehrdadmhmdi/ke-drl.git to commit 3c5d570e40ea15b1fbe4817b5f43b64c7b333e82
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Building wheels for collected packages: ke_drl
+  Building wheel for ke_drl (pyproject.toml): started
+  Building wheel for ke_drl (pyproject.toml): finished with status 'done'
+  Created wheel for ke_drl: filename=ke_drl-0.1.0-py3-none-any.whl size=47219 sha256=5a223f84fd1e401f72ef6f1048cecf80ae511bcac3373684045d2640e96eb08d
+  Stored in directory: /tmp/pip-ephem-wheel-cache-xlt0honr/wheels/24/47/ad/9a4ffd3b05d3e90e35ffc6e7324b735b8bfcf5f51aaf29a333
+Successfully built ke_drl
+Installing collected packages: ke_drl
+Successfully installed ke_drl-0.1.0
+Installed ke_drl source: /work/nvme/bfez/mehrdad3/DistRL/simulation_3/runs/sim3_global_2358722_6/.kedrl_site_612/ke_drl/__init__.py
+Tuning combo 6: lambda_B_0.2
+Overrides: {'lambda_B': 0.2}
+RUN: /sw/user/python/miniforge3-pytorch-24.11.3/bin/python3 validate_sim_config.py --params params.yaml
+ke_drl import source: /work/nvme/bfez/mehrdad3/DistRL/simulation_3/runs/sim3_global_2358722_6/.kedrl_site_612/ke_drl/__init__.py
+ke_drl package API OK: prediction weights, RFF operators, rank diagnostics, and best-checkpoint optimizer available
+Policy config OK: behavior=uniform, target=logistic, state_dim=5, action_dim=1
+Note: policy.logistic.theta_scale/theta_std are log-scale coefficients in Probability_Densities.
+Behavior-policy linearized state-process diagnostic: spectral_radius=0.653, offline_burn_in=50
+Replicate config OK: num_replicates=100, benchmark points=10 independent of D_i, loss target points=100
+Transition reduction OK: method=kmeans, raw rows N(T-1)=12000, target rows about 3000, B rows reduced from 12000 to about 3000
+Return-operator approximation OK: method=rff, features=512, exact G avoided for estimated N=12000, m=800, L=100
+Fixed benchmark config rows=4 (benchmark.num_points=10; additional points are support-safe target-policy draws if needed)
+Fixed benchmark point 0: s_star=[0.6, -0.8, 0.7, -0.5, 0.9], a_star=[0.5]
+Fixed benchmark behavior-support interval for configured rows: min_lower=-0.12, max_upper=1.11
+Fixed benchmark target-policy location range: [-0.02, 0.14]
+Reusing shared data from /work/nvme/bfez/mehrdad3/DistRL/simulation_3/runs/sim3_shared_data/data for offline replicate 12.
+RUN: /sw/user/python/miniforge3-pytorch-24.11.3/bin/python3 validate_sim_config.py --params params.yaml --data data/offline_data_12.pt
+ke_drl import source: /work/nvme/bfez/mehrdad3/DistRL/simulation_3/runs/sim3_global_2358722_6/.kedrl_site_612/ke_drl/__init__.py
+ke_drl package API OK: prediction weights, RFF operators, rank diagnostics, and best-checkpoint optimizer available
+Policy config OK: behavior=uniform, target=logistic, state_dim=5, action_dim=1
+Note: policy.logistic.theta_scale/theta_std are log-scale coefficients in Probability_Densities.
+Behavior-policy linearized state-process diagnostic: spectral_radius=0.653, offline_burn_in=50
+Replicate config OK: num_replicates=100, benchmark points=10 independent of D_i, loss target points=100
+Transition reduction OK: method=kmeans, raw rows N(T-1)=12000, target rows about 3000, B rows reduced from 12000 to about 3000
+Return-operator approximation OK: method=rff, features=512, exact G avoided for estimated N=12000, m=800, L=100
+Fixed benchmark config rows=4 (benchmark.num_points=10; additional points are support-safe target-policy draws if needed)
+Fixed benchmark point 0: s_star=[0.6, -0.8, 0.7, -0.5, 0.9], a_star=[0.5]
+Fixed benchmark behavior-support interval for configured rows: min_lower=-0.12, max_upper=1.11
+Fixed benchmark target-policy location range: [-0.02, 0.14]
+Full benchmark support check OK: 10 points, min_lower=-2.177, max_upper=2.05
+observed behavior actions: mean=0.3916, sd=0.6659, q0/q10/q50/q90/q100=[-1.9966546297073364, -0.41271717548370357, 0.3350885659456253, 1.2952340483665468, 2.83158016204834]
+target-policy sampled actions: mean=-0.02103, sd=0.66, q0/q10/q50/q90/q100=[-2.6344127567247697, -0.8641200496820625, -0.018191769583981904, 0.8302382169937513, 2.3947255323737013]
+behavior uniform lower: mean=-0.1213, sd=0.6529, q0/q10/q50/q90/q100=[-2.70717031955719, -0.9562030142545699, -0.11689965575933457, 0.7151460063457491, 2.3457272052764893]
+behavior uniform upper: mean=0.915, sd=0.6415, q0/q10/q50/q90/q100=[-0.9899859011173247, 0.07730842884629967, 0.9175057005137206, 1.7539132383465765, 3.3457272052764893]
+target location inside behavior uniform support: 0.968
+RUN: /sw/user/python/miniforge3-pytorch-24.11.3/bin/python3 main_est.py
+# ================================================================ #
+#   Global KE-DRL estimation for one offline replicate              #
+# ================================================================ #
+Slurm Job ID: 2359432
+Slurm Array ID: 12 -- used as the offline-replicate id
+Offline data id: 12
+ke_drl import source: /work/nvme/bfez/mehrdad3/DistRL/simulation_3/runs/sim3_global_2358722_6/.kedrl_site_612/ke_drl/__init__.py
+Estimator device: cuda (NVIDIA GH200 120GB, capability 9.0); torch CUDA=13.0
+Random seed: 20460524
+Number of offline replicates: 100
+[transition reduction] enabled: original rows=12000, target basis=3000, method=kmeans, device=cuda
+[transition reduction] kmeans iter 1/20, mean center shift=2.7731e-01
+[transition reduction] kmeans iter 5/20, mean center shift=5.7123e-03
+[transition reduction] selected 3078 rows from 12000 transitions (ratio 0.2565); indices saved to data/reduced_transition_indices_12.pt
+Data and parameters loaded.
+offline path: data/offline_data_12.pt
+benchmark true-Z path: data/Z_true.pt
+offline shapes after reduction: s0=(3078, 5), a0=(3078, 1), r0=(3078, 3)
+transition reduction: {'enabled': True, 'method': 'kmeans', 'original_rows': 12000, 'reduced_rows': 3078, 'selected_indices_path': 'data/reduced_transition_indices_12.pt', 'target_basis': 3000, 'compression_ratio': 0.2565}
+fixed benchmark point source: fixed_config_plus_support_safe_target_policy_draws
+benchmark row excluded from this offline data: None
+global loss target set shape: s_star=(100, 5), a_star=(100, 1)
+benchmark true-Z count=10, shape each=(50000, 3)
+target policy: logistic
+behavior policy: uniform
+lambda_Gamma=0.005, lambda_B=0.2, d_r_method=song
+dtype=torch.float32, operator_method=rff, operator_num_features=512
+ridge_mode=rkhs, diagnostic_interval=50
+mass_anchor_lambda=1.0, target_mass=1.0
+uLSIF basis: source=numerator, n_basis=512, lambda_reg=0.005
+optimizer stabilizers: lambda_neg=0.0, max_B_norm=None, eta_clip_min=0.0, eta_clip_max=5.0, normalize_eta=True
+========================================
+Estimating the global KE-DRL mean embedding
+torch device=cuda, dtype=torch.float32
+Data dims: N=3078, L=100, Ds=5, Da=1, Dr=3
+lambda_Gamma=0.005, lambda_B=0.2
+return-operator construction: method=rff, rff_features=512
+[uLSIF] basis=512/3078 (numerator); eta_hat min=-9.382e-01 max=5.304e+00 neg%=4.39
+ESS for eta_plus: 2172.0 / 3078
+eta_plus diagnostics: raw_mean=0.995, raw_min=-0.938, raw_max=5.3; used_mean=1, used_min=0, used_max=4.97
+[timing] Z-grid: 0.03s
+[timing] K_X: 0.00s
+[timing] K_plus: 0.00s
+[timing] k_star: 0.00s
+[timing] Gamma_stack: 0.01s
+[timing] Phi_stack: 0.00s
+[timing] RFF feature sample: 0.00s
+[timing] K_Z RFF: 0.00s
+[timing] G_stack RFF: 0.01s
+[timing] H_stack RFF: 0.01s
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family ['Nimbus Roman'] not found. Falling back to DejaVu Sans.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family ['Nimbus Roman'] not found. Falling back to DejaVu Sans.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family ['Nimbus Roman'] not found. Falling back to DejaVu Sans.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+findfont: Font family 'Nimbus Roman' not found.
+Ridge mode: rkhs; diagnostic interval: 50
+Iter 1/4000 | log_obj=9.894e+00 | log_Bellman_root=3.474e+00 | mass=1.87e+04 | neg=0.00e+00 | grad=2.99e+02
+Iter 400/4000 | log_obj=6.007e+00 | log_Bellman_root=1.530e+00 | mass=3.84e+02 | neg=0.00e+00 | grad=6.03e+03
+Iter 800/4000 | log_obj=6.009e+00 | log_Bellman_root=1.530e+00 | mass=3.85e+02 | neg=0.00e+00 | grad=6.03e+03
+Iter 1200/4000 | log_obj=5.260e+00 | log_Bellman_root=1.158e+00 | mass=1.82e+02 | neg=0.00e+00 | grad=1.10e+04
+Iter 1600/4000 | log_obj=4.504e+00 | log_Bellman_root=7.843e-01 | mass=8.53e+01 | neg=0.00e+00 | grad=4.35e+03
+Iter 2000/4000 | log_obj=2.982e+00 | log_Bellman_root=-1.288e-02 | mass=1.87e+01 | neg=0.00e+00 | grad=5.85e+03
+Iter 2400/4000 | log_obj=1.403e+00 | log_Bellman_root=-8.227e-01 | mass=3.79e+00 | neg=0.00e+00 | grad=3.27e+03
+Iter 2800/4000 | log_obj=1.721e-01 | log_Bellman_root=-1.300e+00 | mass=1.04e+00 | neg=0.00e+00 | grad=1.76e+03
+Iter 3200/4000 | log_obj=1.158e+00 | log_Bellman_root=-9.363e-01 | mass=2.96e+00 | neg=0.00e+00 | grad=1.19e+03
+Iter 3600/4000 | log_obj=-3.457e-02 | log_Bellman_root=-1.530e+00 | mass=8.59e-01 | neg=0.00e+00 | grad=6.03e+02
+Iter 4000/4000 | log_obj=6.659e-02 | log_Bellman_root=-1.487e+00 | mass=9.62e-01 | neg=0.00e+00 | grad=5.61e+02
+Returning best diagnostic checkpoint from step 2500 (objective=5.079e-01, Bellman=5.199e-02).
+Done in 12.72s.
+KE-DRL global estimation is done.
+B_hat shape: (3078, 800)
+B_hat rank diagnostics: {'B_num_rows': 3078, 'B_num_cols': 800, 'B_min_dim': 800, 'B_numerical_rank': 800, 'B_rank_fraction': 1.0, 'B_rank_tolerance': 3.0069126372822552e-05, 'B_stable_rank': 346.3054504394531, 'B_effective_rank': 770.8761265502184, 'B_entropy_rank': 6.647527694702148, 'B_spectral_norm': 0.08194870501756668, 'B_frobenius_norm': 1.525006651878357, 'B_nuclear_norm': 41.636375427246094, 'B_condition_number': 3.1216694607044664, 'B_condition_number_tol': 3.1216694607044664, 'B_smallest_singular_value': 0.02625156380236149, 'B_rank_rel_1em2': 800, 'B_rank_rel_1em3': 800, 'B_rank_rel_1em4': 800}
+Global-loss target mass diagnostics: {'target_mass_mean': 1.5408331155776978, 'target_mass_min': 0.8486172556877136, 'target_mass_max': 2.0805740356445312, 'target_mass_sd': 0.28117066621780396, 'target_mass_rmse_to_target': 0.6089064478874207, 'target_beta_min': -0.0025450862012803555, 'target_beta_max': 0.01999378763139248, 'target_neg_frac_mean': 0.048475000000000004}
+Return dictionary Z_grid shape: (800, 3)
+Replicate 12 risk metrics: {'risk_n_steps_recorded': 81.0, 'risk_n_diagnostics_recorded': 81.0, 'risk_log_obj_initial': 9.894166216207235, 'risk_log_obj_final': 0.06658668788115009, 'risk_log_obj_min': -0.6775042660419833, 'risk_obj_initial': 19814.43945312501, 'risk_obj_final': 1.0688536167144775, 'risk_obj_min': 0.5078829526901245, 'risk_log_obj_drop': 9.827579528326085, 'risk_log_bellman_root_initial': 3.473965416016304, 'risk_log_bellman_root_final': -1.4867008694218613, 'risk_log_bellman_root_min': -1.5296869111695184, 'risk_bellman_root_initial': 32.26443099975586, 'risk_bellman_root_final': 0.22611741721630096, 'risk_bellman_root_min': 0.21660347282886505, 'risk_bellman_initial': 1040.9935077380067, 'risk_bellman_final': 0.05112908636857073, 'risk_bellman_min': 0.04691706444152489, 'risk_log_bellman_root_drop': 4.960666285438165, 'risk_bellman_returned': 0.05199306458234787, 'risk_obj_returned': 0.5078829526901245, 'risk_returned_step': 2500.0, 'offline_data_id': 12, 'benchmark_point_source': 'fixed_config_plus_support_safe_target_policy_draws', 'target_set_size': 100, 'lambda_reg': 0.005, 'lambda_B': 0.2, 'num_steps': 4000, 'transition_reduction_enabled': 1, 'transition_reduction_method': 'kmeans', 'transition_original_rows': 12000, 'transition_reduced_rows': 3078, 'transition_compression_ratio': 0.2565, 'target_mass_mean': 1.5408331155776978, 'target_mass_min': 0.8486172556877136, 'target_mass_max': 2.0805740356445312, 'target_mass_sd': 0.28117066621780396, 'target_mass_rmse_to_target': 0.6089064478874207, 'target_beta_min': -0.0025450862012803555, 'target_beta_max': 0.01999378763139248, 'target_neg_frac_mean': 0.048475000000000004, 'B_num_rows': 3078, 'B_num_cols': 800, 'B_min_dim': 800, 'B_numerical_rank': 800, 'B_rank_fraction': 1.0, 'B_rank_tolerance': 3.0069126372822552e-05, 'B_stable_rank': 346.3054504394531, 'B_effective_rank': 770.8761265502184, 'B_entropy_rank': 6.647527694702148, 'B_spectral_norm': 0.08194870501756668, 'B_frobenius_norm': 1.525006651878357, 'B_nuclear_norm': 41.636375427246094, 'B_condition_number': 3.1216694607044664, 'B_condition_number_tol': 3.1216694607044664, 'B_smallest_singular_value': 0.02625156380236149, 'B_rank_rel_1em2': 800, 'B_rank_rel_1em3': 800, 'B_rank_rel_1em4': 800, 'risk_objective_final_raw': 1.0688536167144775, 'risk_objective_min_raw': 0.5078829526901245, 'risk_objective_max_raw': 19814.439453125, 'risk_bellman_final_raw': 0.051129087805747986, 'risk_bellman_min_raw': 0.046917062252759933, 'risk_bellman_max_raw': 1040.993408203125, 'risk_rkhs_ridge_final_raw': 0.05583995580673218, 'risk_rkhs_ridge_min_raw': 0.05583995580673218, 'risk_rkhs_ridge_max_raw': 23.518722534179688, 'risk_mass_final_raw': 0.961884617805481, 'risk_mass_min_raw': 0.3707670271396637, 'risk_mass_max_raw': 18749.927734375, 'risk_negativity_final_raw': 0.0, 'risk_negativity_min_raw': 0.0, 'risk_negativity_max_raw': 0.0, 'risk_B_norm_final_raw': 1.501140832901001, 'risk_B_norm_min_raw': 1.501140832901001, 'risk_B_norm_max_raw': 1.6398123502731323, 'risk_diagnostic_step_final_raw': 4000.0, 'risk_diagnostic_step_min_raw': 1.0, 'risk_diagnostic_step_max_raw': 4000.0, 'risk_best_step_final_raw': 2500.0, 'risk_best_step_min_raw': 2500.0, 'risk_best_step_max_raw': 2500.0, 'risk_best_objective_final_raw': 0.5078829526901245, 'risk_best_objective_min_raw': 0.5078829526901245, 'risk_best_objective_max_raw': 0.5078829526901245, 'risk_best_bellman_final_raw': 0.05199306458234787, 'risk_best_bellman_min_raw': 0.05199306458234787, 'risk_best_bellman_max_raw': 0.05199306458234787, 'risk_returned_step_final_raw': 2500.0, 'risk_returned_step_min_raw': 2500.0, 'risk_returned_step_max_raw': 2500.0, 'risk_returned_objective_final_raw': 0.5078829526901245, 'risk_returned_objective_min_raw': 0.5078829526901245, 'risk_returned_objective_max_raw': 0.5078829526901245, 'risk_returned_bellman_final_raw': 0.05199306458234787, 'risk_returned_bellman_min_raw': 0.05199306458234787, 'risk_returned_bellman_max_raw': 0.05199306458234787, 'risk_returned_best_checkpoint_final_raw': 1.0, 'risk_returned_best_checkpoint_min_raw': 1.0, 'risk_returned_best_checkpoint_max_raw': 1.0}
+Benchmark 0 evaluation grid shape: (800, 3)
+Replicate 12, benchmark 0 metrics: {'run_id': '12_b0', 'RMSE': 0.1033591394118644, 'MAE': 0.08844245363914524, 'SupNorm': 0.24032826721668243, 'Bias': -0.006544560573092895, 'Corr': 0.6133059031281576, 'deming_slope': 1.621446912830445, 'deming_intercept': -0.1694999329912822, 'beta_sum': 1.1259407997131348, 'beta_l1': 1.2046356201171875, 'beta_l2': 0.0533355176448822, 'beta_min': -0.0016117510385811329, 'beta_max': 0.006508457940071821, 'beta_neg_frac': 0.11125, 'offline_data_id': 12, 'benchmark_id': 0, 'benchmark_point_source': 'fixed_config', 'target_set_size': 100, 'benchmark_z_path': 'data/Z_true.pt', 'projected_bellman_test_risk': 0.022045232355594635, 'oracle_embedding_risk': 0.8583781719207764, 'benchmark_embedding_risk': 0.8583781719207764, 'risk_bellman_final': 0.05112908636857073, 'risk_obj_final': 1.0688536167144775, 'B_num_rows': 3078, 'B_num_cols': 800, 'B_min_dim': 800, 'B_numerical_rank': 800, 'B_rank_fraction': 1.0, 'B_rank_tolerance': 3.0069126372822552e-05, 'B_stable_rank': 346.3054504394531, 'B_effective_rank': 770.8761265502184, 'B_entropy_rank': 6.647527694702148, 'B_spectral_norm': 0.08194870501756668, 'B_frobenius_norm': 1.525006651878357, 'B_nuclear_norm': 41.636375427246094, 'B_condition_number': 3.1216694607044664, 'B_condition_number_tol': 3.1216694607044664, 'B_smallest_singular_value': 0.02625156380236149, 'B_rank_rel_1em2': 800, 'B_rank_rel_1em3': 800, 'B_rank_rel_1em4': 800}
+Saved ./mu/mu_hat.csv shape=(800,)
+Saved ./mu/mu2D_hat_dims01.csv shape=(120, 120)
+Saved ./mu/mu2D_hat_dims01.csv shape=(120, 120)
+Saved plots/replicate_12/mu_3D.png
+Benchmark 1 evaluation grid shape: (800, 3)
+Replicate 12, benchmark 1 metrics: {'run_id': '12_b1', 'RMSE': 0.32117160938053974, 'MAE': 0.2911238478778978, 'SupNorm': 0.5542701780796051, 'Bias': 0.2911238478778978, 'Corr': 0.984110710211963, 'deming_slope': 2.416395693728684, 'deming_intercept': -0.07789578492755067, 'beta_sum': 1.8741122484207153, 'beta_l1': 1.8742963075637817, 'beta_l2': 0.07134680449962616, 'beta_min': -9.202957153320312e-05, 'beta_max': 0.006729290820658207, 'beta_neg_frac': 0.00125, 'offline_data_id': 12, 'benchmark_id': 1, 'benchmark_point_source': 'fixed_config', 'target_set_size': 100, 'benchmark_z_path': 'data/Z_true.pt', 'projected_bellman_test_risk': 0.030003920197486877, 'oracle_embedding_risk': 1.0956108570098877, 'benchmark_embedding_risk': 1.0956108570098877, 'risk_bellman_final': 0.05112908636857073, 'risk_obj_final': 1.0688536167144775, 'B_num_rows': 3078, 'B_num_cols': 800, 'B_min_dim': 800, 'B_numerical_rank': 800, 'B_rank_fraction': 1.0, 'B_rank_tolerance': 3.0069126372822552e-05, 'B_stable_rank': 346.3054504394531, 'B_effective_rank': 770.8761265502184, 'B_entropy_rank': 6.647527694702148, 'B_spectral_norm': 0.08194870501756668, 'B_frobenius_norm': 1.525006651878357, 'B_nuclear_norm': 41.636375427246094, 'B_condition_number': 3.1216694607044664, 'B_condition_number_tol': 3.1216694607044664, 'B_smallest_singular_value': 0.02625156380236149, 'B_rank_rel_1em2': 800, 'B_rank_rel_1em3': 800, 'B_rank_rel_1em4': 800}
+Benchmark 2 evaluation grid shape: (800, 3)
+Replicate 12, benchmark 2 metrics: {'run_id': '12_b2', 'RMSE': 0.2952715025861377, 'MAE': 0.2647071630335995, 'SupNorm': 0.5165931284427643, 'Bias': 0.2646737134052091, 'Corr': 0.9425105918604723, 'deming_slope': 2.409940294991369, 'deming_intercept': -0.11323763876207793, 'beta_sum': 1.8045827150344849, 'beta_l1': 1.8055092096328735, 'beta_l2': 0.06871367990970612, 'beta_min': -0.00046324473805725574, 'beta_max': 0.00654720701277256, 'beta_neg_frac': 0.00125, 'offline_data_id': 12, 'benchmark_id': 2, 'benchmark_point_source': 'fixed_config', 'target_set_size': 100, 'benchmark_z_path': 'data/Z_true.pt', 'projected_bellman_test_risk': 0.03290624916553497, 'oracle_embedding_risk': 1.0512845516204834, 'benchmark_embedding_risk': 1.0512845516204834, 'risk_bellman_final': 0.05112908636857073, 'risk_obj_final': 1.0688536167144775, 'B_num_rows': 3078, 'B_num_cols': 800, 'B_min_dim': 800, 'B_numerical_rank': 800, 'B_rank_fraction': 1.0, 'B_rank_tolerance': 3.0069126372822552e-05, 'B_stable_rank': 346.3054504394531, 'B_effective_rank': 770.8761265502184, 'B_entropy_rank': 6.647527694702148, 'B_spectral_norm': 0.08194870501756668, 'B_frobenius_norm': 1.525006651878357, 'B_nuclear_norm': 41.636375427246094, 'B_condition_number': 3.1216694607044664, 'B_condition_number_tol': 3.1216694607044664, 'B_smallest_singular_value': 0.02625156380236149, 'B_rank_rel_1em2': 800, 'B_rank_rel_1em3': 800, 'B_rank_rel_1em4': 800}
+Benchmark 3 evaluation grid shape: (800, 3)
+Replicate 12, benchmark 3 metrics: {'run_id': '12_b3', 'RMSE': 0.30733596574311883, 'MAE': 0.27299134810455145, 'SupNorm': 0.5577819347381592, 'Bias': 0.27298724993597717, 'Corr': 0.9471511950050183, 'deming_slope': 2.488682524924092, 'deming_intercept': -0.11295376131496326, 'beta_sum': 1.861379623413086, 'beta_l1': 1.861379623413086, 'beta_l2': 0.07067378610372543, 'beta_min': 0.0001455813180655241, 'beta_max': 0.007590992376208305, 'beta_neg_frac': 0.0, 'offline_data_id': 12, 'benchmark_id': 3, 'benchmark_point_source': 'fixed_config', 'target_set_size': 100, 'benchmark_z_path': 'data/Z_true.pt', 'projected_bellman_test_risk': 0.03712443262338638, 'oracle_embedding_risk': 1.0978502035140991, 'benchmark_embedding_risk': 1.0978502035140991, 'risk_bellman_final': 0.05112908636857073, 'risk_obj_final': 1.0688536167144775, 'B_num_rows': 3078, 'B_num_cols': 800, 'B_min_dim': 800, 'B_numerical_rank': 800, 'B_rank_fraction': 1.0, 'B_rank_tolerance': 3.0069126372822552e-05, 'B_stable_rank': 346.3054504394531, 'B_effective_rank': 770.8761265502184, 'B_entropy_rank': 6.647527694702148, 'B_spectral_norm': 0.08194870501756668, 'B_frobenius_norm': 1.525006651878357, 'B_nuclear_norm': 41.636375427246094, 'B_condition_number': 3.1216694607044664, 'B_condition_number_tol': 3.1216694607044664, 'B_smallest_singular_value': 0.02625156380236149, 'B_rank_rel_1em2': 800, 'B_rank_rel_1em3': 800, 'B_rank_rel_1em4': 800}
+Benchmark 4 evaluation grid shape: (800, 3)
+Replicate 12, benchmark 4 metrics: {'run_id': '12_b4', 'RMSE': 0.14515380062997219, 'MAE': 0.11848938944651309, 'SupNorm': 0.40589697659015656, 'Bias': 0.004365056479400664, 'Corr': 0.41829034371413465, 'deming_slope': 2.8679196734322687, 'deming_intercept': -0.4936310770940961, 'beta_sum': 1.5491998195648193, 'beta_l1': 1.6024971008300781, 'beta_l2': 0.0881948322057724, 'beta_min': -0.001275453483685851, 'beta_max': 0.01661805436015129, 'beta_neg_frac': 0.09, 'offline_data_id': 12, 'benchmark_id': 4, 'benchmark_point_source': 'support_safe_target_policy_draw', 'target_set_size': 100, 'benchmark_z_path': 'data/Z_true.pt', 'projected_bellman_test_risk': 0.020234763622283936, 'oracle_embedding_risk': 1.0447556972503662, 'benchmark_embedding_risk': 1.0447556972503662, 'risk_bellman_final': 0.05112908636857073, 'risk_obj_final': 1.0688536167144775, 'B_num_rows': 3078, 'B_num_cols': 800, 'B_min_dim': 800, 'B_numerical_rank': 800, 'B_rank_fraction': 1.0, 'B_rank_tolerance': 3.0069126372822552e-05, 'B_stable_rank': 346.3054504394531, 'B_effective_rank': 770.8761265502184, 'B_entropy_rank': 6.647527694702148, 'B_spectral_norm': 0.08194870501756668, 'B_frobenius_norm': 1.525006651878357, 'B_nuclear_norm': 41.636375427246094, 'B_condition_number': 3.1216694607044664, 'B_condition_number_tol': 3.1216694607044664, 'B_smallest_singular_value': 0.02625156380236149, 'B_rank_rel_1em2': 800, 'B_rank_rel_1em3': 800, 'B_rank_rel_1em4': 800}
+Benchmark 5 evaluation grid shape: (800, 3)
+Replicate 12, benchmark 5 metrics: {'run_id': '12_b5', 'RMSE': 0.25507592156938885, 'MAE': 0.23803645175983776, 'SupNorm': 0.4070233851671219, 'Bias': -0.2379759548172319, 'Corr': 0.1719645382060859, 'deming_slope': 0.028824708951428153, 'deming_intercept': 0.011601143172108228, 'beta_sum': 0.16388903558254242, 'beta_l1': 0.23458120226860046, 'beta_l2': 0.010304706171154976, 'beta_min': -0.0008118525729514658, 'beta_max': 0.0012099125888198614, 'beta_neg_frac': 0.24, 'offline_data_id': 12, 'benchmark_id': 5, 'benchmark_point_source': 'support_safe_target_policy_draw', 'target_set_size': 100, 'benchmark_z_path': 'data/Z_true.pt', 'projected_bellman_test_risk': 0.0005999567802064121, 'oracle_embedding_risk': 0.9688664078712463, 'benchmark_embedding_risk': 0.9688664078712463, 'risk_bellman_final': 0.05112908636857073, 'risk_obj_final': 1.0688536167144775, 'B_num_rows': 3078, 'B_num_cols': 800, 'B_min_dim': 800, 'B_numerical_rank': 800, 'B_rank_fraction': 1.0, 'B_rank_tolerance': 3.0069126372822552e-05, 'B_stable_rank': 346.3054504394531, 'B_effective_rank': 770.8761265502184, 'B_entropy_rank': 6.647527694702148, 'B_spectral_norm': 0.08194870501756668, 'B_frobenius_norm': 1.525006651878357, 'B_nuclear_norm': 41.636375427246094, 'B_condition_number': 3.1216694607044664, 'B_condition_number_tol': 3.1216694607044664, 'B_smallest_singular_value': 0.02625156380236149, 'B_rank_rel_1em2': 800, 'B_rank_rel_1em3': 800, 'B_rank_rel_1em4': 800}
+Benchmark 6 evaluation grid shape: (800, 3)
+Replicate 12, benchmark 6 metrics: {'run_id': '12_b6', 'RMSE': 0.15474215998764684, 'MAE': 0.1220532474044012, 'SupNorm': 0.3561580181121826, 'Bias': 0.10100108645332512, 'Corr': 0.7456968793494089, 'deming_slope': 2.105131332801093, 'deming_intercept': -0.19074384801238348, 'beta_sum': 1.4366791248321533, 'beta_l1': 1.4612311124801636, 'beta_l2': 0.060464248061180115, 'beta_min': -0.0013514766469597816, 'beta_max': 0.0067938934080302715, 'beta_neg_frac': 0.0425, 'offline_data_id': 12, 'benchmark_id': 6, 'benchmark_point_source': 'support_safe_target_policy_draw', 'target_set_size': 100, 'benchmark_z_path': 'data/Z_true.pt', 'projected_bellman_test_risk': 0.012906225398182869, 'oracle_embedding_risk': 0.9105267524719238, 'benchmark_embedding_risk': 0.9105267524719238, 'risk_bellman_final': 0.05112908636857073, 'risk_obj_final': 1.0688536167144775, 'B_num_rows': 3078, 'B_num_cols': 800, 'B_min_dim': 800, 'B_numerical_rank': 800, 'B_rank_fraction': 1.0, 'B_rank_tolerance': 3.0069126372822552e-05, 'B_stable_rank': 346.3054504394531, 'B_effective_rank': 770.8761265502184, 'B_entropy_rank': 6.647527694702148, 'B_spectral_norm': 0.08194870501756668, 'B_frobenius_norm': 1.525006651878357, 'B_nuclear_norm': 41.636375427246094, 'B_condition_number': 3.1216694607044664, 'B_condition_number_tol': 3.1216694607044664, 'B_smallest_singular_value': 0.02625156380236149, 'B_rank_rel_1em2': 800, 'B_rank_rel_1em3': 800, 'B_rank_rel_1em4': 800}
+Benchmark 7 evaluation grid shape: (800, 3)
+Replicate 12, benchmark 7 metrics: {'run_id': '12_b7', 'RMSE': 0.2726703957365455, 'MAE': 0.21344986524432896, 'SupNorm': 0.6192670464515686, 'Bias': 0.2077957484126091, 'Corr': 0.6952673155949519, 'deming_slope': 3.243254864759112, 'deming_intercept': -0.3787821796280612, 'beta_sum': 1.9352716207504272, 'beta_l1': 1.943324089050293, 'beta_l2': 0.08446038514375687, 'beta_min': -0.0010780402226373553, 'beta_max': 0.012981184758245945, 'beta_neg_frac': 0.01375, 'offline_data_id': 12, 'benchmark_id': 7, 'benchmark_point_source': 'support_safe_target_policy_draw', 'target_set_size': 100, 'benchmark_z_path': 'data/Z_true.pt', 'projected_bellman_test_risk': 0.03547614812850952, 'oracle_embedding_risk': 1.223217248916626, 'benchmark_embedding_risk': 1.223217248916626, 'risk_bellman_final': 0.05112908636857073, 'risk_obj_final': 1.0688536167144775, 'B_num_rows': 3078, 'B_num_cols': 800, 'B_min_dim': 800, 'B_numerical_rank': 800, 'B_rank_fraction': 1.0, 'B_rank_tolerance': 3.0069126372822552e-05, 'B_stable_rank': 346.3054504394531, 'B_effective_rank': 770.8761265502184, 'B_entropy_rank': 6.647527694702148, 'B_spectral_norm': 0.08194870501756668, 'B_frobenius_norm': 1.525006651878357, 'B_nuclear_norm': 41.636375427246094, 'B_condition_number': 3.1216694607044664, 'B_condition_number_tol': 3.1216694607044664, 'B_smallest_singular_value': 0.02625156380236149, 'B_rank_rel_1em2': 800, 'B_rank_rel_1em3': 800, 'B_rank_rel_1em4': 800}
+Benchmark 8 evaluation grid shape: (800, 3)
+Replicate 12, benchmark 8 metrics: {'run_id': '12_b8', 'RMSE': 0.0824524519469847, 'MAE': 0.06727279310929589, 'SupNorm': 0.216825932264328, 'Bias': 0.008825848588021473, 'Corr': 0.7486826174664691, 'deming_slope': 1.3695910456646245, 'deming_intercept': -0.0874504685470654, 'beta_sum': 1.1583417654037476, 'beta_l1': 1.2563185691833496, 'beta_l2': 0.05762677639722824, 'beta_min': -0.0017301214393228292, 'beta_max': 0.00851594377309084, 'beta_neg_frac': 0.10875, 'offline_data_id': 12, 'benchmark_id': 8, 'benchmark_point_source': 'support_safe_target_policy_draw', 'target_set_size': 100, 'benchmark_z_path': 'data/Z_true.pt', 'projected_bellman_test_risk': 0.01809706911444664, 'oracle_embedding_risk': 0.8287779688835144, 'benchmark_embedding_risk': 0.8287779688835144, 'risk_bellman_final': 0.05112908636857073, 'risk_obj_final': 1.0688536167144775, 'B_num_rows': 3078, 'B_num_cols': 800, 'B_min_dim': 800, 'B_numerical_rank': 800, 'B_rank_fraction': 1.0, 'B_rank_tolerance': 3.0069126372822552e-05, 'B_stable_rank': 346.3054504394531, 'B_effective_rank': 770.8761265502184, 'B_entropy_rank': 6.647527694702148, 'B_spectral_norm': 0.08194870501756668, 'B_frobenius_norm': 1.525006651878357, 'B_nuclear_norm': 41.636375427246094, 'B_condition_number': 3.1216694607044664, 'B_condition_number_tol': 3.1216694607044664, 'B_smallest_singular_value': 0.02625156380236149, 'B_rank_rel_1em2': 800, 'B_rank_rel_1em3': 800, 'B_rank_rel_1em4': 800}
+Benchmark 9 evaluation grid shape: (800, 3)
+Replicate 12, benchmark 9 metrics: {'run_id': '12_b9', 'RMSE': 0.25578117756239377, 'MAE': 0.21052724168926942, 'SupNorm': 0.5157676637172699, 'Bias': 0.20828738720330875, 'Corr': 0.787479273537439, 'deming_slope': 2.6219434858516406, 'deming_intercept': -0.2227687448119678, 'beta_sum': 1.8796755075454712, 'beta_l1': 1.8955819606781006, 'beta_l2': 0.08388122916221619, 'beta_min': -0.0014003545511513948, 'beta_max': 0.012109274044632912, 'beta_neg_frac': 0.025, 'offline_data_id': 12, 'benchmark_id': 9, 'benchmark_point_source': 'support_safe_target_policy_draw', 'target_set_size': 100, 'benchmark_z_path': 'data/Z_true.pt', 'projected_bellman_test_risk': 0.014492496848106384, 'oracle_embedding_risk': 1.0765013694763184, 'benchmark_embedding_risk': 1.0765013694763184, 'risk_bellman_final': 0.05112908636857073, 'risk_obj_final': 1.0688536167144775, 'B_num_rows': 3078, 'B_num_cols': 800, 'B_min_dim': 800, 'B_numerical_rank': 800, 'B_rank_fraction': 1.0, 'B_rank_tolerance': 3.0069126372822552e-05, 'B_stable_rank': 346.3054504394531, 'B_effective_rank': 770.8761265502184, 'B_entropy_rank': 6.647527694702148, 'B_spectral_norm': 0.08194870501756668, 'B_frobenius_norm': 1.525006651878357, 'B_nuclear_norm': 41.636375427246094, 'B_condition_number': 3.1216694607044664, 'B_condition_number_tol': 3.1216694607044664, 'B_smallest_singular_value': 0.02625156380236149, 'B_rank_rel_1em2': 800, 'B_rank_rel_1em3': 800, 'B_rank_rel_1em4': 800}
+Replicate 12 finished in 22.6s
+Finished combo 6, offline replicate 12.

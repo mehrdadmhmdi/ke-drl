@@ -17,6 +17,7 @@ from sim_utils import bootstrap_kedrl
 bootstrap_kedrl()
 
 from ke_drl.matern_kernel import matern_kernel
+from ke_drl.embedding_metrics import embedding_r2_from_true_samples, empirical_embedding_mmd2
 
 
 def _configure_times_fonts(plt) -> None:
@@ -243,6 +244,12 @@ def export_metrics_tables(
         "projected_bellman_test_risk",
         "oracle_embedding_risk",
         "benchmark_embedding_risk",
+        "embedding_mmd2_to_true",
+        "embedding_baseline_mmd2",
+        "embedding_r2_pointwise",
+        "embedding_r2_global",
+        "embedding_mmd2_total",
+        "embedding_baseline_mmd2_total",
     ]:
         if col not in df:
             continue
@@ -341,6 +348,9 @@ def plot_mu_summary(
         )
     else:
         _plot_four_panel_summary(H, T, run_ids=run_ids, metrics_df=metrics_df, outdir=outdir, plt=plt)
+
+    if metrics_df is not None:
+        plot_embedding_r2_diagnostic(metrics_df=metrics_df, outdir=outdir, plt=plt)
 
     if metrics_df is not None and "benchmark_id" in metrics_df.columns:
         rid_to_benchmark = dict(zip(metrics_df["run_id"].astype(str), metrics_df["benchmark_id"]))
@@ -613,6 +623,139 @@ def plot_all_replicate_mu_diagnostics(
         )
         count += 1
     return count
+
+
+def plot_embedding_r2_diagnostic(
+    *,
+    metrics_df: pd.DataFrame,
+    outdir: str | os.PathLike,
+    plt=None,
+    filename: str = "embedding_r2_summary.png",
+) -> bool:
+    """Plot the RKHS R^2-style diagnostic if MC-truth embedding metrics exist."""
+    needed = {"embedding_mmd2_to_true", "embedding_baseline_mmd2"}
+    if metrics_df is None or not needed.issubset(set(metrics_df.columns)):
+        return False
+
+    close_plt = False
+    if plt is None:
+        try:
+            import matplotlib
+
+            matplotlib.use("Agg", force=True)
+            import matplotlib.pyplot as plt  # type: ignore[no-redef]
+            _configure_times_fonts(plt)
+            close_plt = True
+        except ModuleNotFoundError as exc:
+            print(f"Embedding R2 diagnostic skipped because matplotlib is unavailable: {exc}")
+            return False
+
+    df = metrics_df.copy()
+    numeric_cols = [
+        "embedding_mmd2_to_true",
+        "embedding_baseline_mmd2",
+        "embedding_r2_pointwise",
+        "embedding_r2_global",
+    ]
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    out_path = Path(outdir)
+    out_path.mkdir(parents=True, exist_ok=True)
+    fig, axs = plt.subplots(1, 3, figsize=(15.5, 4.6))
+
+    ax = axs[0]
+    if "embedding_r2_global" in df.columns and df["embedding_r2_global"].notna().any():
+        if "offline_data_id" in df.columns:
+            global_df = df.groupby("offline_data_id", as_index=False)["embedding_r2_global"].first()
+            labels = global_df["offline_data_id"].astype(str).to_numpy()
+            vals = global_df["embedding_r2_global"].to_numpy(dtype=float)
+        else:
+            vals = df["embedding_r2_global"].dropna().drop_duplicates().to_numpy(dtype=float)
+            labels = np.arange(vals.size).astype(str)
+        x = np.arange(vals.size)
+        ax.axhline(0.0, color="0.45", ls="--", lw=1.0)
+        ax.axhline(1.0, color="0.25", ls=":", lw=1.0)
+        ax.scatter(x, vals, s=28, color="#0072B2", alpha=0.85)
+        if vals.size <= 25:
+            ax.set_xticks(x)
+            ax.set_xticklabels(labels, rotation=90 if vals.size > 8 else 0, fontsize=8)
+        else:
+            ax.set_xticks([])
+        ylo, yhi = _robust_limits(vals, [0.0, 1.0], q_low=0, q_high=100, include_zero=True, pad=0.18)
+        ax.set_ylim(ylo, yhi)
+        ax.set_title(r"(a) Global RKHS $R^2$")
+        ax.set_xlabel("Offline replicate")
+        ax.set_ylabel(r"$1-\sum_i \widehat{MMD}_i^2 / \sum_i \|\mu_i-\bar{\mu}\|^2$")
+    else:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "Global embedding R2 unavailable", ha="center", va="center", transform=ax.transAxes)
+    ax.grid(axis="y", alpha=0.25)
+
+    ax = axs[1]
+    scatter_df = df[["embedding_baseline_mmd2", "embedding_mmd2_to_true"]].replace([np.inf, -np.inf], np.nan).dropna()
+    scatter_df = scatter_df[(scatter_df["embedding_baseline_mmd2"] >= 0.0) & (scatter_df["embedding_mmd2_to_true"] >= 0.0)]
+    if not scatter_df.empty:
+        x = scatter_df["embedding_baseline_mmd2"].to_numpy(dtype=float)
+        y = scatter_df["embedding_mmd2_to_true"].to_numpy(dtype=float)
+        ax.scatter(x, y, s=18, color="#D55E00", alpha=0.65, edgecolor="none")
+        positive = x[(x > 0.0) & (y > 0.0)]
+        if positive.size and np.all(x > 0.0) and np.all(y > 0.0):
+            vals = np.concatenate([x, y])
+            lo = float(np.nanmin(vals[vals > 0.0]))
+            hi = float(np.nanmax(vals))
+            ax.set_xscale("log")
+            ax.set_yscale("log")
+            ax.plot([lo, hi], [lo, hi], color="0.25", lw=1.0, ls="--")
+        else:
+            lo, hi = _robust_limits(x, y, q_low=0, q_high=100, include_zero=True)
+            ax.plot([lo, hi], [lo, hi], color="0.25", lw=1.0, ls="--")
+            ax.set_xlim(lo, hi)
+            ax.set_ylim(lo, hi)
+        ax.set_title(r"(b) Error vs truth variance")
+        ax.set_xlabel(r"Baseline $\|\mu_i-\bar{\mu}\|^2$")
+        ax.set_ylabel(r"Model $\widehat{MMD}_i^2$")
+    else:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "MMD2 diagnostic unavailable", ha="center", va="center", transform=ax.transAxes)
+    ax.grid(alpha=0.25)
+
+    ax = axs[2]
+    if "embedding_r2_pointwise" in df.columns and df["embedding_r2_pointwise"].notna().any():
+        if "benchmark_id" in df.columns:
+            box_data, labels = [], []
+            for bid, group in df.groupby("benchmark_id", dropna=False):
+                vals = group["embedding_r2_pointwise"].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
+                if vals.size:
+                    box_data.append(vals)
+                    labels.append(str(int(bid)) if pd.notna(bid) else "NA")
+            if box_data:
+                ax.boxplot(box_data, labels=labels, showmeans=True)
+                ax.tick_params(axis="x", labelrotation=90 if len(labels) > 8 else 0, labelsize=7)
+        else:
+            vals = df["embedding_r2_pointwise"].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
+            ax.boxplot([vals], labels=["all"], showmeans=True)
+        ax.axhline(0.0, color="0.45", ls="--", lw=1.0)
+        ax.axhline(1.0, color="0.25", ls=":", lw=1.0)
+        vals = df["embedding_r2_pointwise"].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
+        ylo, yhi = _robust_limits(vals, [0.0, 1.0], q_low=0, q_high=97.5, include_zero=True, pad=0.18)
+        ax.set_ylim(ylo, yhi)
+        ax.set_title(r"(c) Pointwise RKHS $R^2$")
+        ax.set_xlabel("Evaluation target")
+        ax.set_ylabel(r"$1-\widehat{MMD}_i^2 / \|\mu_i-\bar{\mu}\|^2$")
+    else:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "Pointwise embedding R2 unavailable", ha="center", va="center", transform=ax.transAxes)
+    ax.grid(axis="y", alpha=0.25)
+
+    fig.tight_layout()
+    fig.savefig(out_path / filename, dpi=300)
+    fig.savefig(out_path / Path(filename).with_suffix(".pdf"), dpi=300)
+    plt.close(fig)
+    if close_plt:
+        plt.close("all")
+    return True
 
 
 def _replicate_plot_dir(outdir: Path, run_id: str) -> Path:

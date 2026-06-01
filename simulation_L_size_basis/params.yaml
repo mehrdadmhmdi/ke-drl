@@ -1,0 +1,198 @@
+#====================================#
+#  PARAMETERS FOR SIMULATION RK-DRL #
+#==================================#
+# params.yaml
+# --------------------------------
+n_ids: 3000
+n_timepoints: 3
+offline_burn_in: 50
+state_dim: 5
+reward_dim: 3
+action_dim: 1
+num_grid_points: 400
+random_seed: 20260512
+dtype: float32
+compute:
+  device: cuda
+  require_cuda: true
+# Main consistency experiment: 100 independent offline datasets D_i. The
+# benchmark points are fixed independently of every D_i, while 100 target
+# points define the empirical global Bellman loss for each fitted B_i.
+experiment:
+  num_replicates: 100
+plots:
+  replicate_mode: all
+benchmark:
+  num_points: 50
+  source: fixed_config
+  s_star: [0.6, -0.8, 0.7, -0.5, 0.9]
+  a_star: [0.75]
+  output: Z_true.pt
+  seed_offset: 110000
+#===========================
+# Use a moderate discount so the simulated return distribution does not put
+# excessive mass in far return tails; gamma=0.7 still gives multi-step credit
+# assignment while keeping the benchmark Z support stable.
+gamma_val: 0.7
+lambda_reg: 0.005
+lambda_B: 0.05
+hull_expand_factor: 1
+H_batch_size: 16
+d_r_method: song  #song, bellman, Schuster
+bandwidth: 1.5
+lambda_rec: 0.02
+operator_approximation:
+  method: rff           # 'rff' is the fast default; 'exact' is now vectorized
+  num_features: 512     # higher RFF resolution keeps return-tail diagnostics stable
+  seed_offset: 314159   # for the (Z, R)-only kernel block.
+# Target set for the global X objective in each offline replicate.
+target_set:
+  mode: train_subset
+  num_points: 100
+  seed_offset: 7919
+  exclude_benchmark: True
+mean_embedding_basis:
+  # This is the simulation_3 mean-embedding parameterization. The return grid
+  # still has m=num_grid_points columns, but the fitted matrix is B in R^{L x m}
+  # with L=n_basis basis functions in current X=(S,A) space.
+  method: kmeans
+  n_basis: 3000
+  standardize: true
+  candidate_pool: 60000
+  max_iter: 20
+  batch_size: 16384
+  seed_offset: 4242
+transition_reduction:
+  # Optional computational reduction of the Bellman operator data bank only.
+  # This no longer defines the row dimension of B; mean_embedding_basis does.
+  enabled: false
+  method: kmeans
+  n_basis: 3000
+  standardize: true
+  candidate_pool: 60000
+  max_iter: 20
+  batch_size: 16384
+  seed_offset: 4242
+  include_query_nearest: true
+  verbose: true
+# uLSIF density-ratio options: full-N basis is correct but O(N^3); a
+# numerator-side subsample matches the classical Kanamori (2009) construction
+# and is the recommended setting for the n_ids x n_timepoints values below.
+ratio:
+  n_basis: 500
+  basis_source: numerator
+  basis_seed_offset: 1729
+  lambda_reg: null      # null -> reuse `lambda_reg` above
+#===========================
+optimization:
+  lr: 0.0001
+  weight_decay: 1e-4
+  FP_penalty_lambda: 0.0
+  num_steps: 5000
+  target_batch_size: 100
+  diagnostic_interval: 50
+  # The draft's KE-DRL loss in eq:global_B_objective_impl uses the RKHS
+  # ridge tr(B^T K_X B). 'rkhs' is faithful to the paper; 'frobenius'
+  # was an older speed-up that approximates K_X by I.
+  ridge_mode: rkhs
+  initial_scale: 1e-3
+  use_low_rank: False
+  B_positive: False
+  fixed_point_constraint: False
+  exact_projection: False
+  ortho_lambda: 0.0
+  B_conv: False
+  Sum_one_W: False
+  NonNeg_W: False
+  B_ridge_penalty: False
+  # IDENTIFIABILITY DEVICE. The headline Bellman residual in
+  # eq:global_B_objective_impl is homogeneous in B, so B=0 is a trivial
+  # minimizer. The mass-anchor penalty (1^T u_l - target_mass)^2 fixes the
+  # scale at the target points without imposing a simplex or positivity
+  # constraint. Setting mass_anchor_lambda: 0 disables it; in that case the
+  # optimizer will report the warning that B=0 may be a degenerate minimizer.
+  mass_anchor_lambda: 3.0
+  target_mass: 1.0  # desired 1^T u_l for each target point
+  negativity_penalty_lambda: 0.0
+  max_B_norm: null
+  eta_clip_min: 0.0
+  eta_clip_max: 3.0
+  normalize_eta: True
+#===========================
+kernel:
+  type: matern
+  nu: 5.5
+  length_scale: 1.0
+  sigma: 0.7
+#===========================
+embedding_r2:
+  enabled: true
+  max_truth_points: 512
+  batch_size: 512
+#===========================
+reporting_filter:
+  enabled: true
+  metric: projected_bellman_test_risk
+  comparison: lt
+  threshold: 0.15
+  save_unfiltered_copy: true
+#==========================
+policy:
+  evaluation_Target_policy: logistic    # choose one:  #"uniform" or "gaussian" or "logistic"
+  Behvaioral_policy: uniform
+
+  uniform:
+    name: uniform
+    theta_lower: [0, -0.2, -0.2, -0.8, -0.6]
+    theta_upper: [ 0.2,  0.0,  0.5, -0.1,  0.6]
+    epsilon_lower: [0.0]
+    epsilon_upper: [0.05]
+
+
+  gaussian:
+    name: gaussian
+    theta_mean: [0.8, 0.4, 0.2, 0.3, 0.0]
+    theta_std: [0.4, 0.3, 0.3, 0.5, 0.1]
+    epsilon_mean: [0.0]
+    epsilon_std: [0.05]
+
+  logistic:
+    name: logistic
+    # Probability_Densities treats theta_scale as log-scale coefficients.
+    # Keep the target policy inside the behavior-policy support for overlap.
+    theta_loc: [0.0, -0.2, -0.2, -0.8, -0.6]
+    theta_scale: [0.0, 0.0, 0.0, 0.0, 0.0]
+    epsilon_loc: [0.1]
+    epsilon_scale: [-3.0]
+
+#===========================
+MDP:
+  # (state_dim, state_dim + action_dim) = (5, 6)
+  W_s:
+    - [0.4,  -0.2, 0.1,  0.5,  0.3, -0.1]
+    - [0.03,  0.3, -0.2, 0.15, 0.5,  0.1]
+    - [0.15, -0.05, 0.2, 0.6,  0.5, -0.2]
+    - [0.2,   0.05, -0.1, 0.3, -0.15, 0.2]
+    - [0.1,  -0.3, 0.25, -0.2, 0.4,  0.15]
+  b_s: [0, 0, 0, 0, 0]               # (5,)
+  sigma_s:
+    - [0.1, 0.05, 0.02, 0.01, 0.03]
+    - [0.05, 0.2, 0.03, 0.02, 0.04]
+    - [0.02, 0.03, 0.3, 0.05, 0.01]
+    - [0.01, 0.02, 0.05, 0.25, 0.02]
+    - [0.03, 0.04, 0.01, 0.02, 0.35]
+
+  # (reward_dim, state_dim + action_dim) = (3, 6)
+  W_r:
+    - [0.02, 0.1,  -0.5, 0.3,  -0.1, 0.2]
+    - [0.1, -0.3,   0.2, 0.25, -0.2, 0.4]
+    - [0.15, 0.1,  -0.1, 0.35,  0.1, -0.05]
+  b_r: [0, 0, 0]                     # (3,)
+  sigma_r:
+    - [0.2, 0.01, 0.03]
+    - [0.01, 0.25, 0.02]
+    - [0.03, 0.02, 0.3]
+#===========================
+Z_sim:
+  n_ids: 10000
+  n_timepoints: 300

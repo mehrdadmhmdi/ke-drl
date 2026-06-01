@@ -24,9 +24,11 @@ from sim_utils import (
 )
 from sim_eval import (
     common_eval_grid,
+    embedding_r2_from_true_samples,
     fixed_point_embedding_risk,
     mean_embedding_hat,
     mean_embedding_true,
+    plot_embedding_r2_diagnostic,
     plot_single_mu_diagnostic,
     save_mu_outputs,
 )
@@ -497,6 +499,12 @@ B_hat, history_obj, history_be, pre = KE_DRL(
 
 print("KE-DRL global estimation is done.")
 print("B_hat shape:", tuple(B_hat.shape))
+expected_B_shape = (int(s0.shape[0]), as_int(P["num_grid_points"]))
+if tuple(B_hat.shape) != expected_B_shape:
+    raise RuntimeError(
+        "simulation_large_N_small_T must use the full transition-row mean embedding basis: "
+        f"expected B shape {expected_B_shape} = N(T-1) x m, got {tuple(B_hat.shape)}."
+    )
 B_rank_diag = matrix_rank_diagnostics(B_hat, prefix="B_", return_singular_values=True)
 B_singular_values = B_rank_diag.pop("B_singular_values")
 B_rank_diag = {k: float(v) if isinstance(v, float) else int(v) for k, v in B_rank_diag.items()}
@@ -633,12 +641,32 @@ if tool is not None and history_obj:
         print("RecoverAndPlot.plot_total_loss lacks steps= support; falling back to diagnostic-point x-axis.")
         tool.plot_total_loss(history_obj, outdir=str(plot_dir))
 
+embedding_r2_cfg = dict(P.get("embedding_r2") or {})
+embedding_r2_enabled = as_bool(embedding_r2_cfg.get("enabled", True))
+embedding_r2_max_truth_raw = embedding_r2_cfg.get("max_truth_points", 512)
+embedding_r2_max_truth_points = (
+    None
+    if embedding_r2_max_truth_raw in (None, "None", "none", "null", 0, "0")
+    else as_int(embedding_r2_max_truth_raw)
+)
+embedding_r2_batch_size = as_int(embedding_r2_cfg.get("batch_size", 512))
+print(
+    "Embedding R2 diagnostic: enabled={}, max_truth_points={}, batch_size={}".format(
+        embedding_r2_enabled,
+        embedding_r2_max_truth_points if embedding_r2_max_truth_points is not None else "all",
+        embedding_r2_batch_size,
+    )
+)
+
 Z_true_list = truth["Z_true_list"]
 s_eval_all = truth["s_eval_all"]
 a_eval_all = truth["a_eval_all"]
 point_sources = list(meta_z.get("point_sources") or [benchmark_point_source] * len(Z_true_list))
 multi_benchmark = len(Z_true_list) > 1
 metrics_rows = []
+metrics_run_ids = []
+embedding_r2_betas = []
+embedding_r2_truth = []
 
 for benchmark_id, Z_true_raw in enumerate(Z_true_list):
     s_eval_j = s_eval_all[benchmark_id : benchmark_id + 1]
@@ -715,6 +743,10 @@ for benchmark_id, Z_true_raw in enumerate(Z_true_list):
         extra_metrics=extra_metrics,
     )
     metrics_rows.append(metrics)
+    metrics_run_ids.append(run_id)
+    if embedding_r2_enabled:
+        embedding_r2_betas.append(beta_eval.detach())
+        embedding_r2_truth.append(Z_true_tensor.detach())
     if plot_this_replicate:
         plot_single_mu_diagnostic(
             mu_hat=mu_hat,
@@ -747,6 +779,64 @@ for benchmark_id, Z_true_raw in enumerate(Z_true_list):
             sigma_k=sigma_k,
             outdir=str(plot_dir),
         )
+
+if metrics_rows and embedding_r2_enabled:
+    embedding_r2_summary = embedding_r2_from_true_samples(
+        embedding_r2_betas,
+        Z_grid.detach(),
+        embedding_r2_truth,
+        nu=nu,
+        length_scale=length_scale,
+        sigma=sigma_k,
+        batch_size=embedding_r2_batch_size,
+        max_truth_points=embedding_r2_max_truth_points,
+    )
+    for idx, metrics in enumerate(metrics_rows):
+        metrics.update(
+            {
+                "embedding_mmd2_to_true": embedding_r2_summary["embedding_mmd2_to_true"][idx],
+                "embedding_mmd2_raw_to_true": embedding_r2_summary["embedding_mmd2_raw_to_true"][idx],
+                "embedding_baseline_mmd2": embedding_r2_summary["embedding_baseline_mmd2"][idx],
+                "embedding_baseline_mmd2_raw": embedding_r2_summary["embedding_baseline_mmd2_raw"][idx],
+                "embedding_r2_pointwise": embedding_r2_summary["embedding_r2_pointwise"][idx],
+                "embedding_truth_points_used": embedding_r2_summary["embedding_truth_points_used"][idx],
+                "embedding_r2_global": embedding_r2_summary["embedding_r2_global"],
+                "embedding_mmd2_total": embedding_r2_summary["embedding_mmd2_total"],
+                "embedding_baseline_mmd2_total": embedding_r2_summary["embedding_baseline_mmd2_total"],
+                "embedding_mmd2_mean": embedding_r2_summary["embedding_mmd2_mean"],
+                "embedding_baseline_mmd2_mean": embedding_r2_summary["embedding_baseline_mmd2_mean"],
+            }
+        )
+        pd.DataFrame([metrics]).to_csv(f"metrics/run_metrics_{metrics_run_ids[idx]}.csv", index=False)
+        pd.DataFrame([metrics]).to_csv(f"metrics/global_eval_metrics_{metrics_run_ids[idx]}.csv", index=False)
+    risk_metrics.update(
+        {
+            "embedding_r2_global": embedding_r2_summary["embedding_r2_global"],
+            "embedding_mmd2_total": embedding_r2_summary["embedding_mmd2_total"],
+            "embedding_baseline_mmd2_total": embedding_r2_summary["embedding_baseline_mmd2_total"],
+            "embedding_mmd2_mean": embedding_r2_summary["embedding_mmd2_mean"],
+            "embedding_baseline_mmd2_mean": embedding_r2_summary["embedding_baseline_mmd2_mean"],
+            "embedding_truth_points_used_min": embedding_r2_summary["embedding_truth_points_used_min"],
+            "embedding_truth_points_used_max": embedding_r2_summary["embedding_truth_points_used_max"],
+            "embedding_truth_points_used_mean": embedding_r2_summary["embedding_truth_points_used_mean"],
+        }
+    )
+    pd.DataFrame([risk_metrics]).to_csv(f"metrics/risk_metrics_{offline_data_id}.csv", index=False)
+    if plot_this_replicate:
+        plot_embedding_r2_diagnostic(metrics_df=pd.DataFrame(metrics_rows), outdir=plot_dir)
+    print(
+        "Embedding R2 metrics:",
+        {
+            k: embedding_r2_summary[k]
+            for k in [
+                "embedding_r2_global",
+                "embedding_mmd2_total",
+                "embedding_baseline_mmd2_total",
+                "embedding_truth_points_used_min",
+                "embedding_truth_points_used_max",
+            ]
+        },
+    )
 
 pd.DataFrame(metrics_rows).to_csv(f"metrics/global_eval_metrics_{offline_data_id}.csv", index=False)
 

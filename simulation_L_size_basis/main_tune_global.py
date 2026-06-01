@@ -1,0 +1,314 @@
+from __future__ import annotations
+
+import argparse
+import json
+import math
+import os
+import shutil
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+import pandas as pd
+import yaml
+
+from parallel_offlinedata import run_parallel_offline_data
+
+
+def deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
+    for key, value in src.items():
+        if isinstance(value, dict) and isinstance(dst.get(key), dict):
+            deep_update(dst[key], value)
+        else:
+            dst[key] = value
+    return dst
+
+
+def run_step(args: list[str], *, env: dict[str, str] | None = None) -> None:
+    print("RUN:", " ".join(args), flush=True)
+    subprocess.run(args, check=True, env=env)
+
+
+def _link_or_copy(src: Path, dst: Path) -> None:
+    src = src.resolve()
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    if dst.exists() or dst.is_symlink():
+        return
+    try:
+        os.symlink(src, dst)
+    except FileExistsError:
+        return
+    except OSError:
+        try:
+            os.link(src, dst)
+        except FileExistsError:
+            return
+        except OSError:
+            tmp = dst.with_name(f"{dst.name}.tmp.{os.getpid()}")
+            shutil.copy2(src, tmp)
+            try:
+                os.replace(tmp, dst)
+            finally:
+                if tmp.exists():
+                    tmp.unlink()
+
+
+def stage_shared_data(
+    shared_data_dir: Path,
+    params: dict[str, Any],
+    n_rep: int,
+    *,
+    offline_id: int | None = None,
+) -> None:
+    """Stage one shared offline-data/Z_true bundle into this config run.
+
+    In parallel Slurm mode each array task stages only its own offline dataset
+    plus the common benchmark truth. In local fallback mode all offline
+    datasets are staged.
+    """
+    shared_data_dir = shared_data_dir.resolve()
+    if not shared_data_dir.is_dir():
+        raise FileNotFoundError(f"shared data directory does not exist: {shared_data_dir}")
+
+    benchmark_output = str((params.get("benchmark") or {}).get("output", "Z_true.pt"))
+    if offline_id is None:
+        rep_ids = list(range(n_rep))
+    else:
+        if offline_id < 0 or offline_id >= n_rep:
+            raise ValueError(f"offline_id={offline_id} outside 0,...,{n_rep - 1}.")
+        rep_ids = [offline_id]
+    required = [shared_data_dir / f"offline_data_{rep_id}.pt" for rep_id in rep_ids]
+    required.append(shared_data_dir / benchmark_output)
+    required.append(shared_data_dir / "benchmark_point.csv")
+    missing = [str(path) for path in required if not path.exists()]
+    if missing:
+        preview = "\n".join(missing[:20])
+        raise FileNotFoundError(f"shared data directory is incomplete; missing:\n{preview}")
+
+    data_dir = Path("data")
+    for rep_id in rep_ids:
+        _link_or_copy(shared_data_dir / f"offline_data_{rep_id}.pt", data_dir / f"offline_data_{rep_id}.pt")
+    _link_or_copy(shared_data_dir / benchmark_output, data_dir / benchmark_output)
+    _link_or_copy(shared_data_dir / "benchmark_point.csv", data_dir / "benchmark_point.csv")
+    if offline_id is None:
+        print(f"Reusing shared data from {shared_data_dir} for {n_rep} offline replicates.", flush=True)
+    else:
+        print(f"Reusing shared data from {shared_data_dir} for offline replicate {offline_id}.", flush=True)
+
+
+def write_yaml_atomic(path: Path, params: dict[str, Any]) -> None:
+    tmp = path.with_name(f"{path.name}.tmp.{os.getpid()}")
+    with open(tmp, "w", encoding="utf-8") as f:
+        yaml.safe_dump(params, f, sort_keys=False)
+    os.replace(tmp, path)
+
+
+def write_combo_metadata(combo_id: int, combo_name: str, overrides: dict[str, Any], n_rep: int) -> None:
+    Path("metrics").mkdir(exist_ok=True)
+    meta = {
+        "combo_id": combo_id,
+        "combo_name": combo_name,
+        "overrides": overrides,
+        "num_replicates": n_rep,
+    }
+    tmp = Path("metrics") / f"tuning_combo_metadata.json.tmp.{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(meta, f, sort_keys=True, indent=2)
+    os.replace(tmp, Path("metrics") / "tuning_combo_metadata.json")
+
+
+def expected_curve_count(params: dict[str, Any]) -> int:
+    n_rep = int(params.get("experiment", {}).get("num_replicates", 1))
+    n_bench = int((params.get("benchmark") or {}).get("num_points", 1))
+    return n_rep * n_bench
+
+
+def load_combo(grid_path: Path, combo_id: int) -> tuple[str, dict[str, Any]]:
+    with open(grid_path, "r", encoding="utf-8") as f:
+        grid = yaml.safe_load(f)
+    combos = list(grid.get("combos") or [])
+    if combo_id < 0 or combo_id >= len(combos):
+        raise IndexError(f"combo_id={combo_id} outside tuning grid 0,...,{len(combos) - 1}.")
+    combo = combos[combo_id]
+    return str(combo.get("name", f"combo_{combo_id}")), dict(combo.get("overrides") or {})
+
+
+def aggregate_risk_metrics() -> dict[str, float]:
+    paths = sorted(Path("metrics").glob("risk_metrics_*.csv"))
+    if not paths:
+        return {}
+    df = pd.concat([pd.read_csv(path) for path in paths], ignore_index=True)
+    out: dict[str, float] = {"risk_n_replicates": float(len(df))}
+    for col in [
+        "risk_log_obj_final",
+        "risk_log_obj_min",
+        "risk_obj_final",
+        "risk_obj_min",
+        "risk_log_bellman_root_final",
+        "risk_log_bellman_root_min",
+        "risk_bellman_final",
+        "risk_bellman_min",
+        "risk_log_obj_drop",
+        "risk_log_bellman_root_drop",
+        "target_mass_mean",
+        "target_mass_min",
+        "target_mass_max",
+        "target_mass_sd",
+        "target_mass_rmse_to_target",
+        "target_beta_min",
+        "target_beta_max",
+        "target_neg_frac_mean",
+        "risk_objective_final_raw",
+        "risk_objective_min_raw",
+        "risk_bellman_final_raw",
+        "risk_bellman_min_raw",
+        "risk_rkhs_ridge_final_raw",
+        "risk_mass_final_raw",
+        "risk_negativity_final_raw",
+        "risk_B_norm_final_raw",
+        "transition_original_rows",
+        "transition_reduced_rows",
+        "transition_compression_ratio",
+        "B_num_rows",
+        "B_num_cols",
+        "B_numerical_rank",
+        "B_rank_fraction",
+        "B_stable_rank",
+        "B_effective_rank",
+    ]:
+        if col in df:
+            out[f"{col}_mean"] = float(df[col].mean())
+            out[f"{col}_sd"] = float(df[col].std(ddof=1)) if len(df) > 1 else 0.0
+    return out
+
+
+def write_result(combo_id: int, combo_name: str, overrides: dict[str, Any], elapsed: float) -> None:
+    agg = pd.read_csv("metrics/aggregate_metrics.csv").iloc[0].to_dict()
+    cal = pd.read_csv("metrics/calibration_deming.csv").iloc[0].to_dict()
+    risk = aggregate_risk_metrics()
+    score_true_z = (
+        float(agg["RMSE_mean"])
+        + 0.25 * float(agg["MAE_mean"])
+        + 0.05 * float(agg["SupNorm_mean"])
+        + 0.02 * abs(float(cal["deming_slope"]) - 1.0)
+    )
+    score_projected_bellman = float(agg.get("projected_bellman_test_risk_mean", float("nan")))
+    score_optimizer_risk = float(risk.get("risk_log_obj_final_mean", float("nan")))
+    score_mass = float(risk.get("target_mass_rmse_to_target_mean", float("nan")))
+    score_risk = score_projected_bellman
+    if math.isnan(score_risk):
+        score_risk = score_optimizer_risk
+    score = score_true_z
+    if not math.isnan(score_mass):
+        score += 0.05 * score_mass
+    row = {
+        "combo_id": combo_id,
+        "combo_name": combo_name,
+        "score": score,
+        "score_true_z": score_true_z,
+        "score_risk": score_risk,
+        "score_projected_bellman": score_projected_bellman,
+        "score_optimizer_risk": score_optimizer_risk,
+        "score_mass": score_mass,
+        "elapsed_sec": elapsed,
+        "overrides_json": json.dumps(overrides, sort_keys=True),
+        **agg,
+        **cal,
+        **risk,
+    }
+    Path("metrics").mkdir(exist_ok=True)
+    pd.DataFrame([row]).to_csv("metrics/tuning_result.csv", index=False)
+    print("Tuning result:", row)
+
+
+def mu_plot_command(params: dict[str, Any]) -> list[str]:
+    cmd = [sys.executable, "mu_plot.py"]
+    mode = str((params.get("plots") or {}).get("replicate_mode", "all")).strip().lower()
+    if mode in {"summary", "summary_only", "none", "skip", "false", "no", "0"}:
+        cmd.append("--skip-replicate-plots")
+    return cmd
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--combo-id", type=int, required=True)
+    parser.add_argument("--offline-id", type=int, default=None)
+    parser.add_argument("--aggregate-only", action="store_true")
+    parser.add_argument("--base-params", default="params_tune.yaml")
+    parser.add_argument("--grid", default="tuning_grid.yaml")
+    parser.add_argument("--shared-data-dir", default=None)
+    args = parser.parse_args()
+
+    start = time.time()
+    combo_name, overrides = load_combo(Path(args.grid), args.combo_id)
+    print(f"Tuning combo {args.combo_id}: {combo_name}")
+    print("Overrides:", overrides)
+
+    with open(args.base_params, "r", encoding="utf-8") as f:
+        params = yaml.safe_load(f)
+    params = deep_update(params, overrides)
+    write_yaml_atomic(Path("params.yaml"), params)
+    n_rep = int(params.get("experiment", {}).get("num_replicates", 1))
+    write_combo_metadata(args.combo_id, combo_name, overrides, n_rep)
+
+    if args.aggregate_only:
+        expected = expected_curve_count(params)
+        actual = len(list(Path("mu").glob("mu_hat_*.csv")))
+        if actual < expected:
+            print(
+                f"Warning: aggregating with {actual}/{expected} expected benchmark-replicate curves. "
+                "Some offline jobs may still be missing.",
+                flush=True,
+            )
+        run_step(mu_plot_command(params))
+        write_result(args.combo_id, combo_name, overrides, time.time() - start)
+        return
+
+    run_step([sys.executable, "validate_sim_config.py", "--params", "params.yaml"])
+
+    shared_data_dir = args.shared_data_dir or os.environ.get("KEDRL_SHARED_DATA_DIR")
+    if shared_data_dir:
+        stage_shared_data(Path(shared_data_dir), params, n_rep, offline_id=args.offline_id)
+        validate_id = 0 if args.offline_id is None else args.offline_id
+        run_step(
+            [
+                sys.executable,
+                "validate_sim_config.py",
+                "--params",
+                "params.yaml",
+                "--data",
+                f"data/offline_data_{validate_id}.pt",
+            ]
+        )
+    else:
+        if args.offline_id is not None:
+            raise ValueError("--offline-id requires --shared-data-dir so training uses the common offline/Z_true bundle.")
+        workers = int(
+            params.get("offline_data_workers")
+            or os.environ.get("OFFLINE_DATA_WORKERS")
+            or os.environ.get("SLURM_CPUS_PER_TASK")
+            or os.environ.get("SLURM_CPUS_ON_NODE")
+            or 1
+        )
+        run_parallel_offline_data(n_rep, workers=max(1, min(n_rep, workers)), validate=True)
+        run_step([sys.executable, "main_MonteCarloZ.py"])
+
+    rep_ids = [args.offline_id] if args.offline_id is not None else list(range(n_rep))
+    for rep_id in rep_ids:
+        env = os.environ.copy()
+        env["SLURM_ARRAY_TASK_ID"] = str(rep_id)
+        env["OFFLINE_DATA_ID"] = str(rep_id)
+        run_step([sys.executable, "main_est.py"], env=env)
+
+    if args.offline_id is not None:
+        print(f"Finished combo {args.combo_id}, offline replicate {args.offline_id}.")
+        return
+
+    run_step(mu_plot_command(params))
+    write_result(args.combo_id, combo_name, overrides, time.time() - start)
+
+
+if __name__ == "__main__":
+    main()
