@@ -106,6 +106,8 @@ def _check_kedrl_package_api() -> None:
     missing = []
     if "return_best" not in inspect.signature(KE_DRL).parameters:
         missing.append("KE_DRL(return_best=...)")
+    if "mean_embedding_basis_size" not in inspect.signature(KE_DRL).parameters:
+        missing.append("KE_DRL(mean_embedding_basis_size=...)")
     if "return_best" not in inspect.signature(RKDRL_Optimizer.optimize).parameters:
         missing.append("RKDRL_Optimizer.optimize(return_best=...)")
     if missing:
@@ -242,17 +244,40 @@ def main() -> None:
     )
     n_train = int(P.get("n_ids", 1)) * max(1, int(P.get("n_timepoints", 2)) - 1)
     m_grid = int(P.get("num_grid_points", 1))
+    red_cfg = dict(P.get("transition_reduction") or {})
+    operator_rows = n_train
+    if bool(red_cfg.get("enabled", False)):
+        red_basis = min(int(red_cfg.get("n_basis", red_cfg.get("rank", 2000))), n_train)
+        if red_basis < 1:
+            raise ValueError("transition_reduction.n_basis must be at least 1 when reduction is enabled.")
+        operator_rows = red_basis
+        print(
+            "Transition reduction OK: "
+            f"method={red_cfg.get('method', 'kmeans')}, raw rows N(T-1)={n_train}, "
+            f"target rows about {red_basis}. This is an optional Bellman-operator data-bank reduction, "
+            "not the mean-embedding B parameterization."
+        )
+    basis_cfg = dict(P.get("mean_embedding_basis") or {})
+    basis_raw = basis_cfg.get("n_basis", basis_cfg.get("size"))
+    basis_size = operator_rows if basis_raw in (None, "None", "none", "null", 0, "0") else min(int(basis_raw), operator_rows)
+    if basis_size < 1:
+        raise ValueError("mean_embedding_basis.n_basis must be at least 1 when provided.")
+    print(
+        "Mean-embedding basis OK: "
+        f"method={basis_cfg.get('method', 'full')}, B shape approx ({basis_size}, {m_grid}); "
+        f"raw transition rows N(T-1)={n_train}, operator rows={operator_rows}"
+    )
     op_cfg = dict(P.get("operator_approximation") or {})
     op_method = str(op_cfg.get("method", "exact")).lower()
     if op_method in {"rff", "random_fourier", "random-fourier"}:
         print(
             "Return-operator approximation OK: "
             f"method=rff, features={int(op_cfg.get('num_features', 128))}, "
-            f"exact G avoided for estimated N={n_train}, m={m_grid}, L={target_points}"
+            f"exact G avoided for estimated operator rows={operator_rows}, m={m_grid}, targets={target_points}"
         )
     else:
-        g_terms = target_points * m_grid * m_grid * n_train * n_train
-        h_terms = target_points * m_grid * m_grid * n_train
+        g_terms = target_points * m_grid * m_grid * operator_rows * operator_rows
+        h_terms = target_points * m_grid * m_grid * operator_rows
         print(f"Exact return-operator work estimate: H~{h_terms:.3e}, G~{g_terms:.3e} kernel terms")
         if g_terms > 1e11:
             raise ValueError(

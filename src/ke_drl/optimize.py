@@ -14,8 +14,10 @@ class RKDRL_Optimizer:
 
         u_l^T K_Z u_l - 2 u_l^T H_l v_l + v_l^T G_l v_l,
 
-    where u_l = B^T k_l and v_l = B^T Phi_l, plus the state-action RKHS
-    ridge lambda_B tr(B^T K_X B). The finite-grid mass anchor is enabled by
+    where u_l = B^T psi_l and v_l = B^T varphi_l. The feature vectors
+    psi_l/varphi_l may be full transition-bank kernel columns or reduced
+    conditioning-basis columns of length L. The ridge is
+    lambda_B tr(B^T K_basis B). The finite-grid mass anchor is enabled by
     default to avoid the homogeneous zero-embedding solution.
 
     Large-scale support
@@ -52,13 +54,13 @@ class RKDRL_Optimizer:
             raise ValueError(f"{name} has {value.shape[0]} target slices but expected {L}.")
         return value
 
-    def initial_B(self, n: int, m: int, scale: float = 1e-3, seed: Optional[int] = None) -> torch.Tensor:
+    def initial_B(self, n_features: int, m: int, scale: float = 1e-3, seed: Optional[int] = None) -> torch.Tensor:
         if seed is not None:
             gen = torch.Generator(device="cpu")
             gen.manual_seed(seed)
-            B = torch.randn((n, m), generator=gen, dtype=self.dtype)
+            B = torch.randn((n_features, m), generator=gen, dtype=self.dtype)
             return (scale * B).to(self.dev)
-        return scale * torch.randn((n, m), device=self.dev, dtype=self.dtype)
+        return scale * torch.randn((n_features, m), device=self.dev, dtype=self.dtype)
 
     def closed_form_B0(self, k_sa, Phi, K_Zpi, H_mat, G_mat):
         """Compatibility initializer for older callers.
@@ -222,7 +224,7 @@ class RKDRL_Optimizer:
         if k_mat.shape != phi_mat.shape:
             raise ValueError(f"k_sa and Phi must have the same shape; got {k_mat.shape} and {phi_mat.shape}.")
 
-        N, L = k_mat.shape
+        n_features, L = k_mat.shape
         K_Z = K_Zpi.to(dev, opt_dtype)
 
         # H_mat and G_mat may reside on CPU when they are too large for GPU
@@ -259,19 +261,19 @@ class RKDRL_Optimizer:
         G_stack = G_validated
 
         if K_X is None:
-            K_X = torch.eye(N, device=dev, dtype=opt_dtype)
+            K_X = torch.eye(n_features, device=dev, dtype=opt_dtype)
         else:
             K_X = K_X.to(dev, opt_dtype)
-        if K_X.shape != (N, N):
-            raise ValueError(f"K_X must have shape {(N, N)}, got {tuple(K_X.shape)}.")
+        if K_X.shape != (n_features, n_features):
+            raise ValueError(f"K_X must have shape {(n_features, n_features)}, got {tuple(K_X.shape)}.")
         weights_full = self._normal_target_weights(target_weights, L, device=dev, dtype=opt_dtype)
 
         if initial_B is None:
-            B0 = self.initial_B(N, m, scale=initial_scale, seed=random_seed).to(opt_dtype)
+            B0 = self.initial_B(n_features, m, scale=initial_scale, seed=random_seed).to(opt_dtype)
         else:
             B0 = initial_B.to(dev, opt_dtype)
-        if B0.shape != (N, m):
-            raise ValueError(f"initial_B must have shape {(N, m)}, got {tuple(B0.shape)}.")
+        if B0.shape != (n_features, m):
+            raise ValueError(f"initial_B must have shape {(n_features, m)}, got {tuple(B0.shape)}.")
 
         legacy_active = any([
             fixed_point_constraint, exact_projection, B_conv, Sum_one_W, NonNeg_W,

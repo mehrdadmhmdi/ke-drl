@@ -36,6 +36,7 @@ def deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
 
 def scenario_overrides() -> dict[str, Any]:
     n_timepoints = env_int("SIM2_TIMEPOINTS", 500)
+    basis_n = env_int("SIM2_BASIS_N", env_int("SIM2_REDUCED_N", 1500))
     return {
         "n_ids": env_int("SIM2_N_IDS", 300),
         "n_timepoints": n_timepoints,
@@ -46,10 +47,17 @@ def scenario_overrides() -> dict[str, Any]:
             "n_ids": env_int("SIM2_Z_IDS", 10000),
             "n_timepoints": env_int("SIM2_Z_TIMEPOINTS", n_timepoints),
         },
+        "mean_embedding_basis": {
+            "method": os.environ.get("SIM2_BASIS_METHOD", "kmeans"),
+            "n_basis": basis_n,
+            "candidate_pool": env_int("SIM2_CANDIDATE_POOL", 50000),
+            "max_iter": env_int("SIM2_KMEANS_ITER", 20),
+            "batch_size": env_int("SIM2_REDUCTION_BATCH", 8192),
+        },
         "transition_reduction": {
             "enabled": True,
             "method": os.environ.get("SIM2_REDUCTION_METHOD", "kmeans"),
-            "n_basis": env_int("SIM2_REDUCED_N", 1500),
+            "n_basis": env_int("SIM2_OPERATOR_REDUCED_N", basis_n),
             "candidate_pool": env_int("SIM2_CANDIDATE_POOL", 50000),
             "max_iter": env_int("SIM2_KMEANS_ITER", 20),
             "batch_size": env_int("SIM2_REDUCTION_BATCH", 8192),
@@ -60,11 +68,11 @@ def scenario_overrides() -> dict[str, Any]:
 def scenario_tag(params: dict[str, Any]) -> str:
     if os.environ.get("SIM2_TAG"):
         return os.environ["SIM2_TAG"]
-    red = params.get("transition_reduction") or {}
+    basis = params.get("mean_embedding_basis") or {}
     return "T{}_N{}_r{}".format(
         int(params["n_timepoints"]),
         int(params["n_ids"]),
-        int(red.get("n_basis", 0)),
+        int(basis.get("n_basis", 0)),
     )
 
 
@@ -89,6 +97,7 @@ def prepare(base_params: str) -> None:
             "n_ids": params["n_ids"],
             "n_timepoints": params["n_timepoints"],
             "raw_transition_rows": int(params["n_ids"]) * (int(params["n_timepoints"]) - 1),
+            "mean_embedding_basis": params.get("mean_embedding_basis"),
             "transition_reduction": params.get("transition_reduction"),
             "Z_sim": params.get("Z_sim"),
             "num_replicates": n_rep,

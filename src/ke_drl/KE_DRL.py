@@ -9,8 +9,8 @@ from .Gamma_sa import Gamma_sa
 from .G_sa import compute_G_pytorch_batched, compute_transformed_grid_pytorch
 from .H_sa import H_sa
 from .IS_ULSIF import ULSIFEstimator
-from .Phi_sa import Phi_sa
 from .ZGrid import ZGrid
+from .conditioning_basis import select_conditioning_basis
 from .matern_kernel import matern_kernel
 from .operator_approx import compute_G_rff, compute_H_rff, rff_features, sample_matern_rff
 from .optimize import RKDRL_Optimizer
@@ -62,6 +62,13 @@ def KE_DRL(
     ratio_n_basis: Optional[int] = None,
     ratio_basis_source: str = "denominator",
     ratio_basis_seed: Optional[int] = None,
+    mean_embedding_basis_size: Optional[int] = None,
+    mean_embedding_basis_method: str = "full",
+    mean_embedding_basis_seed: Optional[int] = None,
+    mean_embedding_basis_standardize: bool = True,
+    mean_embedding_basis_candidate_pool: Optional[int] = None,
+    mean_embedding_basis_max_iter: int = 20,
+    mean_embedding_basis_batch_size: int = 8192,
     num_grid_points: int = 200,
     # --- implementation controls ---
     hull_expand_factor: float = 1.8,
@@ -106,8 +113,10 @@ def KE_DRL(
 ):
     """Fit the global KE-DRL mean-embedding map.
 
-    The returned coefficient matrix B_hat has shape (N, m) and defines the
-    conditional embedding weights for any query x through B_hat.T @ k_X(x).
+    The returned coefficient matrix B_hat has shape (L, m), where L is the
+    chosen mean-embedding conditioning basis size. It defines the conditional
+    embedding weights for any query x through B_hat.T @ psi_L(x), with
+    psi_L(x) = k_X(U, x) for the selected basis U.
     The `s_star`/`a_star` inputs are interpreted as the target-point set
     X_star used to fit the global objective. By default the finite-grid
     coefficient mass is anchored at one, matching the non-degeneracy penalty in
@@ -177,7 +186,7 @@ def KE_DRL(
         print("=" * 40)
         print("Estimating the global KE-DRL mean embedding")
         print(f"torch device={dev}, dtype={dtype}")
-        print(f"Data dims: N={s0.shape[0]}, L={s_star.shape[0]}, Ds={Ds}, Da={Da}, Dr={Dr}")
+        print(f"Data dims: N={s0.shape[0]}, targets={s_star.shape[0]}, Ds={Ds}, Da={Da}, Dr={Dr}")
         print(f"lambda_Gamma={lambda_reg}, lambda_B={lambda_B}")
         print(
             "return-operator construction: "
@@ -245,12 +254,47 @@ def KE_DRL(
     stage_t = log_stage("K_X", stage_t)
     K_plus = matern_kernel(s_a, s_a_plus, **x_params)
     stage_t = log_stage("K_plus", stage_t)
-    k_star = matern_kernel(s_a, x_star, **x_params)
-    stage_t = log_stage("k_star", stage_t)
-    Gamma_stack = Gamma_sa(K_X, k_star, lambda_reg)
+    k_star_full = matern_kernel(s_a, x_star, **x_params)
+    stage_t = log_stage("k_star_full", stage_t)
+    Gamma_stack = Gamma_sa(K_X, k_star_full, lambda_reg)
     stage_t = log_stage("Gamma_stack", stage_t)
-    Phi_stack = Phi_sa(K_plus, Gamma_stack, eta_plus)
-    stage_t = log_stage("Phi_stack", stage_t)
+
+    X_basis, basis_indices, basis_meta = select_conditioning_basis(
+        s_a,
+        n_basis=mean_embedding_basis_size,
+        method=mean_embedding_basis_method,
+        seed=mean_embedding_basis_seed if mean_embedding_basis_seed is not None else random_seed,
+        standardize=bool(mean_embedding_basis_standardize),
+        candidate_pool=mean_embedding_basis_candidate_pool,
+        max_iter=int(mean_embedding_basis_max_iter),
+        batch_size=int(mean_embedding_basis_batch_size),
+        device=torch.device(dev),
+        verbose=verbose,
+    )
+    stage_t = log_stage("mean embedding conditioning basis", stage_t)
+    basis_is_full_train = X_basis.shape[0] == s_a.shape[0] and torch.equal(
+        basis_indices.to(device=s_a.device), torch.arange(s_a.shape[0], device=s_a.device)
+    )
+    if basis_is_full_train:
+        K_basis = K_X
+        K_basis_plus = K_plus
+        k_star = k_star_full
+    else:
+        K_basis = matern_kernel(X_basis, X_basis, **x_params)
+        stage_t = log_stage("K_basis", stage_t)
+        K_basis_plus = matern_kernel(X_basis, s_a_plus, **x_params)
+        stage_t = log_stage("K_basis_plus", stage_t)
+        k_star = matern_kernel(X_basis, x_star, **x_params)
+        stage_t = log_stage("k_star_basis", stage_t)
+
+    Phi_stack = K_basis_plus @ (Gamma_stack * eta_plus)
+    stage_t = log_stage("Phi_stack_basis", stage_t)
+    if verbose:
+        print(
+            "Mean-embedding parameterization: "
+            f"B rows L={X_basis.shape[0]} over current X=(S,A) basis; "
+            f"Z-grid columns m={Z.shape[0]}; raw transition rows N={s_a.shape[0]}"
+        )
 
     # ---- Auto-scaling for large problems --------------------------------
     n_data, m_grid = r.shape[0], Z.shape[0]
@@ -358,7 +402,7 @@ def KE_DRL(
         H_mat=H_stack,
         Phi=Phi_stack,
         G_mat=G_stack,
-        K_X=K_X,
+        K_X=K_basis,
         lambda_B=lambda_B,
         target_batch_size=target_batch_size,
         initial_B=None,
@@ -395,12 +439,18 @@ def KE_DRL(
         "Z_grid": Z,
         "X_train": s_a,
         "X_successor": s_a_plus,
+        "X_basis": X_basis,
+        "basis_indices": basis_indices,
+        "mean_embedding_basis": basis_meta,
         "X_star": x_star,
         "K_X": K_X,
-        "K_sa": K_X,          # backward-compatible alias
+        "K_sa": K_basis,      # backward-compatible alias for the fitted feature Gram
         "K_plus": K_plus,
+        "K_basis": K_basis,
+        "K_basis_plus": K_basis_plus,
         "K_Z": K_Z,
         "k_star": k_star,
+        "k_star_full": k_star_full,
         "k_sa": k_star,       # backward-compatible alias
         "Gamma": Gamma_stack,
         "Phi": Phi_stack,

@@ -54,11 +54,19 @@ target_set:
   num_points: 100
   seed_offset: 7919
   exclude_benchmark: True
+mean_embedding_basis:
+  # The fitted mean-embedding map uses B in R^{L x m}. Here L=n_basis and
+  # m=num_grid_points; L is no longer tied to n_ids * (n_timepoints - 1).
+  method: kmeans
+  n_basis: 1500
+  standardize: true
+  candidate_pool: 50000
+  max_iter: 20
+  batch_size: 8192
+  seed_offset: 4242
 transition_reduction:
-  # This is the simulation_2 modification. The raw transition stack has
-  # n_ids * (n_timepoints - 1) rows; KE_DRL then estimates B with one row per
-  # transition. Reduce that transition bank to representative landmarks in
-  # X=(S,A) space before calling the package estimator.
+  # Optional computational reduction of the Bellman operator data bank only.
+  # This no longer defines the row dimension of B; mean_embedding_basis does.
   enabled: true
   method: kmeans
   n_basis: 1500

@@ -736,6 +736,7 @@ def _build_summary_caption(
     kernel = params.get("kernel") or {}
     op = params.get("operator_approximation") or {}
     ratio = params.get("ratio") or {}
+    basis = params.get("mean_embedding_basis") or {}
     policy = params.get("policy") or {}
     n_rep_actual = _actual_replicate_count(metrics_df)
     n_rep_requested = (params.get("experiment") or {}).get("num_replicates")
@@ -765,6 +766,8 @@ def _build_summary_caption(
         f"Kernel/operator: {kernel.get('type')} nu={kernel.get('nu')}, length_scale={kernel.get('length_scale')}, "
         f"sigma={kernel.get('sigma')}; operator={op.get('method')} with {op.get('num_features')} features; "
         f"uLSIF basis={ratio.get('n_basis')}.",
+        f"Mean-embedding basis: method={basis.get('method', 'full')}, L={basis.get('n_basis', 'full')}; "
+        f"B shape is L x {params.get('num_grid_points')}.",
         f"Optimization: steps={opt.get('num_steps')}, lr={opt.get('lr')}, weight_decay={opt.get('weight_decay')}, "
         f"target_batch_size={opt.get('target_batch_size')}, lambda_reg={params.get('lambda_reg')}, "
         f"lambda_B={params.get('lambda_B')}, mass_anchor_lambda={opt.get('mass_anchor_lambda')}, "

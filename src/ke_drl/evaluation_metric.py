@@ -21,18 +21,29 @@ def predict_embedding_weights(
     nu: float,
     length_scale: float,
     sigma: float = 1.0,
+    X_basis: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
-    Compute omega_hat(x; B) = B^T k_X(x) for each query input.
+    Compute omega_hat(x; B) = B^T psi_L(x) for each query input.
+
+    By default psi_L(x) is k_X(X_train, x), which is the historical full
+    transition-bank parameterization. If X_basis is supplied, psi_L(x) is
+    k_X(X_basis, x), so B may have only L rows.
 
     Returns a matrix with shape (n_query, m_Z).
     """
     device = B_hat_torch.device
     dtype = B_hat_torch.dtype
-    X_train = X_train.to(device=device, dtype=dtype)
+    basis = X_train if X_basis is None else X_basis
+    basis = basis.to(device=device, dtype=dtype)
     X_query = X_query.to(device=device, dtype=dtype)
-    K_train_query = matern_kernel(X_train, X_query, nu=nu, length_scale=length_scale, sigma=sigma)
-    return K_train_query.T @ B_hat_torch
+    if basis.shape[0] != B_hat_torch.shape[0]:
+        raise ValueError(
+            "conditioning feature rows must match B_hat_torch first dimension; "
+            f"got basis rows={basis.shape[0]} and B rows={B_hat_torch.shape[0]}."
+        )
+    K_basis_query = matern_kernel(basis, X_query, nu=nu, length_scale=length_scale, sigma=sigma)
+    return K_basis_query.T @ B_hat_torch
 
 
 @torch.no_grad()
@@ -98,6 +109,7 @@ def projected_bellman_test_risk_from_inputs(
     x_nu: float,
     x_length_scale: float,
     x_sigma: float = 1.0,
+    X_basis: torch.Tensor | None = None,
     reduction: str = "mean",
 ) -> torch.Tensor:
     """
@@ -107,22 +119,23 @@ def projected_bellman_test_risk_from_inputs(
     available; this wrapper is for public API use and tests.
     """
     from .Gamma_sa import Gamma_sa
-    from .Phi_sa import Phi_sa
 
     device = B_hat_torch.device
     dtype = B_hat_torch.dtype
     X_train = X_train.to(device=device, dtype=dtype)
     X_successor = X_successor.to(device=device, dtype=dtype)
     X_test = X_test.to(device=device, dtype=dtype)
+    basis = X_train if X_basis is None else X_basis.to(device=device, dtype=dtype)
     eta_plus = eta_plus.to(device=device, dtype=dtype)
 
     K_X = matern_kernel(X_train, X_train, nu=x_nu, length_scale=x_length_scale, sigma=x_sigma)
-    K_plus = matern_kernel(X_train, X_successor, nu=x_nu, length_scale=x_length_scale, sigma=x_sigma)
-    k_test = matern_kernel(X_train, X_test, nu=x_nu, length_scale=x_length_scale, sigma=x_sigma)
-    gamma_test = Gamma_sa(K_X, k_test, lambda_reg)
-    phi_test = Phi_sa(K_plus, gamma_test, eta_plus)
+    K_basis_plus = matern_kernel(basis, X_successor, nu=x_nu, length_scale=x_length_scale, sigma=x_sigma)
+    k_test_full = matern_kernel(X_train, X_test, nu=x_nu, length_scale=x_length_scale, sigma=x_sigma)
+    k_test_basis = matern_kernel(basis, X_test, nu=x_nu, length_scale=x_length_scale, sigma=x_sigma)
+    gamma_test = Gamma_sa(K_X, k_test_full, lambda_reg)
+    phi_test = K_basis_plus @ (gamma_test * eta_plus.reshape(-1, 1))
     return projected_bellman_test_risk(
-        k_current=k_test,
+        k_current=k_test_basis,
         phi_current=phi_test,
         B_hat_torch=B_hat_torch,
         K_Z=K_Z,
@@ -191,22 +204,24 @@ def embedding_test_risk_from_inputs(
     z_length_scale: float,
     x_sigma: float = 1.0,
     z_sigma: float = 1.0,
+    X_basis: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """
-    Oracle Monte Carlo prediction risk using the global map B^T k_X(x_test).
+    Oracle Monte Carlo prediction risk using the global map B^T psi_L(x_test).
     """
     device = B_hat_torch.device
     dtype = B_hat_torch.dtype
     X_train = X_train.to(device=device, dtype=dtype)
+    basis = X_train if X_basis is None else X_basis.to(device=device, dtype=dtype)
     X_test = X_test.to(device=device, dtype=dtype)
     if Z_test.shape[0] != X_test.shape[0]:
         raise ValueError("Z_test and X_test must have the same number of rows.")
-    k_test_train = matern_kernel(
-        X_train, X_test, nu=x_nu, length_scale=x_length_scale, sigma=x_sigma
+    k_test_basis = matern_kernel(
+        basis, X_test, nu=x_nu, length_scale=x_length_scale, sigma=x_sigma
     ).T
     return embedding_test_risk(
         Z_test=Z_test,
-        k_sa_test=k_test_train,
+        k_sa_test=k_test_basis,
         B_hat_torch=B_hat_torch,
         Z_grid=Z_grid,
         nu=z_nu,

@@ -36,7 +36,6 @@ bootstrap_kedrl()
 
 from ke_drl.KE_DRL import KE_DRL
 from ke_drl.Gamma_sa import Gamma_sa
-from ke_drl.Phi_sa import Phi_sa
 from ke_drl.evaluation_metric import predict_embedding_weights, projected_bellman_test_risk
 from ke_drl.matern_kernel import matern_kernel
 from ke_drl.rank_diagnostics import matrix_rank_diagnostics
@@ -214,19 +213,24 @@ def beta_for_evaluation_point(
     x_eval = torch.cat([s_eval.reshape(1, -1), a_eval.reshape(1, -1)], dim=1).to(
         device=B_hat.device, dtype=B_hat.dtype
     )
+    X_basis = pre.get("X_basis", pre["X_train"]).to(device=B_hat.device, dtype=B_hat.dtype)
     method_l = method.lower()
     if method_l == "song":
         return predict_embedding_weights(
-            pre["X_train"], x_eval, B_hat, **pre["x_kernel_params"]
+            pre["X_train"], x_eval, B_hat, X_basis=X_basis, **pre["x_kernel_params"]
         ).reshape(-1)
     if method_l == "bellman":
-        k_eval = matern_kernel(pre["X_train"], x_eval, **pre["x_kernel_params"])
-        gamma_eval = Gamma_sa(pre["K_X"], k_eval, lambda_reg)
-        phi_eval = Phi_sa(pre["K_plus"], gamma_eval, pre["eta_plus"])
+        k_eval_full = matern_kernel(pre["X_train"], x_eval, **pre["x_kernel_params"])
+        gamma_eval = Gamma_sa(pre["K_X"], k_eval_full, lambda_reg)
+        K_basis_plus = pre["K_basis_plus"].to(device=B_hat.device, dtype=B_hat.dtype)
+        eta_plus = pre["eta_plus"].to(device=B_hat.device, dtype=B_hat.dtype)
+        phi_eval = K_basis_plus @ (gamma_eval * eta_plus)
         return (phi_eval.T @ B_hat).reshape(-1)
 
     print(f"Warning: method={method!r} is not supported in the simulation wrapper; using song weights.")
-    return predict_embedding_weights(pre["X_train"], x_eval, B_hat, **pre["x_kernel_params"]).reshape(-1)
+    return predict_embedding_weights(
+        pre["X_train"], x_eval, B_hat, X_basis=X_basis, **pre["x_kernel_params"]
+    ).reshape(-1)
 
 
 @torch.no_grad()
@@ -241,11 +245,15 @@ def projected_bellman_risk_for_evaluation_point(
     x_eval = torch.cat([s_eval.reshape(1, -1), a_eval.reshape(1, -1)], dim=1).to(
         device=B_hat.device, dtype=B_hat.dtype
     )
-    k_eval = matern_kernel(pre["X_train"], x_eval, **pre["x_kernel_params"])
-    gamma_eval = Gamma_sa(pre["K_X"], k_eval, lambda_reg)
-    phi_eval = Phi_sa(pre["K_plus"], gamma_eval, pre["eta_plus"])
+    X_basis = pre.get("X_basis", pre["X_train"]).to(device=B_hat.device, dtype=B_hat.dtype)
+    k_eval_full = matern_kernel(pre["X_train"], x_eval, **pre["x_kernel_params"])
+    k_eval_basis = matern_kernel(X_basis, x_eval, **pre["x_kernel_params"])
+    gamma_eval = Gamma_sa(pre["K_X"], k_eval_full, lambda_reg)
+    K_basis_plus = pre["K_basis_plus"].to(device=B_hat.device, dtype=B_hat.dtype)
+    eta_plus = pre["eta_plus"].to(device=B_hat.device, dtype=B_hat.dtype)
+    phi_eval = K_basis_plus @ (gamma_eval * eta_plus)
     return projected_bellman_test_risk(
-        k_current=k_eval,
+        k_current=k_eval_basis,
         phi_current=phi_eval,
         B_hat_torch=B_hat,
         K_Z=pre["K_Z"],
@@ -365,12 +373,10 @@ def reduce_transition_bank(
     data_dir: Path,
     offline_data_id: int,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, dict[str, Any]]:
-    """Reduce the full N(T-1) transition bank to representative rows.
+    """Optionally reduce the Bellman-operator transition bank.
 
-    The package estimator builds B with one row per transition it receives. For
-    long trajectories, the full transition stack is much larger than needed for
-    a basis expansion. This simulation-2 wrapper replaces the full bank by a
-    representative landmark subset in X=(S,A) space before calling KE_DRL.
+    This is only a memory/runtime device for very long trajectories. The row
+    dimension of B is controlled separately by mean_embedding_basis.
     """
     cfg = dict(params.get("transition_reduction") or {})
     original_n = int(s0.shape[0])
@@ -403,7 +409,7 @@ def reduce_transition_bank(
         X_work = X
 
     print(
-        "[transition reduction] enabled: original rows={}, target basis={}, method={}, device={}".format(
+        "[transition reduction] enabled: original rows={}, target rows={}, method={}, device={}".format(
             original_n, n_basis, method, reduction_device
         ),
         flush=True,
@@ -659,6 +665,30 @@ ratio_lambda_reg = (
     else as_float(ratio_lambda_raw)
 )
 
+basis_cfg = dict(P.get("mean_embedding_basis") or {})
+mean_basis_raw = basis_cfg.get("n_basis", basis_cfg.get("size"))
+mean_embedding_basis_size = (
+    None
+    if mean_basis_raw in (None, "None", "none", "null", 0, "0")
+    else as_int(mean_basis_raw)
+)
+mean_embedding_basis_method = str(basis_cfg.get("method", "full")).lower()
+mean_basis_seed_offset = basis_cfg.get("seed_offset")
+mean_embedding_basis_seed = (
+    None
+    if mean_basis_seed_offset in (None, "None", "none")
+    else seed + as_int(mean_basis_seed_offset)
+)
+mean_embedding_basis_standardize = as_bool(basis_cfg.get("standardize", True))
+mean_embedding_basis_candidate_pool_raw = basis_cfg.get("candidate_pool")
+mean_embedding_basis_candidate_pool = (
+    None
+    if mean_embedding_basis_candidate_pool_raw in (None, "None", "none", "null")
+    else as_int(mean_embedding_basis_candidate_pool_raw)
+)
+mean_embedding_basis_max_iter = as_int(basis_cfg.get("max_iter", 20))
+mean_embedding_basis_batch_size = as_int(basis_cfg.get("batch_size", 8192))
+
 print("Data and parameters loaded.")
 print(f"offline path: {df_path}")
 print(f"benchmark true-Z path: {truth['path']}")
@@ -685,6 +715,13 @@ print(
         ratio_basis_source,
         ratio_n_basis if ratio_n_basis is not None else "full-N",
         ratio_lambda_reg if ratio_lambda_reg is not None else lambda_reg,
+    )
+)
+print(
+    "mean-embedding basis: method={}, n_basis={}, standardize={}".format(
+        mean_embedding_basis_method,
+        mean_embedding_basis_size if mean_embedding_basis_size is not None else "full-N",
+        mean_embedding_basis_standardize,
     )
 )
 print(
@@ -745,6 +782,13 @@ B_hat, history_obj, history_be, pre = KE_DRL(
     ratio_basis_source=ratio_basis_source,
     ratio_basis_seed=ratio_basis_seed,
     ratio_lambda_reg=ratio_lambda_reg,
+    mean_embedding_basis_size=mean_embedding_basis_size,
+    mean_embedding_basis_method=mean_embedding_basis_method,
+    mean_embedding_basis_seed=mean_embedding_basis_seed,
+    mean_embedding_basis_standardize=mean_embedding_basis_standardize,
+    mean_embedding_basis_candidate_pool=mean_embedding_basis_candidate_pool,
+    mean_embedding_basis_max_iter=mean_embedding_basis_max_iter,
+    mean_embedding_basis_batch_size=mean_embedding_basis_batch_size,
     device=compute_device,
     dtype=est_dtype,
     verbose=True,
@@ -793,6 +837,7 @@ torch.save(
         "B_singular_values": B_singular_values,
         "optimizer_diagnostics": pre.get("optimizer_diagnostics", {}),
         "transition_reduction": transition_reduction_meta,
+        "mean_embedding_basis": pre.get("mean_embedding_basis", {}),
     },
     data_dir / f"fit_{offline_data_id}.pt",
 )
@@ -823,6 +868,7 @@ risk_metrics.update(
         "transition_original_rows": transition_reduction_meta.get("original_rows"),
         "transition_reduced_rows": transition_reduction_meta.get("reduced_rows"),
         "transition_compression_ratio": transition_reduction_meta.get("compression_ratio", 1.0),
+        "mean_embedding_basis_size": int(B_hat.shape[0]),
         **target_mass_diag,
         **B_rank_diag,
     }
@@ -862,6 +908,7 @@ config = {
     "transition_reduction_method": transition_reduction_meta.get("method"),
     "transition_original_rows": transition_reduction_meta.get("original_rows"),
     "transition_reduced_rows": transition_reduction_meta.get("reduced_rows"),
+    "mean_embedding_basis_size": int(B_hat.shape[0]),
     "num_grid_points": as_int(P["num_grid_points"]),
     "hull_expand_factor": hull_expand_factor,
     "lambda_reg": lambda_reg,

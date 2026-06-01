@@ -1,4 +1,4 @@
-# Simulation 2: long trajectories with a reduced transition basis
+# Simulation 2: long trajectories with an L-by-m mean-embedding basis
 
 This folder is intentionally separate from `simulation/`.
 
@@ -8,19 +8,23 @@ The raw offline transition bank has
 n_raw = n_ids * (n_timepoints - 1)
 ```
 
-rows after stacking `(S_t,A_t)` and `(S_{t+1},A_{t+1})`. In the original
-pipeline, the learned coefficient matrix has one row per raw transition,
-`B_hat.shape = (n_raw, m_grid)`, which is too large when `T` is 500 or 1000.
+rows after stacking `(S_t,A_t)` and `(S_{t+1},A_{t+1})`. The learned
+coefficient matrix should not have one row per raw transition. It is now
+parameterized as
 
-The simulation-2 modification is in `main_est.py`:
+```text
+B_hat.shape = (L, m_grid)
+```
+
+where `L = mean_embedding_basis.n_basis` is chosen by the user.
+
+The simulation-2 workflow in `main_est.py`:
 
 1. load the full offline data;
 2. select the training target points from the full data;
-3. build `X=(S,A)` for the full transition stack;
-4. select `transition_reduction.n_basis` representative observed rows in
-   standardized `X` space by k-means landmarks;
-5. add nearest observed rows to the training/evaluation target points;
-6. call the unchanged `ke_drl` package on only the reduced transition bank.
+3. optionally reduce the Bellman-operator data bank for memory;
+4. select `mean_embedding_basis.n_basis` current-state-action basis points;
+5. fit `B in R^{L x m}` while keeping `m = num_grid_points`.
 
 For the default setting,
 
@@ -32,8 +36,7 @@ n_basis = 1500
 m_grid = 400
 ```
 
-so `B_hat` is roughly `1500 x 400`, instead of `149700 x 400` or
-`299700 x 400`.
+so `B_hat` is `1500 x 400`, instead of `149700 x 400` or `299700 x 400`.
 
 ## Cluster commands
 
@@ -62,7 +65,8 @@ sbatch --dependency=afterok:$jid_fit --export=ALL,SIM2_STAGE=aggregate,SIM2_TIME
 Useful overrides:
 
 ```bash
-SIM2_REDUCED_N=2500
+SIM2_BASIS_N=2500
+SIM2_OPERATOR_REDUCED_N=2500
 SIM2_NUM_REPLICATES=100
 SIM2_GRID_POINTS=600
 SIM2_Z_IDS=50000
