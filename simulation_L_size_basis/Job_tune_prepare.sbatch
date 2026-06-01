@@ -1,8 +1,8 @@
 #!/bin/bash
 ##SBATCH --account=bfez-delta-gpu
 #SBATCH --account=bfez-dtai-gh
-#SBATCH --job-name=KEDRL_SIM3_DATA
-#SBATCH --output=logs/sim3_data.%j.log
+#SBATCH --job-name=KEDRL_LBASIS_DATA
+#SBATCH --output=logs/lbasis_data.%j.log
 #SBATCH --time=04:00:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
@@ -41,7 +41,7 @@ export NUMEXPR_NUM_THREADS=1
 set -euo pipefail
 
 BASE=$PWD
-RUN="${KEDRL_SHARED_RUN:-$BASE/runs/sim3_shared_data}"
+RUN="${KEDRL_SHARED_RUN:-$BASE/runs/lbasis_shared_data}"
 mkdir -p "$BASE/logs"
 N_REP=$(python3 - <<'PY'
 import yaml
@@ -72,23 +72,40 @@ fi
 
 if [ -d "$RUN" ] && { [ "${KEDRL_PREP_FORCE:-0}" = "1" ] || [ ! -e "$FINGERPRINT_FILE" ] || [ "$(cat "$FINGERPRINT_FILE" 2>/dev/null || true)" != "$CURRENT_FINGERPRINT" ]; }; then
   case "$(realpath "$RUN")" in
-    "$(realpath "$BASE")"/runs/sim3_shared_data*) rm -rf "$RUN" ;;
+    "$(realpath "$BASE")"/runs/lbasis_shared_data*) rm -rf "$RUN" ;;
     *) echo "Refusing to remove unexpected path: $RUN" >&2; exit 1 ;;
   esac
 fi
 
 mkdir -p "$RUN" "$RUN/data" "$RUN/logs"
 
-unset KEDRL_SRC
+KEDRL_REPO_ROOT="${KEDRL_REPO_ROOT:-}"
+if [ -z "$KEDRL_REPO_ROOT" ]; then
+  for candidate in "${BASE:-$PWD}" "${BASE:-$PWD}/.." "$PWD" "$PWD/.." "$PWD/../.." "$PWD/../../.." "${SLURM_SUBMIT_DIR:-$PWD}" "${SLURM_SUBMIT_DIR:-$PWD}/.."; do
+    if [ -d "$candidate/src/ke_drl" ]; then
+      KEDRL_REPO_ROOT="$(cd "$candidate" && pwd)"
+      break
+    fi
+  done
+fi
 KEDRL_GIT_URL="${KEDRL_GIT_URL:-https://github.com/mehrdadmhmdi/ke-drl.git}"
 KEDRL_GIT_REF="${KEDRL_GIT_REF:-main}"
-KEDRL_PIP_TARGET="$RUN/.kedrl_site"
-rm -rf "$KEDRL_PIP_TARGET"
-mkdir -p "$KEDRL_PIP_TARGET"
-echo "Installing ke_drl from git: ${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
-python3 -m pip install --no-cache-dir --upgrade --force-reinstall --no-deps \
-  --target "$KEDRL_PIP_TARGET" "git+${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
-export PYTHONPATH="$KEDRL_PIP_TARGET:${PYTHONPATH:-}"
+if [ -n "$KEDRL_REPO_ROOT" ] && [ -d "$KEDRL_REPO_ROOT/src/ke_drl" ]; then
+  export KEDRL_SRC="$KEDRL_REPO_ROOT/src"
+  export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"
+  echo "Using local ke_drl source: $KEDRL_SRC"
+else
+  unset KEDRL_SRC
+  KEDRL_GIT_URL="${KEDRL_GIT_URL:-https://github.com/mehrdadmhmdi/ke-drl.git}"
+  KEDRL_GIT_REF="${KEDRL_GIT_REF:-main}"
+  KEDRL_PIP_TARGET="$RUN/.kedrl_site"
+  rm -rf "$KEDRL_PIP_TARGET"
+  mkdir -p "$KEDRL_PIP_TARGET"
+  echo "Installing ke_drl from git: ${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
+  python3 -m pip install --no-cache-dir --upgrade --force-reinstall --no-deps \
+    --target "$KEDRL_PIP_TARGET" "git+${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
+  export PYTHONPATH="$KEDRL_PIP_TARGET:${PYTHONPATH:-}"
+fi
 python3 - <<'PY'
 import ke_drl
 print(f"Installed ke_drl source: {ke_drl.__file__}")

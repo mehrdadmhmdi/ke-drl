@@ -7,14 +7,14 @@ import pandas as pd
 
 def main() -> None:
     rows = []
-    for path in sorted(Path("runs").glob("sim3_global_*/metrics/tuning_result.csv")):
+    for path in sorted(Path("runs").glob("lbasis_global_*/metrics/tuning_result.csv")):
         if not (path.parent / "tuning_combo_metadata.json").exists():
             continue
         df = pd.read_csv(path)
         df["run_dir"] = str(path.parents[1])
         rows.append(df)
     if not rows:
-        raise FileNotFoundError("No tuning_result.csv files found under runs/sim3_global_*/metrics/.")
+        raise FileNotFoundError("No tuning_result.csv files found under runs/lbasis_global_*/metrics/.")
     out = pd.concat(rows, ignore_index=True)
     if "score_true_z" not in out and "score" in out:
         out["score_true_z"] = out["score"]

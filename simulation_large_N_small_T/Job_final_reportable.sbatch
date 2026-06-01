@@ -58,16 +58,33 @@ else
 fi
 mkdir -p "$RUN" "$RUN/data" "$RUN/logs" "$RUN/mu" "$RUN/metrics" "$RUN/plots"
 
-unset KEDRL_SRC
+KEDRL_REPO_ROOT="${KEDRL_REPO_ROOT:-}"
+if [ -z "$KEDRL_REPO_ROOT" ]; then
+  for candidate in "${BASE:-$PWD}" "${BASE:-$PWD}/.." "$PWD" "$PWD/.." "$PWD/../.." "$PWD/../../.." "${SLURM_SUBMIT_DIR:-$PWD}" "${SLURM_SUBMIT_DIR:-$PWD}/.."; do
+    if [ -d "$candidate/src/ke_drl" ]; then
+      KEDRL_REPO_ROOT="$(cd "$candidate" && pwd)"
+      break
+    fi
+  done
+fi
 KEDRL_GIT_URL="${KEDRL_GIT_URL:-https://github.com/mehrdadmhmdi/ke-drl.git}"
 KEDRL_GIT_REF="${KEDRL_GIT_REF:-main}"
-KEDRL_PIP_TARGET="$RUN/.kedrl_site_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID:-0}"
-rm -rf "$KEDRL_PIP_TARGET"
-mkdir -p "$KEDRL_PIP_TARGET"
-echo "Installing ke_drl from git: ${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
-python3 -m pip install --no-cache-dir --upgrade --force-reinstall --no-deps \
-  --target "$KEDRL_PIP_TARGET" "git+${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
-export PYTHONPATH="$KEDRL_PIP_TARGET:${PYTHONPATH:-}"
+if [ -n "$KEDRL_REPO_ROOT" ] && [ -d "$KEDRL_REPO_ROOT/src/ke_drl" ]; then
+  export KEDRL_SRC="$KEDRL_REPO_ROOT/src"
+  export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"
+  echo "Using local ke_drl source: $KEDRL_SRC"
+else
+  unset KEDRL_SRC
+  KEDRL_GIT_URL="${KEDRL_GIT_URL:-https://github.com/mehrdadmhmdi/ke-drl.git}"
+  KEDRL_GIT_REF="${KEDRL_GIT_REF:-main}"
+  KEDRL_PIP_TARGET="$RUN/.kedrl_site_${SLURM_JOB_ID}_${SLURM_ARRAY_TASK_ID:-0}"
+  rm -rf "$KEDRL_PIP_TARGET"
+  mkdir -p "$KEDRL_PIP_TARGET"
+  echo "Installing ke_drl from git: ${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
+  python3 -m pip install --no-cache-dir --upgrade --force-reinstall --no-deps \
+    --target "$KEDRL_PIP_TARGET" "git+${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
+  export PYTHONPATH="$KEDRL_PIP_TARGET:${PYTHONPATH:-}"
+fi
 python3 - <<'PY'
 import ke_drl
 print(f"Installed ke_drl source: {ke_drl.__file__}")

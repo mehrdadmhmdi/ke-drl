@@ -1,8 +1,8 @@
 #!/bin/bash
 ##SBATCH --account=bfez-delta-gpu
 #SBATCH --account=bfez-dtai-gh
-#SBATCH --job-name=KEDRL_SIM3_SUM
-#SBATCH --output=logs/sim3_tune_summary.%j.log
+#SBATCH --job-name=KEDRL_LBASIS_SUM
+#SBATCH --output=logs/lbasis_tune_summary.%j.log
 #SBATCH --time=04:00:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
@@ -40,23 +40,40 @@ export NUMEXPR_NUM_THREADS="${SLURM_CPUS_PER_TASK:-64}"
 set -euo pipefail
 
 BASE=$PWD
-unset KEDRL_SRC
+KEDRL_REPO_ROOT="${KEDRL_REPO_ROOT:-}"
+if [ -z "$KEDRL_REPO_ROOT" ]; then
+  for candidate in "${BASE:-$PWD}" "${BASE:-$PWD}/.." "$PWD" "$PWD/.." "$PWD/../.." "$PWD/../../.." "${SLURM_SUBMIT_DIR:-$PWD}" "${SLURM_SUBMIT_DIR:-$PWD}/.."; do
+    if [ -d "$candidate/src/ke_drl" ]; then
+      KEDRL_REPO_ROOT="$(cd "$candidate" && pwd)"
+      break
+    fi
+  done
+fi
 KEDRL_GIT_URL="${KEDRL_GIT_URL:-https://github.com/mehrdadmhmdi/ke-drl.git}"
 KEDRL_GIT_REF="${KEDRL_GIT_REF:-main}"
-KEDRL_PIP_TARGET="$BASE/runs/.kedrl_site_summary_${SLURM_JOB_ID:-manual}"
-rm -rf "$KEDRL_PIP_TARGET"
-mkdir -p "$KEDRL_PIP_TARGET"
-echo "Installing ke_drl from git: ${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
-python3 -m pip install --no-cache-dir --upgrade --force-reinstall --no-deps \
-  --target "$KEDRL_PIP_TARGET" "git+${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
-export PYTHONPATH="$KEDRL_PIP_TARGET:${PYTHONPATH:-}"
+if [ -n "$KEDRL_REPO_ROOT" ] && [ -d "$KEDRL_REPO_ROOT/src/ke_drl" ]; then
+  export KEDRL_SRC="$KEDRL_REPO_ROOT/src"
+  export PYTHONPATH="$KEDRL_SRC:${PYTHONPATH:-}"
+  echo "Using local ke_drl source: $KEDRL_SRC"
+else
+  unset KEDRL_SRC
+  KEDRL_GIT_URL="${KEDRL_GIT_URL:-https://github.com/mehrdadmhmdi/ke-drl.git}"
+  KEDRL_GIT_REF="${KEDRL_GIT_REF:-main}"
+  KEDRL_PIP_TARGET="$BASE/runs/.kedrl_site_summary_${SLURM_JOB_ID:-manual}"
+  rm -rf "$KEDRL_PIP_TARGET"
+  mkdir -p "$KEDRL_PIP_TARGET"
+  echo "Installing ke_drl from git: ${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
+  python3 -m pip install --no-cache-dir --upgrade --force-reinstall --no-deps \
+    --target "$KEDRL_PIP_TARGET" "git+${KEDRL_GIT_URL}@${KEDRL_GIT_REF}"
+  export PYTHONPATH="$KEDRL_PIP_TARGET:${PYTHONPATH:-}"
+fi
 python3 - <<'PY'
 import ke_drl
 print(f"Installed ke_drl source: {ke_drl.__file__}")
 PY
 
 shopt -s nullglob
-for RUN in "$BASE"/runs/sim3_global_*; do
+for RUN in "$BASE"/runs/lbasis_global_*; do
   [ -d "$RUN" ] || continue
   [ -f "$RUN/main_tune_global.py" ] || continue
   grep -q -- "--aggregate-only" "$RUN/main_tune_global.py" || { echo "Skipping $RUN: old tuning driver."; continue; }
