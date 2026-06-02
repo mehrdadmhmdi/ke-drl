@@ -742,32 +742,42 @@ def plot_embedding_quality_diagnostic(
 
     ax = axs[1]
     if mode == "simulation":
-        scatter_df = df[["embedding_truth_signal", "embedding_error_mmd2"]].replace([np.inf, -np.inf], np.nan).dropna()
-        scatter_df = scatter_df[(scatter_df["embedding_truth_signal"] >= 0.0) & (scatter_df["embedding_error_mmd2"] >= 0.0)]
-        if not scatter_df.empty:
-            x = scatter_df["embedding_truth_signal"].to_numpy(dtype=float)
-            y = scatter_df["embedding_error_mmd2"].to_numpy(dtype=float)
-            ax.scatter(x, y, s=18, color="#D55E00", alpha=0.65, edgecolor="none")
-            vals = np.concatenate([x, y])
-            if np.all(x > 0.0) and np.all(y > 0.0):
-                lo = float(np.nanmin(vals[vals > 0.0]))
-                hi = float(np.nanmax(vals))
-                ax.set_xscale("log")
-                ax.set_yscale("log")
-                ax.plot([lo, hi], [lo, hi], color="0.25", lw=1.0, ls="--")
-                ax.set_xlim(lo, hi)
-                ax.set_ylim(lo, hi)
+        rel_vals = df.get("relative_embedding_error", pd.Series(dtype=float)).replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
+        rel_vals = rel_vals[np.isfinite(rel_vals)]
+        if rel_vals.size:
+            plot_vals = rel_vals
+            clipped = False
+            x_max = float(np.nanmax(rel_vals))
+            if rel_vals.size >= 10:
+                x_q99 = float(np.nanpercentile(rel_vals, 99.0))
+                x_min = float(np.nanmin(rel_vals))
+                robust_span = max(x_q99 - x_min, 1e-12)
+                clipped = bool(np.isfinite(x_q99) and x_max > x_q99 + 0.5 * robust_span)
+                if clipped:
+                    plot_vals = rel_vals[rel_vals <= x_q99]
+                    if plot_vals.size == 0:
+                        plot_vals = rel_vals
+                        clipped = False
+            ax.hist(plot_vals, bins=30, color="#D55E00", alpha=0.78, edgecolor="white", linewidth=0.5)
+            ax.axvline(1.0, color="0.25", ls="--", lw=1.1)
+            ax.text(1.0, 0.92, "error = truth signal", transform=ax.get_xaxis_transform(), rotation=90, ha="right", va="top", fontsize=8)
+            xlo = min(0.0, float(np.nanmin(plot_vals)))
+            xhi = max(1.0, float(np.nanmax(plot_vals)))
+            if clipped:
+                xhi = max(1.0, float(np.nanpercentile(rel_vals, 99.0)))
+                ax.text(0.98, 0.95, "x-axis clipped at 99%", transform=ax.transAxes, ha="right", va="top", fontsize=8)
+            if xhi - xlo < 1e-12:
+                xlo, xhi = xlo - 0.5, xhi + 0.5
             else:
-                lo, hi = _robust_limits(x, y, q_low=0, q_high=100, include_zero=True)
-                ax.plot([lo, hi], [lo, hi], color="0.25", lw=1.0, ls="--")
-                ax.set_xlim(lo, hi)
-                ax.set_ylim(lo, hi)
-            ax.set_title("(b) Error vs Truth Signal")
-            ax.set_xlabel(r"Truth signal $\|\mu_i^{MC}\|_H^2$")
-            ax.set_ylabel(r"Embedding error $\|\hat{\mu}_i-\mu_i^{MC}\|_H^2$")
+                pad = 0.06 * (xhi - xlo)
+                xlo, xhi = xlo - pad, xhi + pad
+            ax.set_xlim(xlo, xhi)
+            ax.set_title("(b) Relative Embedding Error Distribution")
+            ax.set_xlabel("Relative embedding error")
+            ax.set_ylabel("Count")
         else:
             ax.axis("off")
-            ax.text(0.5, 0.5, "Embedding signal diagnostic unavailable", ha="center", va="center", transform=ax.transAxes)
+            ax.text(0.5, 0.5, "Relative embedding error unavailable", ha="center", va="center", transform=ax.transAxes)
     else:
         scatter_df = df[["embedding_hat_norm2", "bellman_residual"]].replace([np.inf, -np.inf], np.nan).dropna()
         scatter_df = scatter_df[(scatter_df["embedding_hat_norm2"] >= 0.0) & (scatter_df["bellman_residual"] >= 0.0)]
