@@ -1075,7 +1075,7 @@ def _format_evaluation_points(points: pd.DataFrame | None, params: dict | None) 
         for _, row in points.sort_values("benchmark_id").iterrows():
             bid = int(row["benchmark_id"]) if "benchmark_id" in row and pd.notna(row["benchmark_id"]) else len(pieces)
             pieces.append(
-                f"Evaluation Target Point {bid}: s={_format_vector([row[c] for c in s_cols])}, "
+                f"Test Target Point {bid}: s={_format_vector([row[c] for c in s_cols])}, "
                 f"a={_format_vector([row[c] for c in a_cols])}"
             )
         return "; ".join(pieces)
@@ -1085,8 +1085,8 @@ def _format_evaluation_points(points: pd.DataFrame | None, params: dict | None) 
     a_star = bench.get("a_star") or []
     pieces = []
     for bid, (s, a) in enumerate(zip(s_star, a_star)):
-        pieces.append(f"Evaluation Target Point {bid}: s={_format_vector(s)}, a={_format_vector(a)}")
-    return "; ".join(pieces) if pieces else "Evaluation target point values unavailable"
+        pieces.append(f"Test Target Point {bid}: s={_format_vector(s)}, a={_format_vector(a)}")
+    return "; ".join(pieces) if pieces else "Test target point values unavailable"
 
 
 def _actual_replicate_count(metrics_df: pd.DataFrame | None) -> int | None:
@@ -1152,7 +1152,7 @@ def _build_summary_caption(
         f"burn_in={params.get('offline_burn_in')}, {rep_part}.",
         f"Training targets: {target_set.get('num_points')} points, mode={target_set.get('mode')}, "
         f"exclude_evaluation_targets={target_set.get('exclude_benchmark')}.",
-        f"Evaluation targets: {bench.get('num_points')} points; {_format_evaluation_points(points, params)}.",
+        f"Test targets: {bench.get('num_points')} points; {_format_evaluation_points(points, params)}.",
         f"Monte Carlo truth: {z_sim.get('n_ids')} trajectories, {z_sim.get('n_timepoints')} time points; "
         f"gamma={params.get('gamma_val')}; Z grid={params.get('num_grid_points')}; reward_dim={params.get('reward_dim')}.",
         f"Kernel/operator: {kernel.get('type')} nu={kernel.get('nu')}, length_scale={kernel.get('length_scale')}, "
@@ -1162,7 +1162,7 @@ def _build_summary_caption(
         f"target_batch_size={opt.get('target_batch_size')}, lambda_reg={params.get('lambda_reg')}, "
         f"lambda_B={params.get('lambda_B')}, mass_anchor_lambda={opt.get('mass_anchor_lambda')}, "
         f"eta_clip=[{opt.get('eta_clip_min')}, {opt.get('eta_clip_max')}].",
-        f"Policies: behavior={policy.get('Behvaioral_policy')}, evaluation_target={policy.get('evaluation_Target_policy')}.",
+        f"Policies: behavior={policy.get('Behvaioral_policy')}, test_target={policy.get('evaluation_Target_policy')}.",
     ]
     reporting_filter = params.get("reporting_filter") or params.get("diagnostic_filter") or {}
     if reporting_filter and reporting_filter.get("enabled", True):
@@ -1176,7 +1176,7 @@ def _build_summary_caption(
                     f"; retained {int(float(filter_summary.get('selected_rows')))}"
                     f"/{int(float(filter_summary.get('total_rows')))} benchmark-replicate curves"
                     f" and {int(float(filter_summary.get('selected_benchmarks')))}"
-                    f"/{int(float(filter_summary.get('total_benchmarks')))} evaluation target points"
+                    f"/{int(float(filter_summary.get('total_benchmarks')))} test target points"
                 )
             except (TypeError, ValueError, OverflowError):
                 pass
@@ -1204,6 +1204,42 @@ def _benchmark_palette(n: int) -> list[str]:
     return [base[i % len(base)] for i in range(n)]
 
 
+def _calibration_distance_by_benchmark(
+    H: np.ndarray,
+    T: np.ndarray,
+    *,
+    run_ids: list[str],
+    rid_to_benchmark: dict[str, object],
+    benchmark_ids: list[object],
+) -> dict[object, float]:
+    scores: dict[object, float] = {}
+    for bid in benchmark_ids:
+        idx = [i for i, rid in enumerate(run_ids) if rid_to_benchmark.get(str(rid)) == bid]
+        if not idx:
+            continue
+        H_b = H[np.asarray(idx)]
+        T_b = T[np.asarray(idx)]
+        t_mean = T_b.mean(axis=0)
+        h_mean = H_b.mean(axis=0)
+        if t_mean.size == 0:
+            continue
+        order = np.argsort(t_mean)
+        bins = np.array_split(order, min(10, order.size))
+        bx = np.asarray([float(t_mean[b].mean()) for b in bins if b.size])
+        by_runs = [
+            np.asarray([float(row[b].mean()) for b in bins if b.size])
+            for row in H_b
+        ]
+        if bx.size == 0 or not by_runs:
+            continue
+        by = np.vstack(by_runs).mean(axis=0)
+        diff = by - bx
+        finite = np.isfinite(diff)
+        if finite.any():
+            scores[bid] = float(np.sqrt(np.mean(diff[finite] * diff[finite]) / 2.0))
+    return scores
+
+
 def _plot_multi_benchmark_summary(
     H: np.ndarray,
     T: np.ndarray,
@@ -1213,11 +1249,28 @@ def _plot_multi_benchmark_summary(
     outdir: Path,
     plt,
     caption: str | None = None,
+    benchmark_ids_subset: list[object] | None = None,
+    filename_suffix: str = "",
+    make_top10: bool = True,
 ) -> None:
     metrics = metrics_df.copy()
     metrics["run_id"] = metrics["run_id"].astype(str)
     rid_to_benchmark = dict(zip(metrics["run_id"], metrics["benchmark_id"]))
-    benchmark_ids = sorted(pd.Series(metrics["benchmark_id"]).dropna().unique().tolist())
+    all_benchmark_ids = sorted(pd.Series(metrics["benchmark_id"]).dropna().unique().tolist())
+    scores = _calibration_distance_by_benchmark(
+        H,
+        T,
+        run_ids=run_ids,
+        rid_to_benchmark=rid_to_benchmark,
+        benchmark_ids=all_benchmark_ids,
+    )
+    if benchmark_ids_subset is None:
+        benchmark_ids = all_benchmark_ids
+    else:
+        wanted = set(benchmark_ids_subset)
+        benchmark_ids = [bid for bid in all_benchmark_ids if bid in wanted]
+    if not benchmark_ids:
+        return
     colors = _benchmark_palette(len(benchmark_ids))
     markers = ["o", "s", "^", "D", "P", "X", "v", "<", ">", "h", "*", "p"]
 
@@ -1250,7 +1303,7 @@ def _plot_multi_benchmark_summary(
             markeredgecolor="white",
             markeredgewidth=0.6,
             lw=1.8,
-            label=f"Evaluation Target Point {int(bid)}",
+            label=f"Test Target Point {int(bid)}",
         )
         cal_x.append(bx)
         cal_y.append(by)
@@ -1267,7 +1320,7 @@ def _plot_multi_benchmark_summary(
         ideal_lw=1.2,
         ideal_label="ideal",
     )
-    ax.set_title("(a) Evaluation-target calibration")
+    ax.set_title("(a) Test-Target Calibration")
     ax.set_xlabel("True mean embedding (bin mean)")
     ax.set_ylabel("Estimated mean embedding (bin mean)")
     ax.grid(alpha=0.25)
@@ -1310,7 +1363,7 @@ def _plot_multi_benchmark_summary(
             patch.set_alpha(0.25)
         if column == "Bias":
             ax.axhline(0.0, color="0.35", lw=1.0, ls="--", alpha=0.75)
-        ax.set_xlabel("Evaluation Target Point")
+        ax.set_xlabel("Test Target Point")
         ax.set_ylabel(ylabel)
         ax.set_title(title)
         ylo, yhi = _robust_limits(*box_data, q_low=0, q_high=97.5, include_zero=True)
@@ -1340,40 +1393,42 @@ def _plot_multi_benchmark_summary(
         axs[0, 1],
         "Bias",
         r"Bias across Z grid ($\hat{\mu}-\mu$)",
-        "(b) Bias by Evaluation Target Point",
+        "(b) Bias By Test Target Point",
     )
 
     metric_boxplot(
         axs[0, 2],
         "MAE",
         "MAE across Z grid",
-        "(c) MAE by Evaluation Target Point",
+        "(c) MAE By Test Target Point",
     )
     metric_boxplot(
         axs[1, 0],
         "RMSE",
         "RMSE across Z grid",
-        "(d) RMSE by Evaluation Target Point",
+        "(d) RMSE By Test Target Point",
     )
     metric_boxplot(
         axs[1, 1],
         "projected_bellman_test_risk",
         "Projected Bellman risk",
-        "(e) Projected Bellman risk by Evaluation Target Point",
+        "(e) Projected Bellman Risk By Test Target Point",
     )
 
     ax = axs[1, 2]
+    ecdf_abs_values = []
     for color, bid in zip(colors, benchmark_ids):
         idx = [i for i, rid in enumerate(run_ids) if rid_to_benchmark.get(str(rid)) == bid]
         if not idx:
             continue
         abs_err = np.sort(np.abs(H[np.asarray(idx)] - T[np.asarray(idx)]).reshape(-1))
+        ecdf_abs_values.append(abs_err)
         ecdf = np.arange(1, abs_err.size + 1) / abs_err.size
-        ax.plot(abs_err, ecdf, color=color, lw=1.9, label=f"Evaluation Target Point {int(bid)}")
-    ax.set_title(r"(f) ECDF of $|\hat{\mu}-\mu|$ by Evaluation Target Point")
+        ax.plot(abs_err, ecdf, color=color, lw=1.9, label=f"Test Target Point {int(bid)}")
+    ax.set_title(r"(f) ECDF Of $|\hat{\mu}-\mu|$ By Test Target Point")
     ax.set_xlabel(r"$|\hat{\mu}-\mu|$")
     ax.set_ylabel("ECDF")
-    all_abs = np.abs(H - T).reshape(-1)
+    all_abs = np.concatenate(ecdf_abs_values) if ecdf_abs_values else np.asarray([], dtype=float)
     xmax = float(np.nanpercentile(all_abs, 99.5)) if all_abs.size else 1.0
     if np.isfinite(xmax) and xmax > 0:
         ax.set_xlim(0.0, xmax)
@@ -1394,9 +1449,31 @@ def _plot_multi_benchmark_summary(
         fig.tight_layout(rect=(0.0, 0.23, 1.0, 0.985))
     else:
         fig.tight_layout()
-    fig.savefig(outdir / "mu_summary_UG.png", dpi=300)
-    fig.savefig(outdir / "mu_summary_benchmarks.png", dpi=300)
+    fig.savefig(outdir / f"mu_summary_UG{filename_suffix}.png", dpi=300)
+    fig.savefig(outdir / f"mu_summary_benchmarks{filename_suffix}.png", dpi=300)
     plt.close(fig)
+
+    if make_top10 and benchmark_ids_subset is None and len(all_benchmark_ids) > 10:
+        ranked = [bid for bid in all_benchmark_ids if np.isfinite(scores.get(bid, float("nan")))]
+        ranked.sort(key=lambda bid: (scores[bid], int(bid) if float(bid).is_integer() else float(bid)))
+        top10 = ranked[:10]
+        if top10:
+            top_caption = "Top 10 test target points closest to the ideal line in Panel (a): " + ", ".join(
+                str(int(bid)) if float(bid).is_integer() else str(bid)
+                for bid in top10
+            )
+            _plot_multi_benchmark_summary(
+                H,
+                T,
+                run_ids=run_ids,
+                metrics_df=metrics_df,
+                outdir=outdir,
+                plt=plt,
+                caption=top_caption,
+                benchmark_ids_subset=top10,
+                filename_suffix="_top10",
+                make_top10=False,
+            )
 
 
 def _plot_four_panel_summary(
