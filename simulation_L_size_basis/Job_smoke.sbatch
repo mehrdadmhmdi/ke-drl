@@ -135,5 +135,5 @@ echo "===== SMOKE 4/4: aggregate plots/metrics ====="
 python3 mu_plot.py
 
 echo "Smoke outputs:"
-ls -lh data/fit_0.pt data/Zeval_0.pt metrics/per_run_metrics.csv plots/mu_summary_UG.png plots/embedding_r2_summary.png
+ls -lh data/fit_0.pt data/Zeval_0.pt metrics/per_run_metrics.csv plots/mu_summary_UG.png plots/embedding_quality_summary.png
 echo "SMOKE TEST DONE"

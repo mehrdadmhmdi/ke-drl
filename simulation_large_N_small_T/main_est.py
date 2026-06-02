@@ -24,11 +24,12 @@ from sim_utils import (
 )
 from sim_eval import (
     common_eval_grid,
-    embedding_r2_from_true_samples,
+    embedding_explained_signal_from_true_samples,
     fixed_point_embedding_risk,
     mean_embedding_hat,
     mean_embedding_true,
-    plot_embedding_r2_diagnostic,
+    normalized_bellman_error,
+    plot_embedding_quality_diagnostic,
     plot_single_mu_diagnostic,
     save_mu_outputs,
 )
@@ -641,20 +642,20 @@ if tool is not None and history_obj:
         print("RecoverAndPlot.plot_total_loss lacks steps= support; falling back to diagnostic-point x-axis.")
         tool.plot_total_loss(history_obj, outdir=str(plot_dir))
 
-embedding_r2_cfg = dict(P.get("embedding_r2") or {})
-embedding_r2_enabled = as_bool(embedding_r2_cfg.get("enabled", True))
-embedding_r2_max_truth_raw = embedding_r2_cfg.get("max_truth_points", 512)
-embedding_r2_max_truth_points = (
+embedding_quality_cfg = dict(P.get("embedding_quality") or P.get("embedding_r2") or {})
+embedding_quality_enabled = as_bool(embedding_quality_cfg.get("enabled", True))
+embedding_quality_max_truth_raw = embedding_quality_cfg.get("max_truth_points", 512)
+embedding_quality_max_truth_points = (
     None
-    if embedding_r2_max_truth_raw in (None, "None", "none", "null", 0, "0")
-    else as_int(embedding_r2_max_truth_raw)
+    if embedding_quality_max_truth_raw in (None, "None", "none", "null", 0, "0")
+    else as_int(embedding_quality_max_truth_raw)
 )
-embedding_r2_batch_size = as_int(embedding_r2_cfg.get("batch_size", 512))
+embedding_quality_batch_size = as_int(embedding_quality_cfg.get("batch_size", 512))
 print(
-    "Embedding R2 diagnostic: enabled={}, max_truth_points={}, batch_size={}".format(
-        embedding_r2_enabled,
-        embedding_r2_max_truth_points if embedding_r2_max_truth_points is not None else "all",
-        embedding_r2_batch_size,
+    "Embedding quality diagnostic: enabled={}, max_truth_points={}, batch_size={}".format(
+        embedding_quality_enabled,
+        embedding_quality_max_truth_points if embedding_quality_max_truth_points is not None else "all",
+        embedding_quality_batch_size,
     )
 )
 
@@ -665,8 +666,9 @@ point_sources = list(meta_z.get("point_sources") or [benchmark_point_source] * l
 multi_benchmark = len(Z_true_list) > 1
 metrics_rows = []
 metrics_run_ids = []
-embedding_r2_betas = []
-embedding_r2_truth = []
+embedding_quality_betas = []
+embedding_quality_truth = []
+embedding_quality_bellman_residuals = []
 
 for benchmark_id, Z_true_raw in enumerate(Z_true_list):
     s_eval_j = s_eval_all[benchmark_id : benchmark_id + 1]
@@ -744,9 +746,10 @@ for benchmark_id, Z_true_raw in enumerate(Z_true_list):
     )
     metrics_rows.append(metrics)
     metrics_run_ids.append(run_id)
-    if embedding_r2_enabled:
-        embedding_r2_betas.append(beta_eval.detach())
-        embedding_r2_truth.append(Z_true_tensor.detach())
+    if embedding_quality_enabled:
+        embedding_quality_betas.append(beta_eval.detach())
+        embedding_quality_truth.append(Z_true_tensor.detach())
+        embedding_quality_bellman_residuals.append(float(projected_bellman_test.detach().cpu()))
     if plot_this_replicate:
         plot_single_mu_diagnostic(
             mu_hat=mu_hat,
@@ -780,60 +783,91 @@ for benchmark_id, Z_true_raw in enumerate(Z_true_list):
             outdir=str(plot_dir),
         )
 
-if metrics_rows and embedding_r2_enabled:
-    embedding_r2_summary = embedding_r2_from_true_samples(
-        embedding_r2_betas,
+if metrics_rows and embedding_quality_enabled:
+    embedding_quality_summary = embedding_explained_signal_from_true_samples(
+        embedding_quality_betas,
         Z_grid.detach(),
-        embedding_r2_truth,
+        embedding_quality_truth,
         nu=nu,
         length_scale=length_scale,
         sigma=sigma_k,
-        batch_size=embedding_r2_batch_size,
-        max_truth_points=embedding_r2_max_truth_points,
+        batch_size=embedding_quality_batch_size,
+        max_truth_points=embedding_quality_max_truth_points,
+    )
+    bellman_quality_summary = normalized_bellman_error(
+        embedding_quality_betas,
+        Z_grid.detach(),
+        embedding_quality_bellman_residuals,
+        nu=nu,
+        length_scale=length_scale,
+        sigma=sigma_k,
     )
     for idx, metrics in enumerate(metrics_rows):
         metrics.update(
             {
-                "embedding_mmd2_to_true": embedding_r2_summary["embedding_mmd2_to_true"][idx],
-                "embedding_mmd2_raw_to_true": embedding_r2_summary["embedding_mmd2_raw_to_true"][idx],
-                "embedding_baseline_mmd2": embedding_r2_summary["embedding_baseline_mmd2"][idx],
-                "embedding_baseline_mmd2_raw": embedding_r2_summary["embedding_baseline_mmd2_raw"][idx],
-                "embedding_r2_pointwise": embedding_r2_summary["embedding_r2_pointwise"][idx],
-                "embedding_truth_points_used": embedding_r2_summary["embedding_truth_points_used"][idx],
-                "embedding_r2_global": embedding_r2_summary["embedding_r2_global"],
-                "embedding_mmd2_total": embedding_r2_summary["embedding_mmd2_total"],
-                "embedding_baseline_mmd2_total": embedding_r2_summary["embedding_baseline_mmd2_total"],
-                "embedding_mmd2_mean": embedding_r2_summary["embedding_mmd2_mean"],
-                "embedding_baseline_mmd2_mean": embedding_r2_summary["embedding_baseline_mmd2_mean"],
+                "embedding_error_mmd2": embedding_quality_summary["embedding_error_mmd2"][idx],
+                "embedding_truth_signal": embedding_quality_summary["embedding_truth_signal"][idx],
+                "relative_embedding_error": embedding_quality_summary["relative_embedding_error"][idx],
+                "explained_embedding_signal": embedding_quality_summary["explained_embedding_signal"][idx],
+                "embedding_hat_norm2": embedding_quality_summary["embedding_hat_norm2"][idx],
+                "embedding_truth_points_used": embedding_quality_summary["embedding_truth_points_used"][idx],
+                "explained_embedding_signal_global": embedding_quality_summary["explained_embedding_signal_global"],
+                "relative_embedding_error_global": embedding_quality_summary["relative_embedding_error_global"],
+                "embedding_error_mmd2_total": embedding_quality_summary["embedding_error_mmd2_total"],
+                "embedding_truth_signal_total": embedding_quality_summary["embedding_truth_signal_total"],
+                "embedding_error_mmd2_mean": embedding_quality_summary["embedding_error_mmd2_mean"],
+                "embedding_truth_signal_mean": embedding_quality_summary["embedding_truth_signal_mean"],
+                "relative_embedding_error_mean": embedding_quality_summary["relative_embedding_error_mean"],
+                "explained_embedding_signal_mean": embedding_quality_summary["explained_embedding_signal_mean"],
+                "normalized_bellman_error": bellman_quality_summary["normalized_bellman_error"][idx],
+                "bellman_fit": bellman_quality_summary["bellman_fit"][idx],
+                "bellman_residual": bellman_quality_summary["bellman_residual"][idx],
+                "normalized_bellman_error_global": bellman_quality_summary["normalized_bellman_error_global"],
+                "bellman_fit_global": bellman_quality_summary["bellman_fit_global"],
             }
         )
         pd.DataFrame([metrics]).to_csv(f"metrics/run_metrics_{metrics_run_ids[idx]}.csv", index=False)
         pd.DataFrame([metrics]).to_csv(f"metrics/global_eval_metrics_{metrics_run_ids[idx]}.csv", index=False)
     risk_metrics.update(
         {
-            "embedding_r2_global": embedding_r2_summary["embedding_r2_global"],
-            "embedding_mmd2_total": embedding_r2_summary["embedding_mmd2_total"],
-            "embedding_baseline_mmd2_total": embedding_r2_summary["embedding_baseline_mmd2_total"],
-            "embedding_mmd2_mean": embedding_r2_summary["embedding_mmd2_mean"],
-            "embedding_baseline_mmd2_mean": embedding_r2_summary["embedding_baseline_mmd2_mean"],
-            "embedding_truth_points_used_min": embedding_r2_summary["embedding_truth_points_used_min"],
-            "embedding_truth_points_used_max": embedding_r2_summary["embedding_truth_points_used_max"],
-            "embedding_truth_points_used_mean": embedding_r2_summary["embedding_truth_points_used_mean"],
+            "explained_embedding_signal_global": embedding_quality_summary["explained_embedding_signal_global"],
+            "relative_embedding_error_global": embedding_quality_summary["relative_embedding_error_global"],
+            "embedding_error_mmd2_total": embedding_quality_summary["embedding_error_mmd2_total"],
+            "embedding_truth_signal_total": embedding_quality_summary["embedding_truth_signal_total"],
+            "embedding_error_mmd2_mean": embedding_quality_summary["embedding_error_mmd2_mean"],
+            "embedding_truth_signal_mean": embedding_quality_summary["embedding_truth_signal_mean"],
+            "relative_embedding_error_mean": embedding_quality_summary["relative_embedding_error_mean"],
+            "explained_embedding_signal_mean": embedding_quality_summary["explained_embedding_signal_mean"],
+            "embedding_truth_points_used_min": embedding_quality_summary["embedding_truth_points_used_min"],
+            "embedding_truth_points_used_max": embedding_quality_summary["embedding_truth_points_used_max"],
+            "embedding_truth_points_used_mean": embedding_quality_summary["embedding_truth_points_used_mean"],
+            "normalized_bellman_error_global": bellman_quality_summary["normalized_bellman_error_global"],
+            "bellman_fit_global": bellman_quality_summary["bellman_fit_global"],
+            "bellman_residual_total": bellman_quality_summary["bellman_residual_total"],
+            "embedding_hat_norm2_total": bellman_quality_summary["embedding_hat_norm2_total"],
         }
     )
     pd.DataFrame([risk_metrics]).to_csv(f"metrics/risk_metrics_{offline_data_id}.csv", index=False)
     if plot_this_replicate:
-        plot_embedding_r2_diagnostic(metrics_df=pd.DataFrame(metrics_rows), outdir=plot_dir)
+        plot_embedding_quality_diagnostic(metrics_df=pd.DataFrame(metrics_rows), outdir=plot_dir)
     print(
-        "Embedding R2 metrics:",
+        "Embedding quality metrics:",
         {
-            k: embedding_r2_summary[k]
+            k: embedding_quality_summary[k]
             for k in [
-                "embedding_r2_global",
-                "embedding_mmd2_total",
-                "embedding_baseline_mmd2_total",
+                "explained_embedding_signal_global",
+                "relative_embedding_error_global",
+                "embedding_error_mmd2_total",
+                "embedding_truth_signal_total",
                 "embedding_truth_points_used_min",
                 "embedding_truth_points_used_max",
+            ]
+        }
+        | {
+            k: bellman_quality_summary[k]
+            for k in [
+                "normalized_bellman_error_global",
+                "bellman_fit_global",
             ]
         },
     )

@@ -141,6 +141,150 @@ def _maybe_float(x: torch.Tensor) -> float:
     return val if math.isfinite(val) else float("nan")
 
 
+def embedding_explained_signal_from_true_samples(
+    betas: Iterable[torch.Tensor],
+    Z_grid: torch.Tensor,
+    Z_true_list: Iterable[torch.Tensor],
+    *,
+    nu: float,
+    length_scale: float,
+    sigma: float,
+    batch_size: int = 1000,
+    max_truth_points: int | None = 512,
+    eps: float = 1e-12,
+) -> dict[str, object]:
+    """Signal-normalized embedding fit diagnostic for simulation settings.
+
+    For each target this computes
+    ``1 - ||mu_hat_i - mu_i^MC||_H^2 / (||mu_i^MC||_H^2 + eps)``.
+    Unlike the legacy RKHS R^2 helper below, this does not center the MC truth
+    embeddings and does not build a target-by-target truth Gram matrix.
+    """
+    beta_list = list(betas)
+    raw_truth_list = list(Z_true_list)
+    if len(beta_list) != len(raw_truth_list):
+        raise ValueError(f"Expected the same number of betas and truth samples, got {len(beta_list)} and {len(raw_truth_list)}.")
+    if not beta_list:
+        raise ValueError("At least one evaluation embedding is required.")
+
+    first_beta = torch.as_tensor(beta_list[0]).reshape(-1)
+    device = first_beta.device
+    dtype = first_beta.dtype
+    Z_grid_t = _to_2d_tensor(Z_grid, dtype=dtype, device=device)
+    K_grid = matern_kernel(Z_grid_t, Z_grid_t, nu=nu, length_scale=length_scale, sigma=sigma)
+
+    truth_sets = [
+        _select_truth_points(_to_2d_tensor(Z, dtype=dtype, device=device), max_truth_points)
+        for Z in raw_truth_list
+    ]
+    beta_tensors = [torch.as_tensor(beta).to(dtype=dtype, device=device).reshape(-1) for beta in beta_list]
+
+    components = [
+        empirical_embedding_mmd2_components(
+            beta,
+            Z_grid_t,
+            truth,
+            nu=nu,
+            length_scale=length_scale,
+            sigma=sigma,
+            K_grid=K_grid,
+            batch_size=batch_size,
+            max_truth_points=None,
+        )
+        for beta, truth in zip(beta_tensors, truth_sets)
+    ]
+
+    errors = torch.stack([comp["mmd2"] for comp in components])  # type: ignore[arg-type]
+    signals = torch.stack([torch.clamp(comp["truth_self"], min=0.0) for comp in components])  # type: ignore[arg-type]
+    hat_norms = torch.stack([torch.clamp(comp["quad"], min=0.0) for comp in components])  # type: ignore[arg-type]
+
+    relative_error = errors / (signals + float(eps))
+    explained_signal = 1.0 - relative_error
+    error_total = errors.sum()
+    signal_total = signals.sum()
+    relative_global = error_total / (signal_total + float(eps))
+    explained_global = 1.0 - relative_global
+    truth_points = [int(comp["truth_points_used"]) for comp in components]
+
+    return {
+        "embedding_error_mmd2_total": _float(error_total),
+        "embedding_truth_signal_total": _float(signal_total),
+        "relative_embedding_error_global": _maybe_float(relative_global),
+        "explained_embedding_signal_global": _maybe_float(explained_global),
+        "embedding_error_mmd2_mean": _float(errors.mean()),
+        "embedding_truth_signal_mean": _float(signals.mean()),
+        "relative_embedding_error_mean": _float(relative_error.mean()),
+        "explained_embedding_signal_mean": _float(explained_signal.mean()),
+        "embedding_error_mmd2": [_float(x) for x in errors],
+        "embedding_truth_signal": [_float(x) for x in signals],
+        "relative_embedding_error": [_float(x) for x in relative_error],
+        "explained_embedding_signal": [_float(x) for x in explained_signal],
+        "embedding_hat_norm2": [_float(x) for x in hat_norms],
+        "embedding_truth_points_used": truth_points,
+        "embedding_truth_points_used_min": int(min(truth_points)),
+        "embedding_truth_points_used_max": int(max(truth_points)),
+        "embedding_truth_points_used_mean": float(sum(truth_points) / len(truth_points)),
+    }
+
+
+def normalized_bellman_error(
+    betas: Iterable[torch.Tensor],
+    Z_grid: torch.Tensor,
+    bellman_residuals: Iterable[torch.Tensor | float],
+    *,
+    nu: float,
+    length_scale: float,
+    sigma: float,
+    eps: float = 1e-12,
+) -> dict[str, object]:
+    """Normalize held-out Bellman residuals by the estimated embedding signal."""
+    beta_list = list(betas)
+    residual_list = list(bellman_residuals)
+    if len(beta_list) != len(residual_list):
+        raise ValueError(f"Expected the same number of betas and Bellman residuals, got {len(beta_list)} and {len(residual_list)}.")
+    if not beta_list:
+        raise ValueError("At least one evaluation embedding is required.")
+
+    first_beta = torch.as_tensor(beta_list[0]).reshape(-1)
+    device = first_beta.device
+    dtype = first_beta.dtype
+    Z_grid_t = _to_2d_tensor(Z_grid, dtype=dtype, device=device)
+    K_grid = matern_kernel(Z_grid_t, Z_grid_t, nu=nu, length_scale=length_scale, sigma=sigma)
+
+    beta_tensors = [torch.as_tensor(beta).to(dtype=dtype, device=device).reshape(-1) for beta in beta_list]
+    hat_norms = []
+    for beta in beta_tensors:
+        if beta.numel() != Z_grid_t.shape[0]:
+            raise ValueError(f"beta has length {beta.numel()} but Z_grid has {Z_grid_t.shape[0]} rows.")
+        hat_norms.append(torch.clamp(beta @ (K_grid @ beta), min=0.0))
+    hat_norm2 = torch.stack(hat_norms)
+    residuals = torch.stack([
+        torch.as_tensor(residual, dtype=dtype, device=device).reshape(())
+        for residual in residual_list
+    ])
+    residuals = torch.clamp(residuals, min=0.0)
+
+    nbe = residuals / (hat_norm2 + float(eps))
+    fit = 1.0 - nbe
+    residual_total = residuals.sum()
+    norm_total = hat_norm2.sum()
+    nbe_global = residual_total / (norm_total + float(eps))
+    fit_global = 1.0 - nbe_global
+
+    return {
+        "normalized_bellman_error_global": _maybe_float(nbe_global),
+        "bellman_fit_global": _maybe_float(fit_global),
+        "normalized_bellman_error_mean": _float(nbe.mean()),
+        "bellman_fit_mean": _float(fit.mean()),
+        "bellman_residual_total": _float(residual_total),
+        "embedding_hat_norm2_total": _float(norm_total),
+        "normalized_bellman_error": [_float(x) for x in nbe],
+        "bellman_fit": [_float(x) for x in fit],
+        "bellman_residual": [_float(x) for x in residuals],
+        "embedding_hat_norm2": [_float(x) for x in hat_norm2],
+    }
+
+
 def embedding_r2_from_true_samples(
     betas: Iterable[torch.Tensor],
     Z_grid: torch.Tensor,

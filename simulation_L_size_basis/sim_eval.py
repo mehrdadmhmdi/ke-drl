@@ -17,7 +17,12 @@ from sim_utils import bootstrap_kedrl
 bootstrap_kedrl()
 
 from ke_drl.matern_kernel import matern_kernel
-from ke_drl.embedding_metrics import embedding_r2_from_true_samples, empirical_embedding_mmd2
+from ke_drl.embedding_metrics import (
+    embedding_explained_signal_from_true_samples,
+    embedding_r2_from_true_samples,
+    empirical_embedding_mmd2,
+    normalized_bellman_error,
+)
 
 
 def _configure_times_fonts(plt) -> None:
@@ -247,6 +252,26 @@ def export_metrics_tables(
         "projected_bellman_test_risk",
         "oracle_embedding_risk",
         "benchmark_embedding_risk",
+        "embedding_error_mmd2",
+        "embedding_truth_signal",
+        "relative_embedding_error",
+        "explained_embedding_signal",
+        "embedding_hat_norm2",
+        "embedding_error_mmd2_total",
+        "embedding_truth_signal_total",
+        "relative_embedding_error_global",
+        "explained_embedding_signal_global",
+        "embedding_error_mmd2_mean",
+        "embedding_truth_signal_mean",
+        "relative_embedding_error_mean",
+        "explained_embedding_signal_mean",
+        "normalized_bellman_error",
+        "bellman_fit",
+        "bellman_residual",
+        "normalized_bellman_error_global",
+        "bellman_fit_global",
+        "bellman_residual_total",
+        "embedding_hat_norm2_total",
         "embedding_mmd2_to_true",
         "embedding_baseline_mmd2",
         "embedding_r2_pointwise",
@@ -634,7 +659,7 @@ def plot_mu_summary(
         _plot_four_panel_summary(H, T, run_ids=run_ids, metrics_df=metrics_df, outdir=outdir, plt=plt)
 
     if metrics_df is not None:
-        plot_embedding_r2_diagnostic(metrics_df=metrics_df, outdir=outdir, plt=plt)
+        plot_embedding_quality_diagnostic(metrics_df=metrics_df, outdir=outdir, plt=plt)
 
     if metrics_df is not None and "benchmark_id" in metrics_df.columns:
         rid_to_benchmark = dict(zip(metrics_df["run_id"].astype(str), metrics_df["benchmark_id"]))
@@ -919,16 +944,15 @@ def plot_all_replicate_mu_diagnostics(
     return count
 
 
-def plot_embedding_r2_diagnostic(
+def plot_embedding_quality_diagnostic(
     *,
     metrics_df: pd.DataFrame,
     outdir: str | os.PathLike,
     plt=None,
-    filename: str = "embedding_r2_summary.png",
+    filename: str = "embedding_quality_summary.png",
 ) -> bool:
-    """Plot the RKHS R^2-style diagnostic if MC-truth embedding metrics exist."""
-    needed = {"embedding_mmd2_to_true", "embedding_baseline_mmd2"}
-    if metrics_df is None or not needed.issubset(set(metrics_df.columns)):
+    """Plot signal-normalized embedding quality diagnostics when available."""
+    if metrics_df is None:
         return False
 
     close_plt = False
@@ -941,86 +965,129 @@ def plot_embedding_r2_diagnostic(
             _configure_times_fonts(plt)
             close_plt = True
         except ModuleNotFoundError as exc:
-            print(f"Embedding R2 diagnostic skipped because matplotlib is unavailable: {exc}")
+            print(f"Embedding quality diagnostic skipped because matplotlib is unavailable: {exc}")
             return False
 
     df = metrics_df.copy()
     numeric_cols = [
-        "embedding_mmd2_to_true",
-        "embedding_baseline_mmd2",
-        "embedding_r2_pointwise",
-        "embedding_r2_global",
+        "embedding_error_mmd2",
+        "embedding_truth_signal",
+        "relative_embedding_error",
+        "explained_embedding_signal",
+        "explained_embedding_signal_global",
+        "embedding_hat_norm2",
+        "bellman_residual",
+        "normalized_bellman_error",
+        "normalized_bellman_error_global",
     ]
     for col in numeric_cols:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    sim_cols = {"embedding_error_mmd2", "embedding_truth_signal", "explained_embedding_signal"}
+    real_cols = {"embedding_hat_norm2", "bellman_residual", "normalized_bellman_error"}
+    has_sim = sim_cols.issubset(df.columns) and not df[list(sim_cols)].replace([np.inf, -np.inf], np.nan).dropna(how="all").empty
+    has_real = real_cols.issubset(df.columns) and not df[list(real_cols)].replace([np.inf, -np.inf], np.nan).dropna(how="all").empty
+    if not has_sim and not has_real:
+        return False
+    mode = "simulation" if has_sim else "real"
 
     out_path = Path(outdir)
     out_path.mkdir(parents=True, exist_ok=True)
     fig, axs = plt.subplots(1, 3, figsize=(15.5, 4.6))
 
     ax = axs[0]
-    if "embedding_r2_global" in df.columns and df["embedding_r2_global"].notna().any():
+    global_col = "explained_embedding_signal_global" if mode == "simulation" else "normalized_bellman_error_global"
+    if global_col in df.columns and df[global_col].notna().any():
         if "offline_data_id" in df.columns:
-            global_df = df.groupby("offline_data_id", as_index=False)["embedding_r2_global"].first()
+            global_df = df.groupby("offline_data_id", as_index=False)[global_col].first()
             labels = global_df["offline_data_id"].astype(str).to_numpy()
-            vals = global_df["embedding_r2_global"].to_numpy(dtype=float)
+            vals = global_df[global_col].to_numpy(dtype=float)
         else:
-            vals = df["embedding_r2_global"].dropna().drop_duplicates().to_numpy(dtype=float)
+            vals = df[global_col].dropna().drop_duplicates().to_numpy(dtype=float)
             labels = np.arange(vals.size).astype(str)
+        finite = np.isfinite(vals)
+        vals = vals[finite]
+        labels = labels[finite]
         x = np.arange(vals.size)
         ax.axhline(0.0, color="0.45", ls="--", lw=1.0)
-        ax.axhline(1.0, color="0.25", ls=":", lw=1.0)
-        ax.scatter(x, vals, s=28, color="#0072B2", alpha=0.85)
-        if vals.size <= 25:
-            ax.set_xticks(x)
-            ax.set_xticklabels(labels, rotation=90 if vals.size > 8 else 0, fontsize=8)
+        if mode == "simulation":
+            ax.axhline(1.0, color="0.25", ls=":", lw=1.0)
+        ax.scatter(x, vals, s=28, color="#0072B2" if mode == "simulation" else "#CC79A7", alpha=0.85)
+        if vals.size:
+            if vals.size <= 25:
+                ax.set_xticks(x)
+                ax.set_xticklabels(labels, rotation=90 if vals.size > 8 else 0, fontsize=8)
+            else:
+                ax.set_xticks([])
+            anchors = [0.0, 1.0] if mode == "simulation" else [0.0]
+            ylo, yhi = _robust_limits(vals, anchors, q_low=0, q_high=100, include_zero=True, pad=0.18)
+            ax.set_ylim(ylo, yhi)
         else:
-            ax.set_xticks([])
-        ylo, yhi = _robust_limits(vals, [0.0, 1.0], q_low=0, q_high=100, include_zero=True, pad=0.18)
-        ax.set_ylim(ylo, yhi)
-        ax.set_title(r"(a) Global RKHS $R^2$")
+            ax.axis("off")
+            ax.text(0.5, 0.5, "Global diagnostic unavailable", ha="center", va="center", transform=ax.transAxes)
+        ax.set_title("(a) Global Explained Embedding Signal" if mode == "simulation" else "(a) Global Normalized Bellman Error")
         ax.set_xlabel("Offline replicate")
-        ax.set_ylabel(r"$1-\sum_i \widehat{MMD}_i^2 / \sum_i \|\mu_i-\bar{\mu}\|^2$")
+        ax.set_ylabel("Explained embedding signal" if mode == "simulation" else "Normalized Bellman error")
     else:
         ax.axis("off")
-        ax.text(0.5, 0.5, "Global embedding R2 unavailable", ha="center", va="center", transform=ax.transAxes)
+        ax.text(0.5, 0.5, "Global diagnostic unavailable", ha="center", va="center", transform=ax.transAxes)
     ax.grid(axis="y", alpha=0.25)
 
     ax = axs[1]
-    scatter_df = df[["embedding_baseline_mmd2", "embedding_mmd2_to_true"]].replace([np.inf, -np.inf], np.nan).dropna()
-    scatter_df = scatter_df[(scatter_df["embedding_baseline_mmd2"] >= 0.0) & (scatter_df["embedding_mmd2_to_true"] >= 0.0)]
-    if not scatter_df.empty:
-        x = scatter_df["embedding_baseline_mmd2"].to_numpy(dtype=float)
-        y = scatter_df["embedding_mmd2_to_true"].to_numpy(dtype=float)
-        ax.scatter(x, y, s=18, color="#D55E00", alpha=0.65, edgecolor="none")
-        positive = x[(x > 0.0) & (y > 0.0)]
-        if positive.size and np.all(x > 0.0) and np.all(y > 0.0):
+    if mode == "simulation":
+        scatter_df = df[["embedding_truth_signal", "embedding_error_mmd2"]].replace([np.inf, -np.inf], np.nan).dropna()
+        scatter_df = scatter_df[(scatter_df["embedding_truth_signal"] >= 0.0) & (scatter_df["embedding_error_mmd2"] >= 0.0)]
+        if not scatter_df.empty:
+            x = scatter_df["embedding_truth_signal"].to_numpy(dtype=float)
+            y = scatter_df["embedding_error_mmd2"].to_numpy(dtype=float)
+            ax.scatter(x, y, s=18, color="#D55E00", alpha=0.65, edgecolor="none")
             vals = np.concatenate([x, y])
-            lo = float(np.nanmin(vals[vals > 0.0]))
-            hi = float(np.nanmax(vals))
-            ax.set_xscale("log")
-            ax.set_yscale("log")
-            ax.plot([lo, hi], [lo, hi], color="0.25", lw=1.0, ls="--")
+            if np.all(x > 0.0) and np.all(y > 0.0):
+                lo = float(np.nanmin(vals[vals > 0.0]))
+                hi = float(np.nanmax(vals))
+                ax.set_xscale("log")
+                ax.set_yscale("log")
+                ax.plot([lo, hi], [lo, hi], color="0.25", lw=1.0, ls="--")
+                ax.set_xlim(lo, hi)
+                ax.set_ylim(lo, hi)
+            else:
+                lo, hi = _robust_limits(x, y, q_low=0, q_high=100, include_zero=True)
+                ax.plot([lo, hi], [lo, hi], color="0.25", lw=1.0, ls="--")
+                ax.set_xlim(lo, hi)
+                ax.set_ylim(lo, hi)
+            ax.set_title("(b) Error vs Truth Signal")
+            ax.set_xlabel(r"Truth signal $\|\mu_i^{MC}\|_H^2$")
+            ax.set_ylabel(r"Embedding error $\|\hat{\mu}_i-\mu_i^{MC}\|_H^2$")
         else:
-            lo, hi = _robust_limits(x, y, q_low=0, q_high=100, include_zero=True)
-            ax.plot([lo, hi], [lo, hi], color="0.25", lw=1.0, ls="--")
-            ax.set_xlim(lo, hi)
-            ax.set_ylim(lo, hi)
-        ax.set_title(r"(b) Error vs truth variance")
-        ax.set_xlabel(r"Baseline $\|\mu_i-\bar{\mu}\|^2$")
-        ax.set_ylabel(r"Model $\widehat{MMD}_i^2$")
+            ax.axis("off")
+            ax.text(0.5, 0.5, "Embedding signal diagnostic unavailable", ha="center", va="center", transform=ax.transAxes)
     else:
-        ax.axis("off")
-        ax.text(0.5, 0.5, "MMD2 diagnostic unavailable", ha="center", va="center", transform=ax.transAxes)
+        scatter_df = df[["embedding_hat_norm2", "bellman_residual"]].replace([np.inf, -np.inf], np.nan).dropna()
+        scatter_df = scatter_df[(scatter_df["embedding_hat_norm2"] >= 0.0) & (scatter_df["bellman_residual"] >= 0.0)]
+        if not scatter_df.empty:
+            x = scatter_df["embedding_hat_norm2"].to_numpy(dtype=float)
+            y = scatter_df["bellman_residual"].to_numpy(dtype=float)
+            ax.scatter(x, y, s=18, color="#009E73", alpha=0.65, edgecolor="none")
+            xlo, xhi = _robust_limits(x, q_low=0, q_high=100, include_zero=True)
+            ylo, yhi = _robust_limits(y, q_low=0, q_high=100, include_zero=True)
+            ax.set_xlim(xlo, xhi)
+            ax.set_ylim(ylo, yhi)
+            ax.set_title("(b) Bellman Residual vs Embedding Signal")
+            ax.set_xlabel(r"Estimated signal $\|\hat{\mu}_i\|_H^2$")
+            ax.set_ylabel("Held-out Bellman residual")
+        else:
+            ax.axis("off")
+            ax.text(0.5, 0.5, "Bellman diagnostic unavailable", ha="center", va="center", transform=ax.transAxes)
     ax.grid(alpha=0.25)
 
     ax = axs[2]
-    if "embedding_r2_pointwise" in df.columns and df["embedding_r2_pointwise"].notna().any():
+    point_col = "explained_embedding_signal" if mode == "simulation" else "normalized_bellman_error"
+    if point_col in df.columns and df[point_col].notna().any():
         if "benchmark_id" in df.columns:
             box_data, labels = [], []
             for bid, group in df.groupby("benchmark_id", dropna=False):
-                vals = group["embedding_r2_pointwise"].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
+                vals = group[point_col].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
                 if vals.size:
                     box_data.append(vals)
                     labels.append(str(int(bid)) if pd.notna(bid) else "NA")
@@ -1028,19 +1095,21 @@ def plot_embedding_r2_diagnostic(
                 ax.boxplot(box_data, labels=labels, showmeans=True)
                 ax.tick_params(axis="x", labelrotation=90 if len(labels) > 8 else 0, labelsize=7)
         else:
-            vals = df["embedding_r2_pointwise"].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
+            vals = df[point_col].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
             ax.boxplot([vals], labels=["all"], showmeans=True)
         ax.axhline(0.0, color="0.45", ls="--", lw=1.0)
-        ax.axhline(1.0, color="0.25", ls=":", lw=1.0)
-        vals = df["embedding_r2_pointwise"].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
-        ylo, yhi = _robust_limits(vals, [0.0, 1.0], q_low=0, q_high=97.5, include_zero=True, pad=0.18)
+        if mode == "simulation":
+            ax.axhline(1.0, color="0.25", ls=":", lw=1.0)
+        vals = df[point_col].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
+        anchors = [0.0, 1.0] if mode == "simulation" else [0.0]
+        ylo, yhi = _robust_limits(vals, anchors, q_low=0, q_high=97.5, include_zero=True, pad=0.18)
         ax.set_ylim(ylo, yhi)
-        ax.set_title(r"(c) Pointwise RKHS $R^2$")
+        ax.set_title("(c) Pointwise Explained Embedding Signal" if mode == "simulation" else "(c) Pointwise Normalized Bellman Error")
         ax.set_xlabel("Evaluation target")
-        ax.set_ylabel(r"$1-\widehat{MMD}_i^2 / \|\mu_i-\bar{\mu}\|^2$")
+        ax.set_ylabel("Explained embedding signal" if mode == "simulation" else "Normalized Bellman error")
     else:
         ax.axis("off")
-        ax.text(0.5, 0.5, "Pointwise embedding R2 unavailable", ha="center", va="center", transform=ax.transAxes)
+        ax.text(0.5, 0.5, "Pointwise diagnostic unavailable", ha="center", va="center", transform=ax.transAxes)
     ax.grid(axis="y", alpha=0.25)
 
     fig.tight_layout()
@@ -1050,6 +1119,17 @@ def plot_embedding_r2_diagnostic(
     if close_plt:
         plt.close("all")
     return True
+
+
+def plot_embedding_r2_diagnostic(
+    *,
+    metrics_df: pd.DataFrame,
+    outdir: str | os.PathLike,
+    plt=None,
+    filename: str = "embedding_quality_summary.png",
+) -> bool:
+    """Backward-compatible wrapper for the renamed embedding-quality plot."""
+    return plot_embedding_quality_diagnostic(metrics_df=metrics_df, outdir=outdir, plt=plt, filename=filename)
 
 
 def _replicate_plot_dir(outdir: Path, run_id: str) -> Path:
