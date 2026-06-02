@@ -292,7 +292,7 @@ def make_report(root: Path, output: Path) -> None:
             story.append(p(f"Missing figure: {base_fig}", BODY))
 
     story.append(PageBreak())
-    story.append(p("Per Evaluation Target: Best Configuration", H1))
+    story.append(p("Per Test Target: Best Configuration", H1))
     bench = per_benchmark_summary(best_run)
     if not bench.empty:
         story.append(
@@ -336,7 +336,7 @@ def make_report(root: Path, output: Path) -> None:
         "The best setting is clearly kernel sigma=0.7, with baseline regularization lambda_B=0.02, nu=5.5, length_scale=1.0.",
         "The result is satisfactory as a tuning-screen result because the ranking is decisive and the support-safe evaluation targets no longer produce a trivial zero curve.",
         "The result is not yet satisfactory as the final reportable simulation: calibration is compressed toward zero and several target points remain biased downward.",
-        "Evaluation target point 5 is easy across all configurations; points 1, 2, and 3 are the hard cases and should dominate the final narrative.",
+        "Test target point 5 is easy across all configurations; points 1, 2, and 3 are the hard cases and should dominate the final narrative.",
         "The final run should therefore use sigma=0.7 but increase Monte Carlo precision, offline replications, and sample size, then regenerate the combined box/diagnostic figures from the final one-config run.",
     ]
     for item in bullets:

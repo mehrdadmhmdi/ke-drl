@@ -169,7 +169,7 @@ while read -r CFG; do
   echo "Submitting estimation array job"
   EST_OUTPUT=$(submit_with_retry \
     "sbatch --job-name=UL_EST_RUN --parsable --account=bfez-dtai-gh \
-     --export=ALL,BASE=\"$RUN\",KEDRL_GIT_URL=\"$KEDRL_GIT_URL\",KEDRL_GIT_REF=\"$KEDRL_GIT_REF\" --array=0-100 --chdir=\"$RUN\" \"$RUN/Job_est.sbatch\"")
+     --export=ALL,BASE=\"$RUN\",KEDRL_GIT_URL=\"$KEDRL_GIT_URL\",KEDRL_GIT_REF=\"$KEDRL_GIT_REF\" --array=0-499 --chdir=\"$RUN\" \"$RUN/Job_est.sbatch\"")
   EST="${EST_OUTPUT##* }"
   [[ "$EST" =~ ^[0-9]+$ ]] || { echo "Failed to parse EST job ID: $EST_OUTPUT" >&2; exit 1; }
 done < .configs_stage1.txt

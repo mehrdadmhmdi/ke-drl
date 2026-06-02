@@ -185,7 +185,7 @@ while read -r CFG; do
   echo "Submitting estimation array job"
   EST_OUTPUT=$(submit_with_retry \
     "sbatch --job-name=EST_RUN --parsable --account=bfez-dtai-gh \
-     --export=ALL,BASE=\"$RUN\",KEDRL_GIT_URL=\"$KEDRL_GIT_URL\",KEDRL_GIT_REF=\"$KEDRL_GIT_REF\" --array=0-100 --chdir=\"$RUN\" \"$RUN/Job_est.sbatch\"")
+     --export=ALL,BASE=\"$RUN\",KEDRL_GIT_URL=\"$KEDRL_GIT_URL\",KEDRL_GIT_REF=\"$KEDRL_GIT_REF\" --array=0-499 --chdir=\"$RUN\" \"$RUN/Job_est.sbatch\"")
   EST_RET=$?
   echo "sbatch EST output: $EST_OUTPUT"
   if [ $EST_RET -ne 0 ]; then

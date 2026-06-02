@@ -55,7 +55,7 @@ def final_size_overrides() -> dict[str, Any]:
             "n_ids": env_int("KEDRL_FINAL_Z_IDS", 100000),
             "n_timepoints": env_int("KEDRL_FINAL_Z_TIMEPOINTS", 500),
         },
-        "experiment": {"num_replicates": env_int("KEDRL_FINAL_NUM_REPLICATES", 200)},
+        "experiment": {"num_replicates": env_int("KEDRL_FINAL_NUM_REPLICATES", 500)},
         "benchmark": {"num_points": n_eval},
         "target_set": {"mode": "train_subset", "num_points": env_int("KEDRL_FINAL_TRAIN_TARGETS", 100), "exclude_benchmark": True},
         "num_grid_points": env_int("KEDRL_FINAL_GRID_POINTS", 1000),
@@ -159,7 +159,7 @@ def aggregate_final(base_params: str, shared_data_dir: Path) -> None:
 
 
 def show_commands() -> None:
-    n_rep = env_int("KEDRL_FINAL_NUM_REPLICATES", 200)
+    n_rep = env_int("KEDRL_FINAL_NUM_REPLICATES", 500)
     last = n_rep - 1
     print(
         "\nRecommended Slurm sequence:\n"

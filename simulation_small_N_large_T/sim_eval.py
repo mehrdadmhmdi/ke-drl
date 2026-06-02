@@ -719,7 +719,7 @@ def plot_embedding_quality_diagnostic(
         ax.axhline(0.0, color="0.45", ls="--", lw=1.0)
         if mode == "simulation":
             ax.axhline(1.0, color="0.25", ls=":", lw=1.0)
-        ax.scatter(x, vals, s=28, color="#0072B2" if mode == "simulation" else "#CC79A7", alpha=0.85)
+        ax.scatter(x, vals, s=28, color="#13294B" if mode == "simulation" else "#CC79A7", alpha=0.85)
         if vals.size:
             if vals.size <= 25:
                 ax.set_xticks(x)
@@ -742,42 +742,50 @@ def plot_embedding_quality_diagnostic(
 
     ax = axs[1]
     if mode == "simulation":
-        rel_vals = df.get("relative_embedding_error", pd.Series(dtype=float)).replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
-        rel_vals = rel_vals[np.isfinite(rel_vals)]
-        if rel_vals.size:
-            plot_vals = rel_vals
+        fitted_cols = ["embedding_hat_norm2", "relative_embedding_error"]
+        if set(fitted_cols).issubset(df.columns):
+            fitted_df = df[fitted_cols].replace([np.inf, -np.inf], np.nan).dropna()
+        else:
+            fitted_df = pd.DataFrame(columns=fitted_cols)
+        if not fitted_df.empty:
+            x = fitted_df["embedding_hat_norm2"].to_numpy(dtype=float)
+            y = fitted_df["relative_embedding_error"].to_numpy(dtype=float)
+            finite = np.isfinite(x) & np.isfinite(y)
+            x, y = x[finite], y[finite]
+        else:
+            x, y = np.asarray([], dtype=float), np.asarray([], dtype=float)
+        if x.size:
+            ax.scatter(x, y, s=18, color="#FF5F05", alpha=0.55, edgecolor="none")
+            ax.axhline(1.0, color="0.25", ls="--", lw=1.1)
+            ax.text(0.98, 1.0, "error = truth signal", transform=ax.get_yaxis_transform(), ha="right", va="bottom", fontsize=8)
+            xlo, xhi = _robust_limits(x, q_low=0, q_high=100, include_zero=True)
+            y_min = float(np.nanmin(y))
+            y_max = float(np.nanmax(y))
+            y_upper = y_max
             clipped = False
-            x_max = float(np.nanmax(rel_vals))
-            if rel_vals.size >= 10:
-                x_q99 = float(np.nanpercentile(rel_vals, 99.0))
-                x_min = float(np.nanmin(rel_vals))
-                robust_span = max(x_q99 - x_min, 1e-12)
-                clipped = bool(np.isfinite(x_q99) and x_max > x_q99 + 0.5 * robust_span)
+            if y.size >= 10:
+                y_q99 = float(np.nanpercentile(y, 99.0))
+                robust_span = max(y_q99 - y_min, 1e-12)
+                clipped = bool(np.isfinite(y_q99) and y_max > y_q99 + 0.5 * robust_span)
                 if clipped:
-                    plot_vals = rel_vals[rel_vals <= x_q99]
-                    if plot_vals.size == 0:
-                        plot_vals = rel_vals
-                        clipped = False
-            ax.hist(plot_vals, bins=30, color="#D55E00", alpha=0.78, edgecolor="white", linewidth=0.5)
-            ax.axvline(1.0, color="0.25", ls="--", lw=1.1)
-            ax.text(1.0, 0.92, "error = truth signal", transform=ax.get_xaxis_transform(), rotation=90, ha="right", va="top", fontsize=8)
-            xlo = min(0.0, float(np.nanmin(plot_vals)))
-            xhi = max(1.0, float(np.nanmax(plot_vals)))
-            if clipped:
-                xhi = max(1.0, float(np.nanpercentile(rel_vals, 99.0)))
-                ax.text(0.98, 0.95, "x-axis clipped at 99%", transform=ax.transAxes, ha="right", va="top", fontsize=8)
-            if xhi - xlo < 1e-12:
-                xlo, xhi = xlo - 0.5, xhi + 0.5
+                    y_upper = y_q99
+            ylo = min(0.0, y_min)
+            yhi = max(1.0, y_upper)
+            if yhi - ylo < 1e-12:
+                ylo, yhi = ylo - 0.5, yhi + 0.5
             else:
-                pad = 0.06 * (xhi - xlo)
-                xlo, xhi = xlo - pad, xhi + pad
+                pad = 0.08 * (yhi - ylo)
+                ylo, yhi = ylo - pad, yhi + pad
             ax.set_xlim(xlo, xhi)
-            ax.set_title("(b) Relative Embedding Error Distribution")
-            ax.set_xlabel("Relative embedding error")
-            ax.set_ylabel("Count")
+            ax.set_ylim(ylo, yhi)
+            if clipped:
+                ax.text(0.98, 0.94, "y-axis clipped at 99%", transform=ax.transAxes, ha="right", va="top", fontsize=8)
+            ax.set_title("(b) Relative Residual vs Fitted Embedding Signal")
+            ax.set_xlabel(r"Estimated embedding signal $\|\hat{\mu}_i\|_{\mathcal H}^2$")
+            ax.set_ylabel("Relative embedding error")
         else:
             ax.axis("off")
-            ax.text(0.5, 0.5, "Relative embedding error unavailable", ha="center", va="center", transform=ax.transAxes)
+            ax.text(0.5, 0.5, "Relative residual diagnostic unavailable", ha="center", va="center", transform=ax.transAxes)
     else:
         scatter_df = df[["embedding_hat_norm2", "bellman_residual"]].replace([np.inf, -np.inf], np.nan).dropna()
         scatter_df = scatter_df[(scatter_df["embedding_hat_norm2"] >= 0.0) & (scatter_df["bellman_residual"] >= 0.0)]
@@ -799,14 +807,90 @@ def plot_embedding_quality_diagnostic(
 
     ax = axs[2]
     point_col = "explained_embedding_signal" if mode == "simulation" else "normalized_bellman_error"
-    if point_col in df.columns and df[point_col].notna().any():
+    if mode == "simulation" and point_col in df.columns and df[point_col].notna().any():
+        clip_low = -0.2
+        clip_high = 1.05
+        lower_outlier_count = 0
+        if "benchmark_id" in df.columns:
+            box_data, labels, positions = [], [], []
+            for pos, (bid, group) in enumerate(df.groupby("benchmark_id", dropna=False), start=1):
+                vals = group[point_col].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
+                vals = vals[np.isfinite(vals)]
+                if vals.size:
+                    box_data.append(vals)
+                    labels.append(_display_test_target_id(bid) if pd.notna(bid) else "NA")
+                    positions.append(pos)
+                    lower = vals[vals < clip_low]
+                    if lower.size:
+                        lower_outlier_count += int(lower.size)
+                        jitter = np.linspace(-0.16, 0.16, lower.size) if lower.size > 1 else np.asarray([0.0])
+                        ax.scatter(
+                            pos + jitter,
+                            np.full(lower.size, clip_low),
+                            marker="v",
+                            s=16,
+                            color="#FF5F05",
+                            alpha=0.72,
+                            edgecolor="none",
+                            zorder=3,
+                        )
+            if box_data:
+                bp = ax.boxplot(box_data, labels=labels, showmeans=True, showfliers=False, patch_artist=True)
+                for patch, color in zip(bp["boxes"], _benchmark_palette(len(box_data))):
+                    patch.set_facecolor(color)
+                    patch.set_alpha(0.22)
+                ax.tick_params(axis="x", labelrotation=90 if len(labels) > 8 else 0, labelsize=7)
+                if len(labels) > 40:
+                    for idx, tick in enumerate(ax.get_xticklabels()):
+                        tick.set_visible(idx % 5 == 0)
+                elif len(labels) > 25:
+                    for idx, tick in enumerate(ax.get_xticklabels()):
+                        tick.set_visible(idx % 2 == 0)
+        else:
+            vals = df[point_col].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
+            vals = vals[np.isfinite(vals)]
+            if vals.size:
+                lower = vals[vals < clip_low]
+                lower_outlier_count += int(lower.size)
+                if lower.size:
+                    jitter = np.linspace(-0.16, 0.16, lower.size) if lower.size > 1 else np.asarray([0.0])
+                    ax.scatter(
+                        1.0 + jitter,
+                        np.full(lower.size, clip_low),
+                        marker="v",
+                        s=16,
+                        color="#FF5F05",
+                        alpha=0.72,
+                        edgecolor="none",
+                        zorder=3,
+                    )
+                bp = ax.boxplot([vals], labels=["all"], showmeans=True, showfliers=False, patch_artist=True)
+                bp["boxes"][0].set_facecolor("#13294B")
+                bp["boxes"][0].set_alpha(0.22)
+        ax.axhline(0.0, color="0.45", ls="--", lw=1.0)
+        ax.axhline(1.0, color="0.25", ls=":", lw=1.0)
+        ax.set_ylim(clip_low - 0.03, clip_high)
+        if lower_outlier_count:
+            ax.text(
+                0.98,
+                0.06,
+                f"{lower_outlier_count} lower outliers clipped",
+                transform=ax.transAxes,
+                ha="right",
+                va="bottom",
+                fontsize=8,
+            )
+        ax.set_title("(c) Pointwise Explained Embedding Signal")
+        ax.set_xlabel("Test target")
+        ax.set_ylabel("Explained embedding signal")
+    elif point_col in df.columns and df[point_col].notna().any():
         if "benchmark_id" in df.columns:
             box_data, labels = [], []
             for bid, group in df.groupby("benchmark_id", dropna=False):
                 vals = group[point_col].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
                 if vals.size:
                     box_data.append(vals)
-                    labels.append(str(int(bid)) if pd.notna(bid) else "NA")
+                    labels.append(_display_test_target_id(bid) if pd.notna(bid) else "NA")
             if box_data:
                 ax.boxplot(box_data, labels=labels, showmeans=True)
                 ax.tick_params(axis="x", labelrotation=90 if len(labels) > 8 else 0, labelsize=7)
@@ -814,15 +898,12 @@ def plot_embedding_quality_diagnostic(
             vals = df[point_col].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
             ax.boxplot([vals], labels=["all"], showmeans=True)
         ax.axhline(0.0, color="0.45", ls="--", lw=1.0)
-        if mode == "simulation":
-            ax.axhline(1.0, color="0.25", ls=":", lw=1.0)
         vals = df[point_col].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
-        anchors = [0.0, 1.0] if mode == "simulation" else [0.0]
-        ylo, yhi = _robust_limits(vals, anchors, q_low=0, q_high=97.5, include_zero=True, pad=0.18)
+        ylo, yhi = _robust_limits(vals, [0.0], q_low=0, q_high=97.5, include_zero=True, pad=0.18)
         ax.set_ylim(ylo, yhi)
-        ax.set_title("(c) Pointwise Explained Embedding Signal" if mode == "simulation" else "(c) Pointwise Normalized Bellman Error")
-        ax.set_xlabel("Evaluation target")
-        ax.set_ylabel("Explained embedding signal" if mode == "simulation" else "Normalized Bellman error")
+        ax.set_title("(c) Pointwise Normalized Bellman Error")
+        ax.set_xlabel("Test target")
+        ax.set_ylabel("Normalized Bellman error")
     else:
         ax.axis("off")
         ax.text(0.5, 0.5, "Pointwise diagnostic unavailable", ha="center", va="center", transform=ax.transAxes)
@@ -864,6 +945,16 @@ def _format_num(x, digits: int = 3) -> str:
     if not np.isfinite(val):
         return str(x)
     return f"{val:.{digits}g}"
+
+
+def _display_test_target_id(bid) -> str:
+    try:
+        val = float(bid)
+    except (TypeError, ValueError):
+        return str(bid)
+    if np.isfinite(val) and val.is_integer():
+        return str(int(val) + 1)
+    return str(bid)
 
 
 def _format_vector(values, digits: int = 3) -> str:
@@ -926,7 +1017,7 @@ def _format_evaluation_points(points: pd.DataFrame | None, params: dict | None) 
         for _, row in points.sort_values("benchmark_id").iterrows():
             bid = int(row["benchmark_id"]) if "benchmark_id" in row and pd.notna(row["benchmark_id"]) else len(pieces)
             pieces.append(
-                f"Test Target Point {bid}: s={_format_vector([row[c] for c in s_cols])}, "
+                f"Test Target Point {_display_test_target_id(bid)}: s={_format_vector([row[c] for c in s_cols])}, "
                 f"a={_format_vector([row[c] for c in a_cols])}"
             )
         return "; ".join(pieces)
@@ -936,7 +1027,7 @@ def _format_evaluation_points(points: pd.DataFrame | None, params: dict | None) 
     a_star = bench.get("a_star") or []
     pieces = []
     for bid, (s, a) in enumerate(zip(s_star, a_star)):
-        pieces.append(f"Test Target Point {bid}: s={_format_vector(s)}, a={_format_vector(a)}")
+        pieces.append(f"Test Target Point {_display_test_target_id(bid)}: s={_format_vector(s)}, a={_format_vector(a)}")
     return "; ".join(pieces) if pieces else "Test target point values unavailable"
 
 
@@ -1012,6 +1103,8 @@ def _build_summary_caption(
 
 def _benchmark_palette(n: int) -> list[str]:
     base = [
+        "#FF5F05",  # Illini orange
+        "#13294B",  # Illini blue
         "#0072B2",
         "#D55E00",
         "#009E73",
@@ -1129,7 +1222,7 @@ def _plot_multi_benchmark_summary(
             markeredgecolor="white",
             markeredgewidth=0.6,
             lw=1.8,
-            label=f"Test Target Point {int(bid)}",
+            label=f"Test Target Point {_display_test_target_id(bid)}",
         )
         cal_x.append(bx)
         cal_y.append(by)
@@ -1164,7 +1257,7 @@ def _plot_multi_benchmark_summary(
             vals = pd.to_numeric(metrics.loc[metrics["benchmark_id"] == bid, column], errors="coerce").dropna().to_numpy()
             if vals.size:
                 box_data.append(vals)
-                labels.append(str(int(bid)))
+                labels.append(_display_test_target_id(bid))
                 used_colors.append(color)
                 used_bids.append(bid)
         if not box_data:
@@ -1250,7 +1343,7 @@ def _plot_multi_benchmark_summary(
         abs_err = np.sort(np.abs(H[np.asarray(idx)] - T[np.asarray(idx)]).reshape(-1))
         ecdf_abs_values.append(abs_err)
         ecdf = np.arange(1, abs_err.size + 1) / abs_err.size
-        ax.plot(abs_err, ecdf, color=color, lw=1.9, label=f"Test Target Point {int(bid)}")
+        ax.plot(abs_err, ecdf, color=color, lw=1.9, label=f"Test Target Point {_display_test_target_id(bid)}")
     ax.set_title(r"(f) ECDF Of $|\hat{\mu}-\mu|$ By Test Target Point")
     ax.set_xlabel(r"$|\hat{\mu}-\mu|$")
     ax.set_ylabel("ECDF")
@@ -1285,7 +1378,7 @@ def _plot_multi_benchmark_summary(
         top10 = ranked[:10]
         if top10:
             top_caption = "Top 10 test target points closest to the ideal line in Panel (a): " + ", ".join(
-                str(int(bid)) if float(bid).is_integer() else str(bid)
+                _display_test_target_id(bid)
                 for bid in top10
             )
             _plot_multi_benchmark_summary(

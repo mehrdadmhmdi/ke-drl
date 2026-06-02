@@ -7,11 +7,11 @@ summed over multiple target state-action points.
 
 ## Architecture
 
-The main consistency experiment repeats the estimation step over 100 independent
+The main consistency experiment repeats the estimation step over 500 independent
 offline datasets, but uses one fixed benchmark point for all of them.
 
-1. Generate 100 offline datasets under the behavior policy:
-   `D_i`, `i = 1,...,100`.
+1. Generate 500 offline datasets under the behavior policy:
+   `D_i`, `i = 1,...,500`.
 2. Fix one benchmark state-action point `(s*, a*)` independently of every
    `D_i`. By default it is specified directly in `params.yaml` and stored in
    `data/benchmark_point.csv`.
@@ -29,7 +29,7 @@ The replicate index in the code is zero-based: `offline_data_0.pt` corresponds
 to mathematical `D_1`.
 
 ```
-Job_data.sbatch --array=0-99
+Job_data.sbatch --array=0-499
    |
    +--> data/offline_data_i.pt
 
@@ -42,7 +42,7 @@ Job_E_P_sa.sbatch
    |
    +--> runs/main_<master_job_id>/
           |
-          +--> Job_est.sbatch --array=0-99
+          +--> Job_est.sbatch --array=0-499
           |      |
           |      +--> data/target_points_i.csv
           |      +--> data/fit_i.pt
@@ -66,7 +66,7 @@ The production settings are in `params.yaml`.
 
 ```yaml
 experiment:
-  num_replicates: 100
+  num_replicates: 500
 
 benchmark:
   num_points: 1
@@ -189,12 +189,12 @@ The full tuning run uses one shared data-preparation job and then a parallel
 training array:
 
 1. `Job_tune_prepare.sbatch` generates the shared offline data and benchmark
-   truth once. With `params_tune.yaml`, this is 100 independent offline
+   truth once. With `params_tune.yaml`, this is 500 independent offline
    datasets, 10 benchmark points, and for each benchmark point 50,000 Monte
    Carlo target-policy trajectories with 400 time points.
 2. `Job_tune_global.sbatch` indexes the Cartesian product of tuning
    configuration and offline replicate. With the current 7 tuning
-   configurations and 100 offline datasets, the array is `0-699%10`.
+   configurations and 500 offline datasets, the array is `0-3499%10`.
    Each task fits one `B_hat` using 100 training target points that are
    separate from the benchmark truth points.
 3. `Job_tune_summary.sbatch` aggregates the finished tasks, writes one tuning
@@ -206,13 +206,13 @@ Typical submission sequence:
 
 ```bash
 sbatch Job_tune_prepare.sbatch
-sbatch --array=0-699%10 Job_tune_global.sbatch
+sbatch --array=0-3499%10 Job_tune_global.sbatch
 sbatch --dependency=afterany:<global-array-job-id> Job_tune_summary.sbatch
 ```
 
 ## Tuning Run
 
-Before the full 100-replicate run, use the smaller tuning sweep:
+Before the full 500-replicate run, use the smaller tuning sweep:
 
 ```bash
 jid_tune=$(sbatch --parsable Job_tune_global.sbatch)
@@ -221,7 +221,7 @@ jid_sum=$(sbatch --parsable --dependency=afterok:${jid_tune} Job_tune_summary.sb
 
 Each tuning array task uses `params_tune.yaml`, applies one one-factor-at-a-time
 override from `tuning_grid.yaml`, and runs the same fixed-benchmark architecture
-on 100 offline replicates. The current base tuning design is:
+on 500 offline replicates. The current base tuning design is:
 
 ```yaml
 n_ids: 6000

@@ -41,7 +41,7 @@ def scenario_overrides() -> dict[str, Any]:
         "n_ids": env_int("SIM2_N_IDS", 300),
         "n_timepoints": n_timepoints,
         "offline_burn_in": env_int("SIM2_BURN_IN", 100),
-        "experiment": {"num_replicates": env_int("SIM2_NUM_REPLICATES", 50)},
+        "experiment": {"num_replicates": env_int("SIM2_NUM_REPLICATES", 500)},
         "num_grid_points": env_int("SIM2_GRID_POINTS", 400),
         "Z_sim": {
             "n_ids": env_int("SIM2_Z_IDS", 10000),
@@ -153,7 +153,7 @@ def aggregate(base_params: str, shared_data_dir: Path) -> None:
 
 
 def commands() -> None:
-    reps = env_int("SIM2_NUM_REPLICATES", 50)
+    reps = env_int("SIM2_NUM_REPLICATES", 500)
     last = reps - 1
     print(
         "\nExample for T=500:\n"

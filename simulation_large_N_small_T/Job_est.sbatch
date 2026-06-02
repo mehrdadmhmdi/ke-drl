@@ -12,7 +12,7 @@
 #SBATCH --partition=ghx4
 #SBATCH --mail-type=NONE
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-99
+#SBATCH --array=0-499
 
 cd ${OUTDIR:-${BASE:-$PWD}}
 echo "Running in folder: $(pwd)"

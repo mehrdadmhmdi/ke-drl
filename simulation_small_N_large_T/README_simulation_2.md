@@ -50,7 +50,7 @@ For `T=500`:
 
 ```bash
 jid_prep=$(sbatch --parsable --export=ALL,SIM2_STAGE=prepare,SIM2_TIMEPOINTS=500 Job_sim2.sbatch)
-jid_fit=$(sbatch --parsable --dependency=afterok:$jid_prep --array=0-49 --export=ALL,SIM2_STAGE=fit,SIM2_TIMEPOINTS=500 Job_sim2.sbatch)
+jid_fit=$(sbatch --parsable --dependency=afterok:$jid_prep --array=0-499 --export=ALL,SIM2_STAGE=fit,SIM2_TIMEPOINTS=500 Job_sim2.sbatch)
 sbatch --dependency=afterok:$jid_fit --export=ALL,SIM2_STAGE=aggregate,SIM2_TIMEPOINTS=500 Job_sim2.sbatch
 ```
 
@@ -58,7 +58,7 @@ For `T=1000`:
 
 ```bash
 jid_prep=$(sbatch --parsable --export=ALL,SIM2_STAGE=prepare,SIM2_TIMEPOINTS=1000,SIM2_TAG=T1000_N300_r1500 Job_sim2.sbatch)
-jid_fit=$(sbatch --parsable --dependency=afterok:$jid_prep --array=0-49 --export=ALL,SIM2_STAGE=fit,SIM2_TIMEPOINTS=1000,SIM2_TAG=T1000_N300_r1500 Job_sim2.sbatch)
+jid_fit=$(sbatch --parsable --dependency=afterok:$jid_prep --array=0-499 --export=ALL,SIM2_STAGE=fit,SIM2_TIMEPOINTS=1000,SIM2_TAG=T1000_N300_r1500 Job_sim2.sbatch)
 sbatch --dependency=afterok:$jid_fit --export=ALL,SIM2_STAGE=aggregate,SIM2_TIMEPOINTS=1000,SIM2_TAG=T1000_N300_r1500 Job_sim2.sbatch
 ```
 
@@ -67,7 +67,7 @@ Useful overrides:
 ```bash
 SIM2_BASIS_N=2500
 SIM2_OPERATOR_REDUCED_N=2500
-SIM2_NUM_REPLICATES=100
+SIM2_NUM_REPLICATES=500
 SIM2_GRID_POINTS=600
 SIM2_Z_IDS=50000
 SIM2_KMEANS_ITER=30
