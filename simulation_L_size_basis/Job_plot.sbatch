@@ -13,7 +13,9 @@
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=mehrdad3@illinois.edu
 
-cd ${OUTDIR:-${BASE:-$PWD}}
+RUN_DIR="${OUTDIR:-${BASE:-$PWD}}"
+cd "$RUN_DIR"
+RUN_DIR="$(pwd)"
 echo "Running in folder: $(pwd)"
 mkdir -p logs mu plots metrics
 
@@ -77,4 +79,8 @@ import ke_drl
 print(f"Installed ke_drl source: {ke_drl.__file__}")
 PY
 
-python3 mu_plot.py
+python3 mu_plot.py \
+  --mu-dir "$RUN_DIR/mu" \
+  --metrics-dir "$RUN_DIR/metrics" \
+  --plots-dir "$RUN_DIR/plots" \
+  --params "$RUN_DIR/params.yaml"

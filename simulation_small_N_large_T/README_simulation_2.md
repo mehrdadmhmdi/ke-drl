@@ -30,13 +30,12 @@ For the default setting,
 
 ```text
 n_ids = 300
-T = 500      -> n_raw = 149700
-T = 1000     -> n_raw = 299700
-n_basis = 1500
-m_grid = 400
+T = 50       -> n_raw = 14700
+n_basis = 100
+m_grid = 100
 ```
 
-so `B_hat` is `1500 x 400`, instead of `149700 x 400` or `299700 x 400`.
+so `B_hat` is `100 x 100`, instead of `14700 x 100`.
 
 ## Cluster commands
 
@@ -46,29 +45,21 @@ Run from this folder:
 cd /work/nvme/bfez/mehrdad3/DistRL/simulation_2
 ```
 
-For `T=500`:
+For `T=50`, `N=300`, `L=100`, `m=100`:
 
 ```bash
-jid_prep=$(sbatch --parsable --export=ALL,SIM2_STAGE=prepare,SIM2_TIMEPOINTS=500 Job_sim2.sbatch)
-jid_fit=$(sbatch --parsable --dependency=afterok:$jid_prep --array=0-499 --export=ALL,SIM2_STAGE=fit,SIM2_TIMEPOINTS=500 Job_sim2.sbatch)
-sbatch --dependency=afterok:$jid_fit --export=ALL,SIM2_STAGE=aggregate,SIM2_TIMEPOINTS=500 Job_sim2.sbatch
-```
-
-For `T=1000`:
-
-```bash
-jid_prep=$(sbatch --parsable --export=ALL,SIM2_STAGE=prepare,SIM2_TIMEPOINTS=1000,SIM2_TAG=T1000_N300_r1500 Job_sim2.sbatch)
-jid_fit=$(sbatch --parsable --dependency=afterok:$jid_prep --array=0-499 --export=ALL,SIM2_STAGE=fit,SIM2_TIMEPOINTS=1000,SIM2_TAG=T1000_N300_r1500 Job_sim2.sbatch)
-sbatch --dependency=afterok:$jid_fit --export=ALL,SIM2_STAGE=aggregate,SIM2_TIMEPOINTS=1000,SIM2_TAG=T1000_N300_r1500 Job_sim2.sbatch
+jid_prep=$(sbatch --parsable --export=ALL,SIM2_STAGE=prepare Job_sim2.sbatch)
+jid_fit=$(sbatch --parsable --dependency=afterok:$jid_prep --array=0-99 --export=ALL,SIM2_STAGE=fit Job_sim2.sbatch)
+sbatch --dependency=afterok:$jid_fit --export=ALL,SIM2_STAGE=aggregate Job_sim2.sbatch
 ```
 
 Useful overrides:
 
 ```bash
-SIM2_BASIS_N=2500
-SIM2_OPERATOR_REDUCED_N=2500
-SIM2_NUM_REPLICATES=500
-SIM2_GRID_POINTS=600
+SIM2_BASIS_N=100
+SIM2_OPERATOR_REDUCED_N=100
+SIM2_NUM_REPLICATES=100
+SIM2_GRID_POINTS=100
 SIM2_Z_IDS=50000
 SIM2_KMEANS_ITER=30
 OFFLINE_DATA_WORKERS=8

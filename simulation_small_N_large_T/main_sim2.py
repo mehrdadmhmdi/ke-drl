@@ -35,17 +35,25 @@ def deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
 
 
 def scenario_overrides() -> dict[str, Any]:
-    n_timepoints = env_int("SIM2_TIMEPOINTS", 500)
-    basis_n = env_int("SIM2_BASIS_N", env_int("SIM2_REDUCED_N", 1500))
+    n_ids = env_int("SIM2_N_IDS", 300)
+    n_timepoints = env_int("SIM2_TIMEPOINTS", 50)
+    raw_transition_rows = n_ids * max(1, n_timepoints - 1)
+    basis_n = env_int("SIM2_BASIS_N", env_int("SIM2_REDUCED_N", 100))
     return {
-        "n_ids": env_int("SIM2_N_IDS", 300),
+        "n_ids": n_ids,
         "n_timepoints": n_timepoints,
         "offline_burn_in": env_int("SIM2_BURN_IN", 100),
-        "experiment": {"num_replicates": env_int("SIM2_NUM_REPLICATES", 500)},
-        "num_grid_points": env_int("SIM2_GRID_POINTS", 400),
+        "experiment": {"num_replicates": env_int("SIM2_NUM_REPLICATES", 100)},
+        "num_grid_points": env_int("SIM2_GRID_POINTS", 100),
         "Z_sim": {
             "n_ids": env_int("SIM2_Z_IDS", 10000),
             "n_timepoints": env_int("SIM2_Z_TIMEPOINTS", n_timepoints),
+        },
+        "target_set": {
+            "mode": os.environ.get("SIM2_TARGET_MODE", "all"),
+            "num_points": env_int("SIM2_TARGET_POINTS", raw_transition_rows),
+            "seed_offset": 7919,
+            "exclude_benchmark": False,
         },
         "mean_embedding_basis": {
             "method": os.environ.get("SIM2_BASIS_METHOD", "kmeans"),
@@ -153,17 +161,13 @@ def aggregate(base_params: str, shared_data_dir: Path) -> None:
 
 
 def commands() -> None:
-    reps = env_int("SIM2_NUM_REPLICATES", 500)
+    reps = env_int("SIM2_NUM_REPLICATES", 100)
     last = reps - 1
     print(
-        "\nExample for T=500:\n"
-        "  jid_prep=$(sbatch --parsable --export=ALL,SIM2_STAGE=prepare,SIM2_TIMEPOINTS=500 Job_sim2.sbatch)\n"
-        f"  jid_fit=$(sbatch --parsable --dependency=afterok:$jid_prep --array=0-{last} --export=ALL,SIM2_STAGE=fit,SIM2_TIMEPOINTS=500 Job_sim2.sbatch)\n"
-        "  sbatch --dependency=afterok:$jid_fit --export=ALL,SIM2_STAGE=aggregate,SIM2_TIMEPOINTS=500 Job_sim2.sbatch\n"
-        "\nExample for T=1000:\n"
-        "  jid_prep=$(sbatch --parsable --export=ALL,SIM2_STAGE=prepare,SIM2_TIMEPOINTS=1000,SIM2_TAG=T1000_N300_r1500 Job_sim2.sbatch)\n"
-        f"  jid_fit=$(sbatch --parsable --dependency=afterok:$jid_prep --array=0-{last} --export=ALL,SIM2_STAGE=fit,SIM2_TIMEPOINTS=1000,SIM2_TAG=T1000_N300_r1500 Job_sim2.sbatch)\n"
-        "  sbatch --dependency=afterok:$jid_fit --export=ALL,SIM2_STAGE=aggregate,SIM2_TIMEPOINTS=1000,SIM2_TAG=T1000_N300_r1500 Job_sim2.sbatch\n"
+        "\nExample for T=50, N=300, L=100, m=100:\n"
+        "  jid_prep=$(sbatch --parsable --export=ALL,SIM2_STAGE=prepare Job_sim2.sbatch)\n"
+        f"  jid_fit=$(sbatch --parsable --dependency=afterok:$jid_prep --array=0-{last} --export=ALL,SIM2_STAGE=fit Job_sim2.sbatch)\n"
+        "  sbatch --dependency=afterok:$jid_fit --export=ALL,SIM2_STAGE=aggregate Job_sim2.sbatch\n"
     )
 
 

@@ -140,6 +140,7 @@ jid_est=$(sbatch --parsable \
     Job_est.sbatch)
 
 jid_plot=$(sbatch --parsable \
+    --chdir="${outdir}" \
     --dependency=afterok:${jid_est} \
     --output=${outdir}/logs/Job_plot.%j.log \
     --export=ALL,OUTDIR=${outdir},KEDRL_GIT_URL="${KEDRL_GIT_URL}",KEDRL_GIT_REF="${KEDRL_GIT_REF}" \
