@@ -1061,6 +1061,7 @@ def _build_summary_caption(
     op = params.get("operator_approximation") or {}
     ratio = params.get("ratio") or {}
     basis = params.get("mean_embedding_basis") or {}
+    reduction = params.get("transition_reduction") or {}
     policy = params.get("policy") or {}
     n_rep_actual = _actual_replicate_count(metrics_df)
     n_rep_requested = (params.get("experiment") or {}).get("num_replicates")
@@ -1074,29 +1075,30 @@ def _build_summary_caption(
     combo = "configuration"
     if meta:
         combo = f"configuration {meta.get('combo_id', 'NA')} ({meta.get('combo_name', 'unnamed')})"
-        overrides = meta.get("overrides") or {}
-        if overrides:
-            combo += f", overrides={json.dumps(overrides, sort_keys=True)}"
+
+    target_mode = target_set.get("mode")
+    target_points = target_set.get("num_points")
+    if str(target_mode).lower() in {"all", "train_all"}:
+        target_points = params.get("n_ids", 0) * max(1, int(params.get("n_timepoints", 2)) - 1)
+    reduction_desc = (
+        f"{reduction.get('method', 'none')} L_op={reduction.get('n_basis')}"
+        if reduction.get("enabled")
+        else "off"
+    )
 
     specs = [
         f"{combo}.",
-        f"Offline data: n_ids={params.get('n_ids')}, n_timepoints={params.get('n_timepoints')}, "
-        f"burn_in={params.get('offline_burn_in')}, {rep_part}.",
-        f"Training targets: {target_set.get('num_points')} points, mode={target_set.get('mode')}, "
-        f"exclude_evaluation_targets={target_set.get('exclude_benchmark')}.",
-        f"Test targets: {bench.get('num_points')} points; {_format_evaluation_points(points, params)}.",
-        f"Monte Carlo truth: {z_sim.get('n_ids')} trajectories, {z_sim.get('n_timepoints')} time points; "
-        f"gamma={params.get('gamma_val')}; Z grid={params.get('num_grid_points')}; reward_dim={params.get('reward_dim')}.",
-        f"Kernel/operator: {kernel.get('type')} nu={kernel.get('nu')}, length_scale={kernel.get('length_scale')}, "
-        f"sigma={kernel.get('sigma')}; operator={op.get('method')} with {op.get('num_features')} features; "
-        f"uLSIF basis={ratio.get('n_basis')}.",
-        f"Mean-embedding basis: method={basis.get('method', 'full')}, L={basis.get('n_basis', 'full')}; "
-        f"B shape is L x {params.get('num_grid_points')}.",
-        f"Optimization: steps={opt.get('num_steps')}, lr={opt.get('lr')}, weight_decay={opt.get('weight_decay')}, "
-        f"target_batch_size={opt.get('target_batch_size')}, lambda_reg={params.get('lambda_reg')}, "
-        f"lambda_B={params.get('lambda_B')}, mass_anchor_lambda={opt.get('mass_anchor_lambda')}, "
-        f"eta_clip=[{opt.get('eta_clip_min')}, {opt.get('eta_clip_max')}].",
-        f"Policies: behavior={policy.get('Behvaioral_policy')}, test_target={policy.get('evaluation_Target_policy')}.",
+        f"Offline: N={params.get('n_ids')}, T={params.get('n_timepoints')}, burn-in={params.get('offline_burn_in')}, {rep_part}; "
+        f"training targets={target_points} ({target_mode}); test targets={bench.get('num_points')}.",
+        f"MC truth: Z_sim N={z_sim.get('n_ids')}, T={z_sim.get('n_timepoints')}; gamma={params.get('gamma_val')}; "
+        f"reward_dim={params.get('reward_dim')}.",
+        f"B: L={basis.get('n_basis', 'full')}, m={params.get('num_grid_points')}; basis={basis.get('method', 'full')}; "
+        f"transition reduction={reduction_desc}.",
+        f"Kernel/operator: {kernel.get('type')} nu={kernel.get('nu')}, length={kernel.get('length_scale')}, "
+        f"sigma={kernel.get('sigma')}; operator={op.get('method')}({op.get('num_features')} features); uLSIF={ratio.get('n_basis')}.",
+        f"Optimization: steps={opt.get('num_steps')}, lr={opt.get('lr')}, lambda_reg={params.get('lambda_reg')}, "
+        f"lambda_B={params.get('lambda_B')}, target_batch={opt.get('target_batch_size')}.",
+        f"Policies: behavior={policy.get('Behvaioral_policy')}, test={policy.get('evaluation_Target_policy')}.",
     ]
     return " ".join(specs)
 

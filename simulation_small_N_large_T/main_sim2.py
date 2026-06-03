@@ -47,7 +47,7 @@ def scenario_overrides() -> dict[str, Any]:
         "num_grid_points": env_int("SIM2_GRID_POINTS", 100),
         "Z_sim": {
             "n_ids": env_int("SIM2_Z_IDS", 10000),
-            "n_timepoints": env_int("SIM2_Z_TIMEPOINTS", n_timepoints),
+            "n_timepoints": env_int("SIM2_Z_TIMEPOINTS", 500),
         },
         "target_set": {
             "mode": os.environ.get("SIM2_TARGET_MODE", "all"),
