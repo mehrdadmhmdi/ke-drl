@@ -781,7 +781,7 @@ def plot_embedding_quality_diagnostic(
             if clipped:
                 ax.text(0.98, 0.94, "y-axis clipped at 99%", transform=ax.transAxes, ha="right", va="top", fontsize=8)
             ax.set_title("(b) Relative Residual vs Fitted Embedding Signal")
-            ax.set_xlabel(r"Estimated embedding signal $\|\hat{\mu}_i\|_{\mathcal H}^2$")
+            ax.set_xlabel(r"Estimated embedding signal $\|\hat{\mu}_i\|_{\mathcal{H}}^2$")
             ax.set_ylabel("Relative embedding error")
         else:
             ax.axis("off")
