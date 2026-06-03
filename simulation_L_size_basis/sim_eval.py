@@ -1027,8 +1027,12 @@ def plot_embedding_quality_diagnostic(
             ax.axis("off")
             ax.text(0.5, 0.5, "Global diagnostic unavailable", ha="center", va="center", transform=ax.transAxes)
         ax.set_title("(a) Global Explained Embedding Signal" if mode == "simulation" else "(a) Global Normalized Bellman Error")
-        ax.set_xlabel("Offline replicate")
-        ax.set_ylabel("Explained embedding signal" if mode == "simulation" else "Normalized Bellman error")
+        ax.set_xlabel("Offline Replicate" if mode == "simulation" else "Offline replicate")
+        ax.set_ylabel(
+            r"Explained Embedding Signal $\mathrm{EES}_r$"
+            if mode == "simulation"
+            else "Normalized Bellman error"
+        )
     else:
         ax.axis("off")
         ax.text(0.5, 0.5, "Global diagnostic unavailable", ha="center", va="center", transform=ax.transAxes)
@@ -1050,8 +1054,26 @@ def plot_embedding_quality_diagnostic(
             x, y = np.asarray([], dtype=float), np.asarray([], dtype=float)
         if x.size:
             ax.scatter(x, y, s=18, color="#FF5F05", alpha=0.55, edgecolor="none")
+            ax.axhline(0.0, color="0.45", ls=":", lw=1.0)
             ax.axhline(1.0, color="0.25", ls="--", lw=1.1)
-            ax.text(0.98, 1.0, "error = truth signal", transform=ax.get_yaxis_transform(), ha="right", va="bottom", fontsize=8)
+            ax.text(
+                0.98,
+                1.0,
+                "Failure Threshold: Error Equals Truth Signal",
+                transform=ax.get_yaxis_transform(),
+                ha="right",
+                va="bottom",
+                fontsize=8,
+            )
+            ax.text(
+                0.98,
+                0.0,
+                "Exact Embedding Match",
+                transform=ax.get_yaxis_transform(),
+                ha="right",
+                va="bottom",
+                fontsize=8,
+            )
             xlo, xhi = _robust_limits(x, q_low=0, q_high=100, include_zero=True)
             y_min = float(np.nanmin(y))
             y_max = float(np.nanmax(y))
@@ -1074,9 +1096,13 @@ def plot_embedding_quality_diagnostic(
             ax.set_ylim(ylo, yhi)
             if clipped:
                 ax.text(0.98, 0.94, "y-axis clipped at 99%", transform=ax.transAxes, ha="right", va="top", fontsize=8)
-            ax.set_title("(b) Relative Residual vs Fitted Embedding Signal")
-            ax.set_xlabel(r"Estimated embedding signal $\|\hat{\mu}_i\|_{\mathcal{H}}^2$")
-            ax.set_ylabel("Relative embedding error")
+            ax.set_title("(b) Relative Embedding Error vs Estimated Embedding Signal")
+            ax.set_xlabel(r"Estimated Embedding Signal $\|\hat{\mu}_i\|_{\mathcal{H}}^2$")
+            ax.set_ylabel(
+                r"Relative Embedding Error $\mathrm{REE}_i = "
+                r"\|\hat{\mu}_i-\mu_i^{MC}\|_{\mathcal{H}}^2 / "
+                r"(\|\mu_i^{MC}\|_{\mathcal{H}}^2+\varepsilon)$"
+            )
         else:
             ax.axis("off")
             ax.text(0.5, 0.5, "Relative residual diagnostic unavailable", ha="center", va="center", transform=ax.transAxes)
@@ -1168,15 +1194,15 @@ def plot_embedding_quality_diagnostic(
             ax.text(
                 0.98,
                 0.06,
-                f"{lower_outlier_count} lower outliers clipped",
+                f"{lower_outlier_count} Lower Outliers Clipped At -0.2",
                 transform=ax.transAxes,
                 ha="right",
                 va="bottom",
                 fontsize=8,
             )
         ax.set_title("(c) Pointwise Explained Embedding Signal")
-        ax.set_xlabel("Test target")
-        ax.set_ylabel("Explained embedding signal")
+        ax.set_xlabel("Evaluation Target")
+        ax.set_ylabel(r"Explained Embedding Signal $\mathrm{EES}_i$")
     elif point_col in df.columns and df[point_col].notna().any():
         if "benchmark_id" in df.columns:
             box_data, labels = [], []
