@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import os
 import sys
 import time
@@ -40,6 +41,69 @@ POLICY_CODE_TO_NAME = {
     "L": "logistic",
 }
 
+UG_CENTER = [0.1, -0.1, 0.15, -0.45, 0.0]
+UL_CENTER = [0.08, -0.12, 0.16, -0.42, -0.02]
+GAUSSIAN_CENTER = [0.12, -0.08, 0.12, -0.35, 0.04]
+LOGISTIC_CENTER = [0.05, -0.12, 0.18, -0.4, -0.03]
+
+
+def gaussian_policy(theta_mean: list[float], epsilon_mean: float, *, log_std: float) -> dict[str, Any]:
+    return {
+        "name": "gaussian",
+        "theta_mean": theta_mean,
+        "theta_std": [0.0, 0.0, 0.0, 0.0, 0.0],
+        "epsilon_mean": [epsilon_mean],
+        "epsilon_std": [log_std],
+    }
+
+
+def logistic_policy(theta_loc: list[float], epsilon_loc: float, *, log_scale: float) -> dict[str, Any]:
+    return {
+        "name": "logistic",
+        "theta_loc": theta_loc,
+        "theta_scale": [0.0, 0.0, 0.0, 0.0, 0.0],
+        "epsilon_loc": [epsilon_loc],
+        "epsilon_scale": [log_scale],
+    }
+
+
+def uniform_centered_policy(theta_center: list[float], epsilon_center: float, *, half_width: float) -> dict[str, Any]:
+    return {
+        "name": "uniform",
+        "theta_lower": theta_center,
+        "theta_upper": theta_center,
+        "epsilon_lower": [epsilon_center - half_width],
+        "epsilon_upper": [epsilon_center + half_width],
+    }
+
+
+POLICY_PAIR_CONFIGS: dict[str, dict[str, Any]] = {
+    "UG": {
+        "uniform": uniform_centered_policy(UG_CENTER, 0.025, half_width=0.75),
+        "gaussian": gaussian_policy(UG_CENTER, 0.025, log_std=-2.2),
+    },
+    "UL": {
+        "uniform": uniform_centered_policy(UL_CENTER, 0.03, half_width=0.75),
+        "logistic": logistic_policy(UL_CENTER, 0.03, log_scale=-2.4),
+    },
+    "GU": {
+        "gaussian": gaussian_policy(GAUSSIAN_CENTER, 0.02, log_std=-2.0),
+        "uniform": uniform_centered_policy(GAUSSIAN_CENTER, 0.02, half_width=0.25),
+    },
+    "GL": {
+        "gaussian": gaussian_policy(GAUSSIAN_CENTER, 0.02, log_std=-2.0),
+        "logistic": logistic_policy([0.1, -0.06, 0.14, -0.32, 0.02], 0.03, log_scale=-2.4),
+    },
+    "LU": {
+        "logistic": logistic_policy(LOGISTIC_CENTER, 0.03, log_scale=-2.2),
+        "uniform": uniform_centered_policy(LOGISTIC_CENTER, 0.03, half_width=0.25),
+    },
+    "LG": {
+        "logistic": logistic_policy(LOGISTIC_CENTER, 0.03, log_scale=-2.2),
+        "gaussian": gaussian_policy([0.07, -0.1, 0.16, -0.38, -0.01], 0.02, log_std=-2.2),
+    },
+}
+
 
 def supported_policy_pairs() -> list[str]:
     return [
@@ -66,13 +130,22 @@ def scenario_policies(pair: str | None = None) -> tuple[str, str]:
     return POLICY_CODE_TO_NAME[pair[0]], POLICY_CODE_TO_NAME[pair[1]]
 
 
+def scenario_policy_config(pair: str) -> dict[str, Any]:
+    behavior_policy, target_policy = scenario_policies(pair)
+    cfg = {
+        "Behvaioral_policy": behavior_policy,
+        "evaluation_Target_policy": target_policy,
+    }
+    cfg.update(deepcopy(POLICY_PAIR_CONFIGS[pair]))
+    return cfg
+
+
 def scenario_overrides() -> dict[str, Any]:
     n_ids = env_int("SIM2_N_IDS", 300)
     n_timepoints = env_int("SIM2_TIMEPOINTS", 50)
     raw_transition_rows = n_ids * max(1, n_timepoints - 1)
     basis_n = env_int("SIM2_BASIS_N", env_int("SIM2_REDUCED_N", 200))
     policy_pair = scenario_policy_pair()
-    behavior_policy, target_policy = scenario_policies(policy_pair)
     return {
         "n_ids": n_ids,
         "n_timepoints": n_timepoints,
@@ -104,10 +177,7 @@ def scenario_overrides() -> dict[str, Any]:
             "max_iter": env_int("SIM2_KMEANS_ITER", 20),
             "batch_size": env_int("SIM2_REDUCTION_BATCH", 8192),
         },
-        "policy": {
-            "Behvaioral_policy": behavior_policy,
-            "evaluation_Target_policy": target_policy,
-        },
+        "policy": scenario_policy_config(policy_pair),
     }
 
 
