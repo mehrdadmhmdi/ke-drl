@@ -26,6 +26,13 @@ def env_int(name: str, default: int) -> int:
     return default if raw in (None, "") else int(raw)
 
 
+def env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw in (None, ""):
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
 def deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
     for key, value in src.items():
         if isinstance(value, dict) and isinstance(dst.get(key), dict):
@@ -265,7 +272,14 @@ def fit(base_params: str, shared_data_dir: Path, offline_id: int) -> None:
 
 def aggregate(base_params: str, shared_data_dir: Path) -> None:
     start = time.time()
-    params, tag = write_params(base_params)
+    reuse_existing_params = env_bool("SIM2_AGGREGATE_EXISTING_PARAMS") and Path("params.yaml").exists()
+    if reuse_existing_params:
+        with open("params.yaml", "r", encoding="utf-8") as f:
+            params = yaml.safe_load(f)
+        tag = scenario_tag(params)
+        print("Simulation-2 aggregate is reusing existing params.yaml.", flush=True)
+    else:
+        params, tag = write_params(base_params)
     n_rep = int(params["experiment"]["num_replicates"])
     policy = params.get("policy") or {}
     print(
@@ -278,7 +292,19 @@ def aggregate(base_params: str, shared_data_dir: Path) -> None:
     if actual < expected:
         print(f"Warning: aggregating {actual}/{expected} expected curves.", flush=True)
     run_step([sys.executable, "mu_plot.py"])
-    write_result(0, f"sim2_{tag}", {"simulation_2": scenario_overrides()}, time.time() - start)
+    if reuse_existing_params:
+        metadata = {
+            "simulation_2": {
+                "params_source": "existing params.yaml",
+                "policy": params.get("policy"),
+                "partial_aggregate": actual < expected,
+                "actual_curves": actual,
+                "expected_curves": expected,
+            }
+        }
+    else:
+        metadata = {"simulation_2": scenario_overrides()}
+    write_result(0, f"sim2_{tag}", metadata, time.time() - start)
 
 
 def commands() -> None:

@@ -117,6 +117,15 @@ else
   export TORCH_NUM_THREADS="${SLURM_CPUS_PER_TASK:-64}"
 fi
 
+stage_file_atomic() {
+  local src="$1"
+  local dst="$2"
+  local tmp
+  tmp="${dst}.tmp.${SLURM_JOB_ID:-manual}.${SLURM_ARRAY_TASK_ID:-0}.$$"
+  cp "$src" "$tmp"
+  mv -f "$tmp" "$dst"
+}
+
 for f in \
   main_offlinedata.py \
   main_MonteCarloZ.py \
@@ -130,7 +139,7 @@ for f in \
   parallel_offlinedata.py \
   params_tune.yaml
 do
-  cp "$BASE/$f" "$WORK/"
+  stage_file_atomic "$BASE/$f" "$WORK/$f"
 done
 
 cd "$WORK"
