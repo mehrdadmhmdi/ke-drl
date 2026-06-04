@@ -25,6 +25,24 @@ from ke_drl.embedding_metrics import (
 )
 
 
+POLICY_NAME_TO_CODE = {
+    "uniform": "U",
+    "gaussian": "G",
+    "logistic": "L",
+}
+
+
+def _policy_code_from_params(params: dict | None) -> str:
+    policy = (params or {}).get("policy") or {}
+    behavior = str(policy.get("Behvaioral_policy", "")).strip().lower()
+    target = str(policy.get("evaluation_Target_policy", "")).strip().lower()
+    behavior_code = POLICY_NAME_TO_CODE.get(behavior)
+    target_code = POLICY_NAME_TO_CODE.get(target)
+    if behavior_code and target_code:
+        return f"{behavior_code}{target_code}"
+    return "policy"
+
+
 def _configure_times_fonts(plt) -> None:
     plt.rcParams.update(
         {
@@ -325,8 +343,11 @@ def plot_mu_summary(
         return
 
     mu_dir = Path(mu_dir)
+    metrics_dir = Path(metrics_dir)
     outdir = Path(outdir)
     outdir.mkdir(parents=True, exist_ok=True)
+    params_for_names = _load_params_for_caption(mu_dir, metrics_dir, outdir)
+    policy_code = _policy_code_from_params(params_for_names)
 
     hats, trues, run_ids = [], [], []
     for hat_path in sorted(mu_dir.glob("mu_hat_*.csv")):
@@ -346,7 +367,7 @@ def plot_mu_summary(
     t_mean, t_sd = T.mean(axis=0), T.std(axis=0, ddof=1) if T.shape[0] > 1 else np.zeros(T.shape[1])
 
     metrics_df = None
-    per_run_path = Path(metrics_dir) / "per_run_metrics.csv"
+    per_run_path = metrics_dir / "per_run_metrics.csv"
     if per_run_path.exists():
         metrics_df = pd.read_csv(per_run_path)
 
@@ -358,7 +379,7 @@ def plot_mu_summary(
     if multi_benchmark:
         caption = _build_summary_caption(
             mu_dir=mu_dir,
-            metrics_dir=Path(metrics_dir),
+            metrics_dir=metrics_dir,
             outdir=outdir,
             metrics_df=metrics_df,
         )
@@ -370,12 +391,26 @@ def plot_mu_summary(
             outdir=outdir,
             plt=plt,
             caption=caption,
+            policy_code=policy_code,
         )
     else:
-        _plot_four_panel_summary(H, T, run_ids=run_ids, metrics_df=metrics_df, outdir=outdir, plt=plt)
+        _plot_four_panel_summary(
+            H,
+            T,
+            run_ids=run_ids,
+            metrics_df=metrics_df,
+            outdir=outdir,
+            plt=plt,
+            policy_code=policy_code,
+        )
 
     if metrics_df is not None:
-        plot_embedding_quality_diagnostic(metrics_df=metrics_df, outdir=outdir, plt=plt)
+        plot_embedding_quality_diagnostic(
+            metrics_df=metrics_df,
+            outdir=outdir,
+            plt=plt,
+            filename=f"embedding_quality_summary_{policy_code}.png",
+        )
 
     if metrics_df is not None and "benchmark_id" in metrics_df.columns:
         rid_to_benchmark = dict(zip(metrics_df["run_id"].astype(str), metrics_df["benchmark_id"]))
@@ -395,6 +430,7 @@ def plot_mu_summary(
                     metrics_df=group_metrics,
                     outdir=group_dir,
                     plt=plt,
+                    policy_code=policy_code,
                 )
 
     fig, ax = plt.subplots(figsize=(10, 5))
@@ -407,7 +443,7 @@ def plot_mu_summary(
     ax.grid(alpha=0.25)
     ax.legend()
     fig.tight_layout()
-    fig.savefig(outdir / "mu_summary.png", dpi=300)
+    fig.savefig(outdir / f"mu_curve_summary_{policy_code}.png", dpi=300)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(5, 5))
@@ -429,7 +465,7 @@ def plot_mu_summary(
     ax.set_ylabel("Estimated mean embedding")
     ax.grid(alpha=0.25)
     fig.tight_layout()
-    fig.savefig(outdir / "mu_calibration.png", dpi=300)
+    fig.savefig(outdir / f"mu_calibration_{policy_code}.png", dpi=300)
     plt.close(fig)
 
 
@@ -633,6 +669,7 @@ def plot_all_replicate_mu_diagnostics(
 
     mu_dir = Path(mu_dir)
     outdir = Path(outdir)
+    policy_code = _policy_code_from_params(_load_params_for_caption(mu_dir, outdir, outdir))
     count = 0
     for hat_path in sorted(mu_dir.glob("mu_hat_*.csv")):
         run_id = hat_path.stem.replace("mu_hat_", "")
@@ -645,6 +682,7 @@ def plot_all_replicate_mu_diagnostics(
             outdir=_replicate_plot_dir(outdir, run_id),
             run_id=run_id,
             plt=plt,
+            filename=f"mu_hat_vs_truth_{policy_code}.png",
         )
         count += 1
     return count
@@ -937,7 +975,6 @@ def plot_embedding_quality_diagnostic(
 
     fig.tight_layout()
     fig.savefig(out_path / filename, dpi=300)
-    fig.savefig(out_path / Path(filename).with_suffix(".pdf"), dpi=300)
     plt.close(fig)
     if close_plt:
         plt.close("all")
@@ -1199,6 +1236,7 @@ def _plot_multi_benchmark_summary(
     benchmark_ids_subset: list[object] | None = None,
     filename_suffix: str = "",
     make_top10: bool = True,
+    policy_code: str = "policy",
 ) -> None:
     metrics = metrics_df.copy()
     metrics["run_id"] = metrics["run_id"].astype(str)
@@ -1396,8 +1434,8 @@ def _plot_multi_benchmark_summary(
         fig.tight_layout(rect=(0.0, 0.23, 1.0, 0.985))
     else:
         fig.tight_layout()
-    fig.savefig(outdir / f"mu_summary_UG{filename_suffix}.png", dpi=300)
-    fig.savefig(outdir / f"mu_summary_benchmarks{filename_suffix}.png", dpi=300)
+    fig.savefig(outdir / f"mu_summary_{policy_code}{filename_suffix}.png", dpi=300)
+    fig.savefig(outdir / f"mu_summary_benchmarks_{policy_code}{filename_suffix}.png", dpi=300)
     plt.close(fig)
 
     if make_top10 and benchmark_ids_subset is None and len(all_benchmark_ids) > 10:
@@ -1420,6 +1458,7 @@ def _plot_multi_benchmark_summary(
                 benchmark_ids_subset=top10,
                 filename_suffix="_top10",
                 make_top10=False,
+                policy_code=policy_code,
             )
 
 
@@ -1431,6 +1470,7 @@ def _plot_four_panel_summary(
     metrics_df: pd.DataFrame | None,
     outdir: Path,
     plt,
+    policy_code: str = "policy",
 ) -> None:
     x = np.arange(H.shape[1])
     h_mean = H.mean(axis=0)
@@ -1559,5 +1599,5 @@ def _plot_four_panel_summary(
     ax.grid(alpha=0.25)
 
     fig.tight_layout()
-    fig.savefig(outdir / "mu_summary_UG.png", dpi=300)
+    fig.savefig(outdir / f"mu_summary_{policy_code}.png", dpi=300)
     plt.close(fig)

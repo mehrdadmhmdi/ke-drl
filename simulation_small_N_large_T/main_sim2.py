@@ -34,11 +34,45 @@ def deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
     return dst
 
 
+POLICY_CODE_TO_NAME = {
+    "U": "uniform",
+    "G": "gaussian",
+    "L": "logistic",
+}
+
+
+def supported_policy_pairs() -> list[str]:
+    return [
+        f"{behavior}{target}"
+        for behavior in POLICY_CODE_TO_NAME
+        for target in POLICY_CODE_TO_NAME
+        if behavior != target
+    ]
+
+
+def scenario_policy_pair() -> str:
+    pair = os.environ.get("SIM2_POLICY_PAIR", "UL").strip().upper()
+    if len(pair) != 2 or any(code not in POLICY_CODE_TO_NAME for code in pair):
+        allowed = ", ".join(supported_policy_pairs())
+        raise ValueError(f"SIM2_POLICY_PAIR must be one of {allowed}; got {pair!r}.")
+    if pair[0] == pair[1]:
+        allowed = ", ".join(supported_policy_pairs())
+        raise ValueError(f"SIM2_POLICY_PAIR must use different behavior and target policies ({allowed}); got {pair!r}.")
+    return pair
+
+
+def scenario_policies(pair: str | None = None) -> tuple[str, str]:
+    pair = scenario_policy_pair() if pair is None else pair
+    return POLICY_CODE_TO_NAME[pair[0]], POLICY_CODE_TO_NAME[pair[1]]
+
+
 def scenario_overrides() -> dict[str, Any]:
     n_ids = env_int("SIM2_N_IDS", 300)
     n_timepoints = env_int("SIM2_TIMEPOINTS", 50)
     raw_transition_rows = n_ids * max(1, n_timepoints - 1)
-    basis_n = env_int("SIM2_BASIS_N", env_int("SIM2_REDUCED_N", 100))
+    basis_n = env_int("SIM2_BASIS_N", env_int("SIM2_REDUCED_N", 200))
+    policy_pair = scenario_policy_pair()
+    behavior_policy, target_policy = scenario_policies(policy_pair)
     return {
         "n_ids": n_ids,
         "n_timepoints": n_timepoints,
@@ -70,6 +104,10 @@ def scenario_overrides() -> dict[str, Any]:
             "max_iter": env_int("SIM2_KMEANS_ITER", 20),
             "batch_size": env_int("SIM2_REDUCTION_BATCH", 8192),
         },
+        "policy": {
+            "Behvaioral_policy": behavior_policy,
+            "evaluation_Target_policy": target_policy,
+        },
     }
 
 
@@ -98,10 +136,14 @@ def write_params(base_params: str) -> tuple[dict[str, Any], str]:
 def prepare(base_params: str) -> None:
     params, tag = write_params(base_params)
     n_rep = int(params["experiment"]["num_replicates"])
+    policy = params.get("policy") or {}
     print("Simulation-2 shared-data parameters:")
     print(
         {
             "tag": tag,
+            "policy_pair": scenario_policy_pair(),
+            "behavior_policy": policy.get("Behvaioral_policy"),
+            "target_policy": policy.get("evaluation_Target_policy"),
             "n_ids": params["n_ids"],
             "n_timepoints": params["n_timepoints"],
             "raw_transition_rows": int(params["n_ids"]) * (int(params["n_timepoints"]) - 1),
@@ -127,7 +169,12 @@ def prepare(base_params: str) -> None:
 def fit(base_params: str, shared_data_dir: Path, offline_id: int) -> None:
     params, tag = write_params(base_params)
     n_rep = int(params["experiment"]["num_replicates"])
-    print(f"Simulation-2 fit tag={tag}, offline_id={offline_id}")
+    policy = params.get("policy") or {}
+    print(
+        f"Simulation-2 fit tag={tag}, policy_pair={scenario_policy_pair()}, "
+        f"behavior={policy.get('Behvaioral_policy')}, target={policy.get('evaluation_Target_policy')}, "
+        f"offline_id={offline_id}"
+    )
     run_step([sys.executable, "validate_sim_config.py", "--params", "params.yaml"])
     stage_shared_data(shared_data_dir, params, n_rep, offline_id=offline_id)
     run_step(
@@ -150,7 +197,11 @@ def aggregate(base_params: str, shared_data_dir: Path) -> None:
     start = time.time()
     params, tag = write_params(base_params)
     n_rep = int(params["experiment"]["num_replicates"])
-    print(f"Simulation-2 aggregate tag={tag}")
+    policy = params.get("policy") or {}
+    print(
+        f"Simulation-2 aggregate tag={tag}, policy_pair={scenario_policy_pair()}, "
+        f"behavior={policy.get('Behvaioral_policy')}, target={policy.get('evaluation_Target_policy')}"
+    )
     stage_shared_data(shared_data_dir, params, n_rep, offline_id=None)
     expected = expected_curve_count(params)
     actual = len(list(Path("mu").glob("mu_hat_*.csv")))
@@ -163,11 +214,14 @@ def aggregate(base_params: str, shared_data_dir: Path) -> None:
 def commands() -> None:
     reps = env_int("SIM2_NUM_REPLICATES", 100)
     last = reps - 1
+    pairs = " ".join(supported_policy_pairs())
     print(
-        "\nExample for T=50, N=300, L=100, m=100:\n"
-        "  jid_prep=$(sbatch --parsable --export=ALL,SIM2_STAGE=prepare Job_sim2.sbatch)\n"
-        f"  jid_fit=$(sbatch --parsable --dependency=afterok:$jid_prep --array=0-{last} --export=ALL,SIM2_STAGE=fit Job_sim2.sbatch)\n"
-        "  sbatch --dependency=afterok:$jid_fit --export=ALL,SIM2_STAGE=aggregate Job_sim2.sbatch\n"
+        "\nExample for T=50, N=300, L=200, m=100, all off-diagonal policy pairs:\n"
+        f"  for PAIR in {pairs}; do\n"
+        "    jid_prep=$(sbatch --parsable --job-name=${PAIR}_prepare --export=ALL,SIM2_POLICY_PAIR=$PAIR,SIM2_STAGE=prepare Job_sim2.sbatch)\n"
+        f"    jid_fit=$(sbatch --parsable --dependency=afterok:$jid_prep --array=0-{last} --job-name=${{PAIR}}_fit --export=ALL,SIM2_POLICY_PAIR=$PAIR,SIM2_STAGE=fit Job_sim2.sbatch)\n"
+        "    sbatch --dependency=afterok:$jid_fit --job-name=${PAIR}_aggregate --export=ALL,SIM2_POLICY_PAIR=$PAIR,SIM2_STAGE=aggregate Job_sim2.sbatch\n"
+        "  done\n"
     )
 
 

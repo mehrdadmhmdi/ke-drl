@@ -8,7 +8,12 @@ from pathlib import Path
 import yaml
 
 from sim_utils import kedrl_import_info
-from sim_eval import export_metrics_tables, plot_all_replicate_mu_diagnostics, plot_mu_summary
+from sim_eval import (
+    _policy_code_from_params,
+    export_metrics_tables,
+    plot_all_replicate_mu_diagnostics,
+    plot_mu_summary,
+)
 
 
 print("# ================================================================ #")
@@ -41,15 +46,17 @@ print(
         "lambda_B": P.get("lambda_B", P.get("optimization", {}).get("lambda_B")),
         "kernel": P.get("kernel"),
         "target_set": P.get("target_set", {}),
+        "policy": P.get("policy", {}),
     },
 )
+policy_code = _policy_code_from_params(P)
 
 df = export_metrics_tables(mu_dir=args.mu_dir, metrics_dir=args.metrics_dir)
 plot_mu_summary(mu_dir=args.mu_dir, metrics_dir=args.metrics_dir, outdir=args.plots_dir)
 rep_plot_count = 0
 if not args.skip_replicate_plots:
     rep_plot_count = plot_all_replicate_mu_diagnostics(mu_dir=args.mu_dir, outdir=args.plots_dir)
-summary_path = Path(args.plots_dir) / "mu_summary_UG.png"
+summary_path = Path(args.plots_dir) / f"mu_summary_{policy_code}.png"
 if not summary_path.exists():
     raise RuntimeError(
         f"Expected {summary_path} was not created. Check that matplotlib is installed in the cluster environment."

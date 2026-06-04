@@ -1,8 +1,8 @@
 #!/bin/bash
 ##SBATCH --account=bfez-delta-gpu
 #SBATCH --account=bfez-dtai-gh
-#SBATCH --job-name=KEDRL_SIM2
-#SBATCH --output=logs/sim2_%A_%a.log
+#SBATCH --job-name=UL_SIM2
+#SBATCH --output=results/%x_%A_%a.log
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
@@ -38,11 +38,23 @@ if [ -z "$SIM2_STAGE" ]; then
 fi
 SIM2_TIMEPOINTS="${SIM2_TIMEPOINTS:-50}"
 SIM2_N_IDS="${SIM2_N_IDS:-300}"
-SIM2_REDUCED_N="${SIM2_REDUCED_N:-100}"
+SIM2_REDUCED_N="${SIM2_REDUCED_N:-200}"
 SIM2_TAG="${SIM2_TAG:-T${SIM2_TIMEPOINTS}_N${SIM2_N_IDS}_r${SIM2_REDUCED_N}}"
+SIM2_POLICY_PAIR="${SIM2_POLICY_PAIR:-UL}"
+case "$SIM2_POLICY_PAIR" in
+  UG|UL|GU|GL|LU|LG) ;;
+  *)
+    echo "SIM2_POLICY_PAIR must be one of UG, UL, GU, GL, LU, LG; got ${SIM2_POLICY_PAIR}" >&2
+    exit 1
+    ;;
+esac
+if [ -n "${SLURM_JOB_ID:-}" ]; then
+  scontrol update JobId="${SLURM_JOB_ID}" JobName="${SIM2_POLICY_PAIR}_${SIM2_STAGE}" >/dev/null 2>&1 || true
+fi
 
-SHARED_RUN="${SIM2_SHARED_RUN:-$BASE/runs/sim2_shared_${SIM2_TAG}}"
-RUN="${SIM2_RUN:-$BASE/runs/sim2_${SIM2_TAG}}"
+RESULT_ROOT="${SIM2_RESULT_ROOT:-$BASE/results/$SIM2_POLICY_PAIR}"
+SHARED_RUN="${SIM2_SHARED_RUN:-$RESULT_ROOT/shared}"
+RUN="${SIM2_RUN:-$RESULT_ROOT}"
 if [ "$SIM2_STAGE" = "prepare" ]; then
   WORK="$SHARED_RUN"
 else
@@ -50,7 +62,7 @@ else
 fi
 SHARED_DATA_DIR="$SHARED_RUN/data"
 
-mkdir -p "$BASE/logs" "$WORK" "$WORK/data" "$WORK/logs" "$WORK/mu" "$WORK/metrics" "$WORK/plots"
+mkdir -p "$BASE/results" "$RESULT_ROOT" "$WORK" "$WORK/data" "$WORK/logs" "$WORK/mu" "$WORK/metrics" "$WORK/plots"
 
 KEDRL_REPO_ROOT="${KEDRL_REPO_ROOT:-}"
 if [ -z "$KEDRL_REPO_ROOT" ]; then
@@ -124,6 +136,7 @@ done
 cd "$WORK"
 echo "Simulation-2 stage: ${SIM2_STAGE}"
 echo "Simulation-2 tag: ${SIM2_TAG}"
+echo "Simulation-2 policy pair: ${SIM2_POLICY_PAIR}"
 echo "Shared data: ${SHARED_DATA_DIR}"
 echo "Run folder: ${RUN}"
 

@@ -1,8 +1,8 @@
 #!/bin/bash
 ##SBATCH --account=bfez-delta-gpu
 #SBATCH --account=bfez-dtai-gh
-#SBATCH --job-name=KEDRL_TUNE_DATA
-#SBATCH --output=logs/tune_data.%j.log
+#SBATCH --job-name=UL_TUNE_DATA
+#SBATCH --output=results/tune_data.%j.log
 #SBATCH --time=04:00:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
@@ -41,8 +41,8 @@ export NUMEXPR_NUM_THREADS=1
 set -euo pipefail
 
 BASE=$PWD
-RUN="${KEDRL_SHARED_RUN:-$BASE/runs/tune_shared_data}"
-mkdir -p "$BASE/logs"
+RUN="${KEDRL_SHARED_RUN:-$BASE/results/tune_shared_data}"
+mkdir -p "$BASE/results"
 N_REP=$(python3 - <<'PY'
 import yaml
 with open("params_tune.yaml", "r", encoding="utf-8") as f:
@@ -72,7 +72,7 @@ fi
 
 if [ -d "$RUN" ] && { [ "${KEDRL_PREP_FORCE:-0}" = "1" ] || [ ! -e "$FINGERPRINT_FILE" ] || [ "$(cat "$FINGERPRINT_FILE" 2>/dev/null || true)" != "$CURRENT_FINGERPRINT" ]; }; then
   case "$(realpath "$RUN")" in
-    "$(realpath "$BASE")"/runs/tune_shared_data*) rm -rf "$RUN" ;;
+    "$(realpath "$BASE")"/results/tune_shared_data*) rm -rf "$RUN" ;;
     *) echo "Refusing to remove unexpected path: $RUN" >&2; exit 1 ;;
   esac
 fi

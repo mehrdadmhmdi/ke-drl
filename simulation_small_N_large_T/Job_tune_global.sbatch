@@ -1,8 +1,8 @@
 #!/bin/bash
 ##SBATCH --account=bfez-delta-gpu
 #SBATCH --account=bfez-dtai-gh
-#SBATCH --job-name=KEDRL_TUNE
-#SBATCH --output=logs/tune_%A_%a.log
+#SBATCH --job-name=UL_TUNE
+#SBATCH --output=results/tune_%A_%a.log
 #SBATCH --time=12:00:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
@@ -65,9 +65,9 @@ fi
 echo "Tuning combo id: ${COMBO_ID} / $((COMBO_COUNT - 1))"
 echo "Offline replicate id: ${OFFLINE_ID} / $((N_REP - 1))"
 
-RUN="$BASE/runs/tune_global_${SLURM_ARRAY_JOB_ID}_${COMBO_ID}"
-mkdir -p "$BASE/logs" "$RUN" "$RUN/data" "$RUN/logs" "$RUN/mu" "$RUN/metrics" "$RUN/plots"
-SHARED_DATA_DIR="${KEDRL_SHARED_DATA_DIR:-$BASE/runs/tune_shared_data/data}"
+RUN="$BASE/results/tune_global_${SLURM_ARRAY_JOB_ID}_${COMBO_ID}"
+mkdir -p "$BASE/results" "$RUN" "$RUN/data" "$RUN/logs" "$RUN/mu" "$RUN/metrics" "$RUN/plots"
+SHARED_DATA_DIR="${KEDRL_SHARED_DATA_DIR:-$BASE/results/tune_shared_data/data}"
 
 KEDRL_REPO_ROOT="${KEDRL_REPO_ROOT:-}"
 if [ -z "$KEDRL_REPO_ROOT" ]; then

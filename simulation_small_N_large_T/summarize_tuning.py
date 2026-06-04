@@ -7,14 +7,14 @@ import pandas as pd
 
 def main() -> None:
     rows = []
-    for path in sorted(Path("runs").glob("tune_global_*/metrics/tuning_result.csv")):
+    for path in sorted(Path("results").glob("tune_global_*/metrics/tuning_result.csv")):
         if not (path.parent / "tuning_combo_metadata.json").exists():
             continue
         df = pd.read_csv(path)
         df["run_dir"] = str(path.parents[1])
         rows.append(df)
     if not rows:
-        raise FileNotFoundError("No tuning_result.csv files found under runs/tune_global_*/metrics/.")
+        raise FileNotFoundError("No tuning_result.csv files found under results/tune_global_*/metrics/.")
     out = pd.concat(rows, ignore_index=True)
     if "score_true_z" not in out and "score" in out:
         out["score_true_z"] = out["score"]
@@ -25,7 +25,8 @@ def main() -> None:
         out = out.sort_values(["combined_rank", "score_true_z", "score_risk"])
     else:
         out = out.sort_values("score_true_z")
-    out.to_csv("runs/tuning_summary.csv", index=False)
+    Path("results").mkdir(exist_ok=True)
+    out.to_csv("results/tuning_summary.csv", index=False)
     cols = [
         "combo_id",
         "combo_name",
@@ -59,7 +60,7 @@ def main() -> None:
     ]
     cols = [c for c in cols if c in out.columns]
     print(out[cols].to_string(index=False))
-    print("Saved runs/tuning_summary.csv")
+    print("Saved results/tuning_summary.csv")
 
 
 if __name__ == "__main__":
