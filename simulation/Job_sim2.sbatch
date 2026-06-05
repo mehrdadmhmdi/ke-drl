@@ -1,7 +1,7 @@
 #!/bin/bash
 ##SBATCH --account=bfez-delta-gpu
 #SBATCH --account=bfez-dtai-gh
-#SBATCH --job-name=UL_SIM2
+#SBATCH --job-name=SIM2_PAIR
 #SBATCH --output=results/%x_%A_%a.log
 #SBATCH --time=24:00:00
 #SBATCH --nodes=1
@@ -39,7 +39,7 @@ fi
 SIM2_TIMEPOINTS="${SIM2_TIMEPOINTS:-50}"
 SIM2_N_IDS="${SIM2_N_IDS:-300}"
 SIM2_REDUCED_N="${SIM2_REDUCED_N:-200}"
-SIM2_TAG="${SIM2_TAG:-T${SIM2_TIMEPOINTS}_N${SIM2_N_IDS}_r${SIM2_REDUCED_N}}"
+SIM2_TAG="${SIM2_TAG:-}"
 SIM2_POLICY_PAIR="${SIM2_POLICY_PAIR:-UL}"
 case "$SIM2_POLICY_PAIR" in
   UG|UL|GU|GL|LU|LG) ;;
@@ -48,6 +48,7 @@ case "$SIM2_POLICY_PAIR" in
     exit 1
     ;;
 esac
+export SIM2_POLICY_PAIR
 if [ -n "${SLURM_JOB_ID:-}" ]; then
   scontrol update JobId="${SLURM_JOB_ID}" JobName="${SIM2_POLICY_PAIR}_${SIM2_STAGE}" >/dev/null 2>&1 || true
 fi
@@ -132,6 +133,7 @@ for f in \
   main_est.py \
   main_tune_global.py \
   main_sim2.py \
+  sim2_profiles.py \
   mu_plot.py \
   sim_utils.py \
   sim_eval.py \
@@ -144,8 +146,9 @@ done
 
 cd "$WORK"
 echo "Simulation-2 stage: ${SIM2_STAGE}"
-echo "Simulation-2 tag: ${SIM2_TAG}"
+echo "Simulation-2 tag override: ${SIM2_TAG:-auto_from_pair_profile}"
 echo "Simulation-2 policy pair: ${SIM2_POLICY_PAIR}"
+echo "Simulation-2 pair profile disabled: ${SIM2_DISABLE_PAIR_PROFILE:-0}"
 echo "Shared data: ${SHARED_DATA_DIR}"
 echo "Run folder: ${RUN}"
 

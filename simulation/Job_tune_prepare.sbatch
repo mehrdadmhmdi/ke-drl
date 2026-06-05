@@ -1,7 +1,7 @@
 #!/bin/bash
 ##SBATCH --account=bfez-delta-gpu
 #SBATCH --account=bfez-dtai-gh
-#SBATCH --job-name=UL_TUNE_DATA
+#SBATCH --job-name=SIM2_TUNE_DATA
 #SBATCH --output=results/tune_data.%j.log
 #SBATCH --time=04:00:00
 #SBATCH --nodes=1
@@ -41,7 +41,16 @@ export NUMEXPR_NUM_THREADS=1
 set -euo pipefail
 
 BASE=$PWD
-RUN="${KEDRL_SHARED_RUN:-$BASE/results/tune_shared_data}"
+SIM2_POLICY_PAIR="${SIM2_POLICY_PAIR:-UL}"
+case "$SIM2_POLICY_PAIR" in
+  UG|UL|GU|GL|LU|LG) ;;
+  *)
+    echo "SIM2_POLICY_PAIR must be one of UG, UL, GU, GL, LU, LG; got ${SIM2_POLICY_PAIR}" >&2
+    exit 1
+    ;;
+esac
+export SIM2_POLICY_PAIR
+RUN="${KEDRL_SHARED_RUN:-$BASE/results/tune_shared_data_${SIM2_POLICY_PAIR}}"
 mkdir -p "$BASE/results"
 N_REP=$(python3 - <<'PY'
 import yaml
@@ -53,6 +62,9 @@ PY
 LAST_REP=$((N_REP - 1))
 CURRENT_FINGERPRINT=$(sha256sum \
   params_tune.yaml \
+  main_sim2.py \
+  main_tune_global.py \
+  sim2_profiles.py \
   main_MonteCarloZ.py \
   sim_utils.py \
   validate_sim_config.py \
@@ -120,31 +132,19 @@ export PYTORCH_ALLOC_CONF="expandable_segments:True,max_split_size_mb:64,garbage
 
 cp "$BASE/main_offlinedata.py" "$RUN/"
 cp "$BASE/main_MonteCarloZ.py" "$RUN/"
+cp "$BASE/main_tune_global.py" "$RUN/"
+cp "$BASE/main_sim2.py" "$RUN/"
+cp "$BASE/sim2_profiles.py" "$RUN/"
 cp "$BASE/sim_utils.py" "$RUN/"
 cp "$BASE/validate_sim_config.py" "$RUN/"
 cp "$BASE/parallel_offlinedata.py" "$RUN/"
-cp "$BASE/params_tune.yaml" "$RUN/params.yaml"
+cp "$BASE/params_tune.yaml" "$RUN/params_tune.yaml"
 
 cd "$RUN"
 echo "Shared tuning data folder: $(pwd)"
-echo "Using params:"
-python3 - <<'PY'
-import yaml
-with open("params.yaml", "r", encoding="utf-8") as f:
-    p = yaml.safe_load(f)
-print({
-    "n_ids": p["n_ids"],
-    "Z_sim": p["Z_sim"],
-    "experiment": p["experiment"],
-    "target_set": p["target_set"],
-    "num_grid_points": p["num_grid_points"],
-    "num_steps": p["optimization"]["num_steps"],
-})
-PY
+echo "Simulation-2 policy pair: ${SIM2_POLICY_PAIR}"
 
-python3 validate_sim_config.py --params params.yaml
-python3 parallel_offlinedata.py --params params.yaml
-python3 main_MonteCarloZ.py
+python3 main_sim2.py --mode prepare --base-params params_tune.yaml
 printf '%s\n' "$CURRENT_FINGERPRINT" > data/prep_fingerprint.sha256
 
 echo "Shared data outputs:"

@@ -15,6 +15,7 @@ import pandas as pd
 import yaml
 
 from parallel_offlinedata import run_parallel_offline_data
+from sim2_profiles import apply_policy_pair_overrides, validate_policy_pair
 
 
 def deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
@@ -24,6 +25,13 @@ def deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
         else:
             dst[key] = value
     return dst
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw in (None, ""):
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 def run_step(args: list[str], *, env: dict[str, str] | None = None) -> None:
@@ -231,10 +239,23 @@ def main() -> None:
 
     with open(args.base_params, "r", encoding="utf-8") as f:
         params = yaml.safe_load(f)
+    pair_profile: dict[str, Any] = {}
+    raw_pair = os.environ.get("SIM2_POLICY_PAIR")
+    if raw_pair:
+        pair = validate_policy_pair(raw_pair)
+        pair_profile = apply_policy_pair_overrides(
+            params,
+            pair,
+            apply_profile=not env_bool("SIM2_DISABLE_PAIR_PROFILE"),
+        )
     params = deep_update(params, overrides)
     write_yaml_atomic(Path("params.yaml"), params)
     n_rep = int(params.get("experiment", {}).get("num_replicates", 1))
-    write_combo_metadata(args.combo_id, combo_name, overrides, n_rep)
+    metadata_overrides: dict[str, Any] = {"tuning_combo": overrides}
+    if raw_pair:
+        metadata_overrides["policy_pair_profile"] = pair_profile
+        metadata_overrides["pair_profile_applied"] = bool(params.get("simulation_2", {}).get("pair_profile_applied", False))
+    write_combo_metadata(args.combo_id, combo_name, metadata_overrides, n_rep)
 
     if args.aggregate_only:
         expected = expected_curve_count(params)
@@ -246,7 +267,7 @@ def main() -> None:
                 flush=True,
             )
         run_step([sys.executable, "mu_plot.py"])
-        write_result(args.combo_id, combo_name, overrides, time.time() - start)
+        write_result(args.combo_id, combo_name, metadata_overrides, time.time() - start)
         return
 
     run_step([sys.executable, "validate_sim_config.py", "--params", "params.yaml"])
@@ -290,7 +311,7 @@ def main() -> None:
         return
 
     run_step([sys.executable, "mu_plot.py"])
-    write_result(args.combo_id, combo_name, overrides, time.time() - start)
+    write_result(args.combo_id, combo_name, metadata_overrides, time.time() - start)
 
 
 if __name__ == "__main__":

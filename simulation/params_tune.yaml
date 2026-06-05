@@ -23,6 +23,11 @@ plots:
 benchmark:
   num_points: 10
   source: fixed_config
+  empirical_support_filter: true
+  support_quantile: 0.995
+  support_expand_factor: 1.15
+  support_reference_size: 0
+  max_draw_attempts: 300
   s_star:
     - [0.6, -0.8, 0.7, -0.5, 0.9]
     - [0.0, 0.0, 0.0, 0.0, 0.0]
@@ -114,6 +119,160 @@ kernel:
   nu: 5.5
   length_scale: 1.0
   sigma: 0.7
+#==========================
+# Pair-specific calibration profiles. main_sim2.py applies the active
+# SIM2_POLICY_PAIR profile after the common defaults and policy block.
+policy_pair_overrides:
+  UG:
+    lambda_reg: 0.003
+    lambda_B: 0.012
+    kernel:
+      length_scale: 1.25
+      sigma: 0.85
+    operator_approximation:
+      num_features: 768
+    ratio:
+      n_basis: 768
+      lambda_reg: 0.003
+    mean_embedding_basis:
+      n_basis: 250
+      candidate_pool: 75000
+      max_iter: 30
+    transition_reduction:
+      n_basis: 250
+      candidate_pool: 75000
+      max_iter: 30
+    optimization:
+      lr: 3e-4
+      weight_decay: 5e-5
+      num_steps: 5500
+      target_batch_size: 150
+      mass_anchor_lambda: 1.5
+  UL:
+    lambda_reg: 0.004
+    lambda_B: 0.018
+    kernel:
+      length_scale: 1.20
+      sigma: 0.80
+    operator_approximation:
+      num_features: 640
+    ratio:
+      n_basis: 640
+      lambda_reg: 0.004
+    mean_embedding_basis:
+      n_basis: 220
+      candidate_pool: 60000
+      max_iter: 25
+    transition_reduction:
+      n_basis: 220
+      candidate_pool: 60000
+      max_iter: 25
+    optimization:
+      lr: 3e-4
+      weight_decay: 8e-5
+      num_steps: 5000
+      target_batch_size: 150
+      mass_anchor_lambda: 1.4
+  GU:
+    lambda_reg: 0.002
+    lambda_B: 0.004
+    kernel:
+      length_scale: 1.80
+      sigma: 1.00
+    operator_approximation:
+      num_features: 1024
+    ratio:
+      n_basis: 1024
+      lambda_reg: 0.002
+    mean_embedding_basis:
+      n_basis: 320
+      candidate_pool: 90000
+      max_iter: 35
+    transition_reduction:
+      n_basis: 320
+      candidate_pool: 90000
+      max_iter: 35
+    optimization:
+      lr: 2e-4
+      weight_decay: 5e-5
+      num_steps: 7000
+      target_batch_size: 256
+      mass_anchor_lambda: 4.0
+  GL:
+    lambda_reg: 0.0025
+    lambda_B: 0.006
+    kernel:
+      length_scale: 1.65
+      sigma: 0.95
+    operator_approximation:
+      num_features: 1024
+    ratio:
+      n_basis: 1024
+      lambda_reg: 0.0025
+    mean_embedding_basis:
+      n_basis: 320
+      candidate_pool: 90000
+      max_iter: 35
+    transition_reduction:
+      n_basis: 320
+      candidate_pool: 90000
+      max_iter: 35
+    optimization:
+      lr: 2e-4
+      weight_decay: 5e-5
+      num_steps: 7000
+      target_batch_size: 256
+      mass_anchor_lambda: 3.5
+  LU:
+    lambda_reg: 0.004
+    lambda_B: 0.014
+    kernel:
+      length_scale: 1.35
+      sigma: 0.85
+    operator_approximation:
+      num_features: 768
+    ratio:
+      n_basis: 768
+      lambda_reg: 0.004
+    mean_embedding_basis:
+      n_basis: 260
+      candidate_pool: 75000
+      max_iter: 30
+    transition_reduction:
+      n_basis: 260
+      candidate_pool: 75000
+      max_iter: 30
+    optimization:
+      lr: 2.5e-4
+      weight_decay: 5e-5
+      num_steps: 6000
+      target_batch_size: 200
+      mass_anchor_lambda: 2.0
+  LG:
+    lambda_reg: 0.004
+    lambda_B: 0.016
+    kernel:
+      length_scale: 1.50
+      sigma: 0.90
+    operator_approximation:
+      num_features: 768
+    ratio:
+      n_basis: 768
+      lambda_reg: 0.004
+    mean_embedding_basis:
+      n_basis: 280
+      candidate_pool: 80000
+      max_iter: 30
+    transition_reduction:
+      n_basis: 280
+      candidate_pool: 80000
+      max_iter: 30
+    optimization:
+      lr: 2.5e-4
+      weight_decay: 5e-5
+      num_steps: 6500
+      target_batch_size: 200
+      mass_anchor_lambda: 2.5
 #==========================
 embedding_r2:
   enabled: true

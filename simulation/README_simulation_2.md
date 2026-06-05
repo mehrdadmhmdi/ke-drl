@@ -39,12 +39,14 @@ so `B_hat` is `200 x 100`, instead of `14700 x 100`.
 
 ## Cluster commands
 
-For `T=50`, `N=300`, `L=200`, `m=100`, and all off-diagonal behavior/test
-policy pairs among Uniform, Gaussian, and Logistic:
+For `T=50`, `N=300`, `m=100`, and all off-diagonal behavior/test policy pairs
+among Uniform, Gaussian, and Logistic. The active pair's `L`, regularization,
+kernel, and optimizer profile comes from `params_tune.yaml` under
+`policy_pair_overrides`.
 
 ```bash
 SIM_DIR=/work/nvme/bfez/mehrdad3/DistRL/simulation_small_N_large_T
-SIM_BASE=SIM2_TIMEPOINTS=50,SIM2_N_IDS=300,SIM2_NUM_REPLICATES=100,SIM2_GRID_POINTS=100,SIM2_BASIS_N=200,SIM2_REDUCED_N=200,SIM2_OPERATOR_REDUCED_N=200,SIM2_TARGET_MODE=all,SIM2_TARGET_POINTS=14700,SIM2_Z_IDS=10000,SIM2_Z_TIMEPOINTS=500,SIM2_TAG=T50_N300_r200
+SIM_BASE=SIM2_TIMEPOINTS=50,SIM2_N_IDS=300,SIM2_NUM_REPLICATES=100,SIM2_GRID_POINTS=100,SIM2_TARGET_MODE=all,SIM2_TARGET_POINTS=14700,SIM2_Z_IDS=10000,SIM2_Z_TIMEPOINTS=500
 
 for PAIR in UG UL GU GL LU LG; do
   mkdir -p "$SIM_DIR/results/$PAIR/logs"
@@ -57,13 +59,11 @@ done
 Useful overrides:
 
 ```bash
-SIM2_BASIS_N=200
-SIM2_OPERATOR_REDUCED_N=200
+SIM2_DISABLE_PAIR_PROFILE=1
 SIM2_NUM_REPLICATES=100
 SIM2_GRID_POINTS=100
 SIM2_Z_IDS=50000
 SIM2_Z_TIMEPOINTS=500
-SIM2_KMEANS_ITER=30
 OFFLINE_DATA_WORKERS=8
 ```
 

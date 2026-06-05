@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-from copy import deepcopy
 import os
 import sys
 import time
@@ -19,6 +18,14 @@ from main_tune_global import (
     write_yaml_atomic,
 )
 from parallel_offlinedata import run_parallel_offline_data
+from sim2_profiles import (
+    apply_policy_pair_overrides,
+    deep_update,
+    scenario_policy_config,
+    scenario_policies as _scenario_policies,
+    supported_policy_pairs,
+    validate_policy_pair,
+)
 
 
 def env_int(name: str, default: int) -> int:
@@ -33,118 +40,13 @@ def env_bool(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-def deep_update(dst: dict[str, Any], src: dict[str, Any]) -> dict[str, Any]:
-    for key, value in src.items():
-        if isinstance(value, dict) and isinstance(dst.get(key), dict):
-            deep_update(dst[key], value)
-        else:
-            dst[key] = value
-    return dst
-
-
-POLICY_CODE_TO_NAME = {
-    "U": "uniform",
-    "G": "gaussian",
-    "L": "logistic",
-}
-
-UG_CENTER = [0.1, -0.1, 0.15, -0.45, 0.0]
-UL_CENTER = [0.08, -0.12, 0.16, -0.42, -0.02]
-GAUSSIAN_CENTER = [0.12, -0.08, 0.12, -0.35, 0.04]
-LOGISTIC_CENTER = [0.05, -0.12, 0.18, -0.4, -0.03]
-
-
-def gaussian_policy(theta_mean: list[float], epsilon_mean: float, *, log_std: float) -> dict[str, Any]:
-    return {
-        "name": "gaussian",
-        "theta_mean": theta_mean,
-        "theta_std": [0.0, 0.0, 0.0, 0.0, 0.0],
-        "epsilon_mean": [epsilon_mean],
-        "epsilon_std": [log_std],
-    }
-
-
-def logistic_policy(theta_loc: list[float], epsilon_loc: float, *, log_scale: float) -> dict[str, Any]:
-    return {
-        "name": "logistic",
-        "theta_loc": theta_loc,
-        "theta_scale": [0.0, 0.0, 0.0, 0.0, 0.0],
-        "epsilon_loc": [epsilon_loc],
-        "epsilon_scale": [log_scale],
-    }
-
-
-def uniform_centered_policy(theta_center: list[float], epsilon_center: float, *, half_width: float) -> dict[str, Any]:
-    return {
-        "name": "uniform",
-        "theta_lower": theta_center,
-        "theta_upper": theta_center,
-        "epsilon_lower": [epsilon_center - half_width],
-        "epsilon_upper": [epsilon_center + half_width],
-    }
-
-
-POLICY_PAIR_CONFIGS: dict[str, dict[str, Any]] = {
-    "UG": {
-        "uniform": uniform_centered_policy(UG_CENTER, 0.025, half_width=0.75),
-        "gaussian": gaussian_policy(UG_CENTER, 0.025, log_std=-2.6),
-    },
-    "UL": {
-        "uniform": uniform_centered_policy(UL_CENTER, 0.03, half_width=0.75),
-        "logistic": logistic_policy(UL_CENTER, 0.03, log_scale=-2.8),
-    },
-    "GU": {
-        "gaussian": gaussian_policy(GAUSSIAN_CENTER, 0.02, log_std=-1.6),
-        "uniform": uniform_centered_policy(GAUSSIAN_CENTER, 0.02, half_width=0.18),
-    },
-    "GL": {
-        "gaussian": gaussian_policy(GAUSSIAN_CENTER, 0.02, log_std=-1.6),
-        "logistic": logistic_policy(GAUSSIAN_CENTER, 0.02, log_scale=-2.8),
-    },
-    "LU": {
-        "logistic": logistic_policy(LOGISTIC_CENTER, 0.03, log_scale=-1.8),
-        "uniform": uniform_centered_policy(LOGISTIC_CENTER, 0.03, half_width=0.18),
-    },
-    "LG": {
-        "logistic": logistic_policy(LOGISTIC_CENTER, 0.03, log_scale=-1.8),
-        "gaussian": gaussian_policy(LOGISTIC_CENTER, 0.03, log_std=-2.7),
-    },
-}
-
-
-def supported_policy_pairs() -> list[str]:
-    return [
-        f"{behavior}{target}"
-        for behavior in POLICY_CODE_TO_NAME
-        for target in POLICY_CODE_TO_NAME
-        if behavior != target
-    ]
-
-
 def scenario_policy_pair() -> str:
-    pair = os.environ.get("SIM2_POLICY_PAIR", "UL").strip().upper()
-    if len(pair) != 2 or any(code not in POLICY_CODE_TO_NAME for code in pair):
-        allowed = ", ".join(supported_policy_pairs())
-        raise ValueError(f"SIM2_POLICY_PAIR must be one of {allowed}; got {pair!r}.")
-    if pair[0] == pair[1]:
-        allowed = ", ".join(supported_policy_pairs())
-        raise ValueError(f"SIM2_POLICY_PAIR must use different behavior and target policies ({allowed}); got {pair!r}.")
-    return pair
+    return validate_policy_pair(os.environ.get("SIM2_POLICY_PAIR", "UL"))
 
 
 def scenario_policies(pair: str | None = None) -> tuple[str, str]:
     pair = scenario_policy_pair() if pair is None else pair
-    return POLICY_CODE_TO_NAME[pair[0]], POLICY_CODE_TO_NAME[pair[1]]
-
-
-def scenario_policy_config(pair: str) -> dict[str, Any]:
-    behavior_policy, target_policy = scenario_policies(pair)
-    cfg = {
-        "Behvaioral_policy": behavior_policy,
-        "evaluation_Target_policy": target_policy,
-    }
-    cfg.update(deepcopy(POLICY_PAIR_CONFIGS[pair]))
-    return cfg
+    return _scenario_policies(pair)
 
 
 def scenario_overrides() -> dict[str, Any]:
@@ -202,11 +104,23 @@ def scenario_tag(params: dict[str, Any]) -> str:
 def write_params(base_params: str) -> tuple[dict[str, Any], str]:
     with open(base_params, "r", encoding="utf-8") as f:
         params = yaml.safe_load(f)
-    params = deep_update(params, scenario_overrides())
+    pair = scenario_policy_pair()
+    overrides = scenario_overrides()
+    params = deep_update(params, overrides)
+    pair_profile = apply_policy_pair_overrides(
+        params,
+        pair,
+        apply_profile=not env_bool("SIM2_DISABLE_PAIR_PROFILE"),
+    )
     tag = scenario_tag(params)
     write_yaml_atomic(Path("params.yaml"), params)
     write_yaml_atomic(Path(f"params_sim2_{tag}.yaml"), params)
-    write_combo_metadata(0, f"sim2_{tag}", {"simulation_2": scenario_overrides()}, int(params["experiment"]["num_replicates"]))
+    metadata = {
+        "simulation_2": overrides,
+        "policy_pair_profile": pair_profile,
+        "pair_profile_applied": bool(params.get("simulation_2", {}).get("pair_profile_applied", False)),
+    }
+    write_combo_metadata(0, f"sim2_{tag}", metadata, int(params["experiment"]["num_replicates"]))
     return params, tag
 
 
@@ -312,7 +226,8 @@ def commands() -> None:
     last = reps - 1
     pairs = " ".join(supported_policy_pairs())
     print(
-        "\nExample for T=50, N=300, L=200, m=100, all off-diagonal policy pairs:\n"
+        "\nExample for T=50, N=300, m=100, all off-diagonal policy pairs "
+        "(L/kernel/regularization come from policy_pair_overrides):\n"
         f"  for PAIR in {pairs}; do\n"
         "    jid_prep=$(sbatch --parsable --job-name=${PAIR}_prepare --export=ALL,SIM2_POLICY_PAIR=$PAIR,SIM2_STAGE=prepare Job_sim2.sbatch)\n"
         f"    jid_fit=$(sbatch --parsable --dependency=afterok:$jid_prep --array=0-{last} --job-name=${{PAIR}}_fit --export=ALL,SIM2_POLICY_PAIR=$PAIR,SIM2_STAGE=fit Job_sim2.sbatch)\n"

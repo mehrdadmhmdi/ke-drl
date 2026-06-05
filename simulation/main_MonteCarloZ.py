@@ -56,6 +56,7 @@ target_policy_params = P["policy"][target_policy_name]
 behavior_policy_name = P["policy"]["Behvaioral_policy"]
 behavior_policy = P["policy"][behavior_policy_name]["name"]
 behavior_policy_params = P["policy"][behavior_policy_name]
+_empirical_support_bounds: tuple[torch.Tensor, torch.Tensor] | None = None
 
 design_seed = int(P.get("random_seed", 20260512)) + int(bench_cfg.get("seed_offset", 110000))
 num_benchmark_points = int(bench_cfg.get("num_points", 1))
@@ -87,21 +88,83 @@ def _candidate_states(n_points: int, seed0: int) -> torch.Tensor:
     return torch.randn(n_points, int(P["state_dim"]), generator=generator, dtype=sim_dtype)
 
 
-def _support_mask(s: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+def _load_empirical_support_bounds() -> tuple[torch.Tensor, torch.Tensor] | None:
+    global _empirical_support_bounds
+    if _empirical_support_bounds is not None:
+        return _empirical_support_bounds
+    if not bool(bench_cfg.get("empirical_support_filter", False)):
+        return None
+    offline_path = Path("data") / "offline_data_0.pt"
+    if not offline_path.exists():
+        print("Empirical benchmark support filter requested, but data/offline_data_0.pt is not available.", flush=True)
+        return None
+    blob = torch.load(offline_path, map_location="cpu")
+    s0 = torch.as_tensor(blob["s0"], dtype=sim_dtype)
+    a0 = torch.as_tensor(blob["a0"], dtype=sim_dtype).reshape(s0.shape[0], -1)
+    x0 = torch.cat([s0, a0], dim=1)
+    reference_size = int(bench_cfg.get("support_reference_size", 0) or 0)
+    if reference_size > 0 and reference_size < x0.shape[0]:
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(design_seed + 31337)
+        idx = torch.randperm(x0.shape[0], generator=generator)[:reference_size]
+        x0 = x0[idx]
+    q = float(bench_cfg.get("support_quantile", 0.995))
+    q = min(max(q, 0.50), 0.9999)
+    tail = 0.5 * (1.0 - q)
+    probs = torch.tensor([tail, 1.0 - tail], dtype=torch.float64)
+    bounds = torch.quantile(x0.to(torch.float64), probs, dim=0).to(dtype=sim_dtype)
+    lower, upper = bounds[0], bounds[1]
+    expand = float(bench_cfg.get("support_expand_factor", 1.10))
+    center = 0.5 * (lower + upper)
+    half_width = 0.5 * (upper - lower).clamp_min(torch.finfo(sim_dtype).eps) * expand
+    _empirical_support_bounds = (center - half_width, center + half_width)
+    print(
+        "Empirical benchmark support filter: "
+        f"quantile={q:g}, expand_factor={expand:g}, reference_rows={x0.shape[0]}",
+        flush=True,
+    )
+    return _empirical_support_bounds
+
+
+def _empirical_support_mask(s: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+    bounds = _load_empirical_support_bounds()
+    if bounds is None:
+        return torch.ones(s.shape[0], dtype=torch.bool, device=s.device)
+    lower, upper = bounds
+    x = torch.cat([s.reshape(s.shape[0], -1), a.reshape(a.shape[0], -1)], dim=1)
+    lower = lower.to(dtype=x.dtype, device=x.device)
+    upper = upper.to(dtype=x.dtype, device=x.device)
+    return ((x >= lower) & (x <= upper)).all(dim=1)
+
+
+def _exact_behavior_support_mask(s: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+    mask = torch.ones(s.shape[0], dtype=torch.bool, device=s.device)
     if behavior_policy == "uniform" and int(P["action_dim"]) == 1:
-        return actions_in_uniform_support(behavior_policy_params, s, a)
-    return torch.ones(s.shape[0], dtype=torch.bool, device=s.device)
+        mask = mask & actions_in_uniform_support(behavior_policy_params, s, a)
+    return mask
+
+
+def _support_mask(s: torch.Tensor, a: torch.Tensor) -> torch.Tensor:
+    return _exact_behavior_support_mask(s, a) & _empirical_support_mask(s, a)
 
 
 def _validate_benchmark_support(s: torch.Tensor, a: torch.Tensor) -> None:
-    mask = _support_mask(s, a).detach().cpu()
+    mask = _exact_behavior_support_mask(s, a).detach().cpu()
     if bool((~mask).any()):
         bad = torch.nonzero(~mask, as_tuple=False).reshape(-1).tolist()
         raise ValueError(
             "Benchmark evaluation point(s) outside behavior-policy support: "
             + ", ".join(str(int(j)) for j in bad[:20])
         )
-    print(f"All {s.shape[0]} benchmark evaluation points are inside behavior-policy support.")
+    empirical_mask = _empirical_support_mask(s, a).detach().cpu()
+    if bool((~empirical_mask).any()):
+        bad = torch.nonzero(~empirical_mask, as_tuple=False).reshape(-1).tolist()
+        print(
+            "Warning: fixed benchmark evaluation point(s) outside empirical kernel-support box: "
+            + ", ".join(str(int(j)) for j in bad[:20]),
+            flush=True,
+        )
+    print(f"All {s.shape[0]} benchmark evaluation points are inside exact behavior-policy support.")
 
 
 def _draw_benchmark_points(n_points: int, seed0: int) -> tuple[torch.Tensor, torch.Tensor]:
@@ -114,7 +177,8 @@ def _draw_benchmark_points(n_points: int, seed0: int) -> tuple[torch.Tensor, tor
     actions: list[torch.Tensor] = []
     remaining = n_points
     attempt = 0
-    while remaining > 0 and attempt < 100:
+    max_attempts = int(bench_cfg.get("max_draw_attempts", 200))
+    while remaining > 0 and attempt < max_attempts:
         attempt += 1
         batch_n = max(256, remaining * 32)
         s_batch = _candidate_states(batch_n, seed0 + 1009 * attempt)
@@ -153,7 +217,12 @@ if "s_star" in bench_cfg and "a_star" in bench_cfg:
         s_extra, a_extra = _draw_benchmark_points(num_benchmark_points - s_fixed.shape[0], design_seed + 1000)
         s_star = torch.cat([s_fixed, s_extra], dim=0)
         a_star = torch.cat([a_fixed, a_extra], dim=0)
-        point_sources = ["fixed_config"] * int(s_fixed.shape[0]) + ["support_safe_target_policy_draw"] * int(s_extra.shape[0])
+        extra_source = (
+            "empirical_support_safe_target_policy_draw"
+            if bool(bench_cfg.get("empirical_support_filter", False))
+            else "support_safe_target_policy_draw"
+        )
+        point_sources = ["fixed_config"] * int(s_fixed.shape[0]) + [extra_source] * int(s_extra.shape[0])
     point_source = "fixed_config" if len(set(point_sources)) == 1 else "fixed_config_plus_support_safe_target_policy_draws"
 else:
     s_star, a_star = _draw_benchmark_points(num_benchmark_points, design_seed)

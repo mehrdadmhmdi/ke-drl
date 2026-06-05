@@ -57,6 +57,8 @@ def _check_full_benchmark_truth_support(
     behavior_name: str,
     behavior_block: dict[str, Any],
     action_dim: int,
+    support_s0: torch.Tensor | None = None,
+    support_a0: torch.Tensor | None = None,
 ) -> None:
     """Validate every generated benchmark point saved with Z_true."""
     z_path = data_dir / str(bench_cfg.get("output", "Z_true.pt"))
@@ -86,6 +88,21 @@ def _check_full_benchmark_truth_support(
             "Full benchmark support check OK: "
             f"{s_all.shape[0]} points, min_lower={lower.min().item():.4g}, max_upper={upper.max().item():.4g}"
         )
+    if bool(bench_cfg.get("empirical_support_filter", False)) and support_s0 is not None and support_a0 is not None:
+        lower, upper = _empirical_support_bounds(support_s0, support_a0, bench_cfg)
+        x_all = torch.cat([s_all.reshape(s_all.shape[0], -1), a_all.reshape(a_all.shape[0], -1)], dim=1)
+        mask = ((x_all >= lower) & (x_all <= upper)).all(dim=1)
+        if bool((~mask).any()):
+            bad = torch.nonzero(~mask, as_tuple=False).reshape(-1).tolist()
+            print(
+                "Warning: generated benchmark point(s) outside this replicate's empirical support box: "
+                + ", ".join(str(int(j)) for j in bad[:20])
+            )
+        else:
+            print(
+                "Full benchmark empirical-support check OK: "
+                f"{s_all.shape[0]} points, quantile={float(bench_cfg.get('support_quantile', 0.995)):g}"
+            )
 
 
 def _check_kedrl_package_api() -> None:
@@ -128,6 +145,24 @@ def _uniform_bounds(policy_block: dict[str, Any], s: torch.Tensor) -> tuple[torc
     upper = s @ theta_upper + eps_upper
     upper = torch.where(upper <= lower, lower + 1.0, upper)
     return lower.reshape(-1), upper.reshape(-1)
+
+
+def _empirical_support_bounds(
+    s0: torch.Tensor,
+    a0: torch.Tensor,
+    bench_cfg: dict[str, Any],
+) -> tuple[torch.Tensor, torch.Tensor]:
+    x0 = torch.cat([s0.reshape(s0.shape[0], -1), a0.reshape(a0.shape[0], -1)], dim=1).to(torch.float64)
+    q = float(bench_cfg.get("support_quantile", 0.995))
+    q = min(max(q, 0.50), 0.9999)
+    tail = 0.5 * (1.0 - q)
+    probs = torch.tensor([tail, 1.0 - tail], dtype=torch.float64)
+    bounds = torch.quantile(x0, probs, dim=0)
+    lower, upper = bounds[0], bounds[1]
+    expand = float(bench_cfg.get("support_expand_factor", 1.10))
+    center = 0.5 * (lower + upper)
+    half_width = 0.5 * (upper - lower).clamp_min(torch.finfo(torch.float64).eps) * expand
+    return center - half_width, center + half_width
 
 
 def _location(policy_name: str, policy_block: dict[str, Any], s: torch.Tensor) -> torch.Tensor | None:
@@ -321,6 +356,8 @@ def main() -> None:
         behavior_name,
         behavior_block,
         action_dim,
+        support_s0=s0,
+        support_a0=a0,
     )
     available_targets = s0.shape[0] - (1 if bool(target_cfg.get("exclude_benchmark", False)) and s0.shape[0] > 1 else 0)
     if str(target_cfg.get("mode", "train_subset")).lower() not in {"all", "train_all"} and target_points > available_targets:

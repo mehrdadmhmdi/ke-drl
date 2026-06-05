@@ -1,7 +1,7 @@
 #!/bin/bash
 ##SBATCH --account=bfez-delta-gpu
 #SBATCH --account=bfez-dtai-gh
-#SBATCH --job-name=UL_TUNE
+#SBATCH --job-name=SIM2_TUNE
 #SBATCH --output=results/tune_%A_%a.log
 #SBATCH --time=12:00:00
 #SBATCH --nodes=1
@@ -12,7 +12,7 @@
 #SBATCH --partition=ghx4
 #SBATCH --mail-type=END,FAIL
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-699
+#SBATCH --array=0-99
 
 echo "Job ID:    ${SLURM_JOB_ID}"
 echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
@@ -42,6 +42,15 @@ export TORCH_NUM_THREADS="${SLURM_CPUS_PER_TASK:-64}"
 set -euo pipefail
 
 BASE=$PWD
+SIM2_POLICY_PAIR="${SIM2_POLICY_PAIR:-UL}"
+case "$SIM2_POLICY_PAIR" in
+  UG|UL|GU|GL|LU|LG) ;;
+  *)
+    echo "SIM2_POLICY_PAIR must be one of UG, UL, GU, GL, LU, LG; got ${SIM2_POLICY_PAIR}" >&2
+    exit 1
+    ;;
+esac
+export SIM2_POLICY_PAIR
 read COMBO_ID OFFLINE_ID COMBO_COUNT N_REP TOTAL_TASKS < <(python3 - <<'PY'
 import os
 import yaml
@@ -65,9 +74,9 @@ fi
 echo "Tuning combo id: ${COMBO_ID} / $((COMBO_COUNT - 1))"
 echo "Offline replicate id: ${OFFLINE_ID} / $((N_REP - 1))"
 
-RUN="$BASE/results/tune_global_${SLURM_ARRAY_JOB_ID}_${COMBO_ID}"
+RUN="$BASE/results/tune_global_${SIM2_POLICY_PAIR}_${SLURM_ARRAY_JOB_ID}_${COMBO_ID}"
 mkdir -p "$BASE/results" "$RUN" "$RUN/data" "$RUN/logs" "$RUN/mu" "$RUN/metrics" "$RUN/plots"
-SHARED_DATA_DIR="${KEDRL_SHARED_DATA_DIR:-$BASE/results/tune_shared_data/data}"
+SHARED_DATA_DIR="${KEDRL_SHARED_DATA_DIR:-$BASE/results/tune_shared_data_${SIM2_POLICY_PAIR}/data}"
 
 KEDRL_REPO_ROOT="${KEDRL_REPO_ROOT:-}"
 if [ -z "$KEDRL_REPO_ROOT" ]; then
@@ -112,6 +121,7 @@ cp "$BASE/main_offlinedata.py" "$RUN/"
 cp "$BASE/main_MonteCarloZ.py" "$RUN/"
 cp "$BASE/main_est.py" "$RUN/"
 cp "$BASE/main_tune_global.py" "$RUN/"
+cp "$BASE/sim2_profiles.py" "$RUN/"
 cp "$BASE/mu_plot.py" "$RUN/"
 cp "$BASE/sim_utils.py" "$RUN/"
 cp "$BASE/sim_eval.py" "$RUN/"
