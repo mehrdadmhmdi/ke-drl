@@ -31,6 +31,15 @@ POLICY_NAME_TO_CODE = {
     "logistic": "L",
 }
 
+PLOT_DPI = 600
+EES_YLABEL = (
+    r"Explained Embedding Signal"
+    "\n"
+    r"$\mathrm{EES}_i = 1 - "
+    r"\frac{\|\hat{\mu}_i-\mu_i^{\mathrm{MC}}\|_{\mathcal{H}}^2}"
+    r"{\|\mu_i^{\mathrm{MC}}\|_{\mathcal{H}}^2+\varepsilon}$"
+)
+
 
 def _policy_code_from_params(params: dict | None) -> str:
     policy = (params or {}).get("policy") or {}
@@ -443,7 +452,7 @@ def plot_mu_summary(
     ax.grid(alpha=0.25)
     ax.legend()
     fig.tight_layout()
-    fig.savefig(outdir / f"mu_curve_summary_{policy_code}.png", dpi=300)
+    fig.savefig(outdir / f"mu_curve_summary_{policy_code}.png", dpi=PLOT_DPI)
     plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(5, 5))
@@ -465,7 +474,7 @@ def plot_mu_summary(
     ax.set_ylabel("Estimated mean embedding")
     ax.grid(alpha=0.25)
     fig.tight_layout()
-    fig.savefig(outdir / f"mu_calibration_{policy_code}.png", dpi=300)
+    fig.savefig(outdir / f"mu_calibration_{policy_code}.png", dpi=PLOT_DPI)
     plt.close(fig)
 
 
@@ -527,6 +536,45 @@ def _robust_limits(
     return lo - pad * span, hi + pad * span
 
 
+def _set_ees_ylim(ax, *arrays: np.ndarray | list[float] | tuple[float, ...]) -> tuple[float, float]:
+    vals = _finite_flatten(*arrays)
+    if vals.size == 0:
+        ax.set_ylim(-0.08, 1.02)
+        return -0.08, 1.02
+
+    if vals.size >= 12:
+        lo, hi = np.nanpercentile(vals, [2.5, 97.5])
+    else:
+        lo, hi = float(np.nanmin(vals)), float(np.nanmax(vals))
+    lo, hi = float(lo), float(hi)
+    raw_lo = float(np.nanmin(vals))
+    raw_hi = float(np.nanmax(vals))
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        lo, hi = raw_lo, raw_hi
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        ax.set_ylim(-0.08, 1.02)
+        return -0.08, 1.02
+
+    # Keep the scientifically meaningful anchors only when they are near the
+    # observed range, so high-quality runs do not waste most of the panel on
+    # empty space below zero.
+    if raw_lo <= 0.15:
+        lo = min(lo, 0.0)
+    if raw_hi >= 0.65:
+        hi = max(hi, 1.0)
+    if hi < lo:
+        lo, hi = hi, lo
+    if hi - lo < 0.04:
+        mid = 0.5 * (lo + hi)
+        lo, hi = mid - 0.02, mid + 0.02
+
+    span = hi - lo
+    ylo = lo - 0.10 * span
+    yhi = hi + 0.03 * span
+    ax.set_ylim(ylo, yhi)
+    return ylo, yhi
+
+
 def _set_calibration_axes(
     ax,
     x_arrays: list[np.ndarray],
@@ -572,6 +620,96 @@ def _set_calibration_axes(
     ax.set_xlim(xlo, xhi)
     ax.set_ylim(ylo, yhi)
     return xlo, xhi, ylo, yhi
+
+
+def _plot_pointwise_ees_panel(
+    ax,
+    df: pd.DataFrame,
+    *,
+    title: str,
+    benchmark_ids: list[object] | None = None,
+    colors: list[str] | None = None,
+    xlabel: str = "Test Target Point",
+) -> bool:
+    point_col = "explained_embedding_signal"
+    if df is None or point_col not in df.columns:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "Pointwise EES unavailable", ha="center", va="center", transform=ax.transAxes)
+        return False
+
+    work = df.copy()
+    work[point_col] = pd.to_numeric(work[point_col], errors="coerce")
+    work = work.replace([np.inf, -np.inf], np.nan)
+
+    box_data: list[np.ndarray] = []
+    labels: list[str] = []
+    used_colors: list[str] = []
+
+    if "benchmark_id" in work.columns:
+        if benchmark_ids is None:
+            benchmark_ids = pd.Series(work["benchmark_id"]).dropna().unique().tolist()
+            try:
+                benchmark_ids = sorted(benchmark_ids)
+            except TypeError:
+                pass
+        palette = colors if colors is not None else _benchmark_palette(len(benchmark_ids))
+        for pos, bid in enumerate(benchmark_ids):
+            vals = work.loc[work["benchmark_id"] == bid, point_col].dropna().to_numpy(dtype=float)
+            vals = vals[np.isfinite(vals)]
+            if vals.size:
+                box_data.append(vals)
+                labels.append(_display_test_target_id(bid))
+                used_colors.append(palette[pos % len(palette)] if palette else "#13294B")
+    else:
+        vals = work[point_col].dropna().to_numpy(dtype=float)
+        vals = vals[np.isfinite(vals)]
+        if vals.size:
+            box_data.append(vals)
+            labels.append("all")
+            used_colors.append("#13294B")
+
+    if not box_data:
+        ax.axis("off")
+        ax.text(0.5, 0.5, "Pointwise EES unavailable", ha="center", va="center", transform=ax.transAxes)
+        return False
+
+    bp = ax.boxplot(
+        box_data,
+        labels=labels,
+        showmeans=True,
+        showfliers=False,
+        patch_artist=True,
+        meanprops={
+            "marker": "^",
+            "markerfacecolor": "#2ca02c",
+            "markeredgecolor": "#2ca02c",
+            "markersize": 5,
+        },
+        medianprops={"color": "#ff7f0e", "linewidth": 1.2},
+    )
+    for patch, color in zip(bp["boxes"], used_colors):
+        patch.set_facecolor(color)
+        patch.set_alpha(0.24)
+
+    ylo, yhi = _set_ees_ylim(ax, *box_data)
+    all_vals = _finite_flatten(*box_data)
+    if all_vals.size and (float(np.nanmin(all_vals)) < ylo or float(np.nanmax(all_vals)) > yhi):
+        ax.text(0.96, 0.06, "y-axis trimmed at 2.5/97.5%", transform=ax.transAxes, ha="right", fontsize=8)
+
+    ax.axhline(0.0, color="0.45", ls="--", lw=1.0)
+    ax.axhline(1.0, color="0.25", ls=":", lw=1.0)
+    ax.set_title(title)
+    ax.set_xlabel(xlabel)
+    ax.set_ylabel(EES_YLABEL)
+    ax.grid(axis="y", alpha=0.25)
+    ax.tick_params(axis="x", labelrotation=90 if len(labels) > 8 else 0, labelsize=7)
+    if len(labels) > 40:
+        for idx, tick in enumerate(ax.get_xticklabels()):
+            tick.set_visible(idx % 5 == 0)
+    elif len(labels) > 25:
+        for idx, tick in enumerate(ax.get_xticklabels()):
+            tick.set_visible(idx % 2 == 0)
+    return True
 
 
 def plot_single_mu_diagnostic(
@@ -645,7 +783,7 @@ def plot_single_mu_diagnostic(
     ax.grid(alpha=0.25)
 
     fig.tight_layout()
-    fig.savefig(out_path / filename, dpi=300)
+    fig.savefig(out_path / filename, dpi=PLOT_DPI)
     plt.close(fig)
     if close_plt:
         plt.close("all")
@@ -871,82 +1009,13 @@ def plot_embedding_quality_diagnostic(
 
     ax = axs[2]
     point_col = "explained_embedding_signal" if mode == "simulation" else "normalized_bellman_error"
-    if mode == "simulation" and point_col in df.columns and df[point_col].notna().any():
-        clip_low = -0.2
-        clip_high = 1.05
-        lower_outlier_count = 0
-        if "benchmark_id" in df.columns:
-            box_data, labels, positions = [], [], []
-            for pos, (bid, group) in enumerate(df.groupby("benchmark_id", dropna=False), start=1):
-                vals = group[point_col].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
-                vals = vals[np.isfinite(vals)]
-                if vals.size:
-                    box_data.append(vals)
-                    labels.append(_display_test_target_id(bid) if pd.notna(bid) else "NA")
-                    positions.append(pos)
-                    lower = vals[vals < clip_low]
-                    if lower.size:
-                        lower_outlier_count += int(lower.size)
-                        jitter = np.linspace(-0.16, 0.16, lower.size) if lower.size > 1 else np.asarray([0.0])
-                        ax.scatter(
-                            pos + jitter,
-                            np.full(lower.size, clip_low),
-                            marker="v",
-                            s=16,
-                            color="#FF5F05",
-                            alpha=0.72,
-                            edgecolor="none",
-                            zorder=3,
-                        )
-            if box_data:
-                bp = ax.boxplot(box_data, labels=labels, showmeans=True, showfliers=False, patch_artist=True)
-                for patch, color in zip(bp["boxes"], _benchmark_palette(len(box_data))):
-                    patch.set_facecolor(color)
-                    patch.set_alpha(0.22)
-                ax.tick_params(axis="x", labelrotation=90 if len(labels) > 8 else 0, labelsize=7)
-                if len(labels) > 40:
-                    for idx, tick in enumerate(ax.get_xticklabels()):
-                        tick.set_visible(idx % 5 == 0)
-                elif len(labels) > 25:
-                    for idx, tick in enumerate(ax.get_xticklabels()):
-                        tick.set_visible(idx % 2 == 0)
-        else:
-            vals = df[point_col].replace([np.inf, -np.inf], np.nan).dropna().to_numpy(dtype=float)
-            vals = vals[np.isfinite(vals)]
-            if vals.size:
-                lower = vals[vals < clip_low]
-                lower_outlier_count += int(lower.size)
-                if lower.size:
-                    jitter = np.linspace(-0.16, 0.16, lower.size) if lower.size > 1 else np.asarray([0.0])
-                    ax.scatter(
-                        1.0 + jitter,
-                        np.full(lower.size, clip_low),
-                        marker="v",
-                        s=16,
-                        color="#FF5F05",
-                        alpha=0.72,
-                        edgecolor="none",
-                        zorder=3,
-                    )
-                bp = ax.boxplot([vals], labels=["all"], showmeans=True, showfliers=False, patch_artist=True)
-                bp["boxes"][0].set_facecolor("#13294B")
-                bp["boxes"][0].set_alpha(0.22)
-        ax.axhline(0.0, color="0.45", ls="--", lw=1.0)
-        ax.axhline(1.0, color="0.25", ls=":", lw=1.0)
-        ax.set_ylim(clip_low - 0.03, clip_high)
-        if lower_outlier_count:
-            ax.text(
-                0.98,
-                0.06,
-                f"{lower_outlier_count} Lower Outliers Clipped At -0.2",
-                transform=ax.transAxes,
-                ha="right",
-                va="bottom",
-                fontsize=8,
-            )
-        ax.set_title("(c) Pointwise Explained Embedding Signal")
-        ax.set_xlabel("Evaluation Target")
-        ax.set_ylabel(r"Explained Embedding Signal $\mathrm{EES}_i$")
+    if mode == "simulation":
+        _plot_pointwise_ees_panel(
+            ax,
+            df,
+            title="(c) Pointwise Explained Embedding Signal",
+            xlabel="Evaluation Target",
+        )
     elif point_col in df.columns and df[point_col].notna().any():
         if "benchmark_id" in df.columns:
             box_data, labels = [], []
@@ -974,7 +1043,7 @@ def plot_embedding_quality_diagnostic(
     ax.grid(axis="y", alpha=0.25)
 
     fig.tight_layout()
-    fig.savefig(out_path / filename, dpi=300)
+    fig.savefig(out_path / filename, dpi=PLOT_DPI)
     plt.close(fig)
     if close_plt:
         plt.close("all")
@@ -1259,62 +1328,63 @@ def _plot_multi_benchmark_summary(
     colors = _benchmark_palette(len(benchmark_ids))
     markers = ["o", "s", "^", "D", "P", "X", "v", "<", ">", "h", "*", "p"]
 
-    fig, axs = plt.subplots(2, 3, figsize=(19, 12.0))
-
-    ax = axs[0, 0]
-    cal_x, cal_y = [], []
-    for j, (color, bid) in enumerate(zip(colors, benchmark_ids)):
-        idx = [i for i, rid in enumerate(run_ids) if rid_to_benchmark.get(str(rid)) == bid]
-        if not idx:
-            continue
-        H_b = H[np.asarray(idx)]
-        T_b = T[np.asarray(idx)]
-        t_mean = T_b.mean(axis=0)
-        h_mean = H_b.mean(axis=0)
-        order = np.argsort(t_mean)
-        bins = np.array_split(order, min(10, order.size))
-        bx = np.asarray([float(t_mean[b].mean()) for b in bins if b.size])
-        by_runs = []
-        for row in H_b:
-            by_runs.append(np.asarray([float(row[b].mean()) for b in bins if b.size]))
-        Y = np.vstack(by_runs)
-        by = Y.mean(axis=0)
-        ax.plot(
-            bx,
-            by,
-            color=color,
-            marker=markers[j % len(markers)],
-            markerfacecolor=color,
-            markeredgecolor="white",
-            markeredgewidth=0.6,
-            lw=1.8,
-            label=f"Test Target Point {_display_test_target_id(bid)}",
+    def draw_calibration(ax) -> None:
+        cal_x, cal_y = [], []
+        for j, (color, bid) in enumerate(zip(colors, benchmark_ids)):
+            idx = [i for i, rid in enumerate(run_ids) if rid_to_benchmark.get(str(rid)) == bid]
+            if not idx:
+                continue
+            H_b = H[np.asarray(idx)]
+            T_b = T[np.asarray(idx)]
+            t_mean = T_b.mean(axis=0)
+            h_mean = H_b.mean(axis=0)
+            order = np.argsort(t_mean)
+            bins = np.array_split(order, min(10, order.size))
+            bx = np.asarray([float(t_mean[b].mean()) for b in bins if b.size])
+            by_runs = [
+                np.asarray([float(row[b].mean()) for b in bins if b.size])
+                for row in H_b
+            ]
+            if bx.size == 0 or not by_runs:
+                continue
+            Y = np.vstack(by_runs)
+            by = Y.mean(axis=0)
+            ax.plot(
+                bx,
+                by,
+                color=color,
+                marker=markers[j % len(markers)],
+                markerfacecolor=color,
+                markeredgecolor="white",
+                markeredgewidth=0.6,
+                lw=1.8,
+                label=f"Test Target Point {_display_test_target_id(bid)}",
+            )
+            cal_x.append(bx)
+            cal_y.append(by)
+        _set_calibration_axes(
+            ax,
+            cal_x,
+            cal_y,
+            q_low=0,
+            q_high=100,
+            pad=0.10,
+            include_zero=False,
+            min_span=1e-4,
+            ideal_color="0.25",
+            ideal_lw=1.2,
+            ideal_label="ideal",
         )
-        cal_x.append(bx)
-        cal_y.append(by)
-    _set_calibration_axes(
-        ax,
-        cal_x,
-        cal_y,
-        q_low=0,
-        q_high=100,
-        pad=0.10,
-        include_zero=False,
-        min_span=1e-4,
-        ideal_color="0.25",
-        ideal_lw=1.2,
-        ideal_label="ideal",
-    )
-    ax.set_title("(a) Test-Target Calibration")
-    ax.set_xlabel("True mean embedding (bin mean)")
-    ax.set_ylabel("Estimated mean embedding (bin mean)")
-    ax.grid(alpha=0.25)
-    ax.legend(fontsize=7, ncol=2, frameon=True, loc="best")
+        ax.set_title("(a) Test-Target Calibration")
+        ax.set_xlabel("True mean embedding (bin mean)")
+        ax.set_ylabel("Estimated mean embedding (bin mean)")
+        ax.grid(alpha=0.25)
+        ax.legend(fontsize=7, ncol=2, frameon=True, loc="best")
 
     def metric_boxplot(ax, column: str, ylabel: str, title: str) -> None:
         from matplotlib.lines import Line2D
 
-        box_data, labels, used_colors, used_bids = [], [], [], []
+        box_data, labels, used_colors = [], [], []
         if column not in metrics.columns:
             ax.axis("off")
             ax.text(0.5, 0.5, f"{column} not available", ha="center", va="center", transform=ax.transAxes)
@@ -1325,7 +1395,6 @@ def _plot_multi_benchmark_summary(
                 box_data.append(vals)
                 labels.append(_display_test_target_id(bid))
                 used_colors.append(color)
-                used_bids.append(bid)
         if not box_data:
             ax.axis("off")
             ax.text(0.5, 0.5, f"{column} not available", ha="center", va="center", transform=ax.transAxes)
@@ -1374,73 +1443,107 @@ def _plot_multi_benchmark_summary(
         ]
         ax.legend(handles=handles, fontsize=6.5, ncol=2, frameon=True, loc="best")
 
-    metric_boxplot(
-        axs[0, 1],
-        "Bias",
-        r"Bias across Z grid ($\hat{\mu}-\mu$)",
-        "(b) Bias By Test Target Point",
-    )
-
-    metric_boxplot(
-        axs[0, 2],
-        "MAE",
-        "MAE across Z grid",
-        "(c) MAE By Test Target Point",
-    )
-    metric_boxplot(
-        axs[1, 0],
-        "RMSE",
-        "RMSE across Z grid",
-        "(d) RMSE By Test Target Point",
-    )
-    metric_boxplot(
-        axs[1, 1],
-        "projected_bellman_test_risk",
-        "Projected Bellman risk",
-        "(e) Projected Bellman Risk By Test Target Point",
-    )
-
-    ax = axs[1, 2]
-    ecdf_abs_values = []
-    for color, bid in zip(colors, benchmark_ids):
-        idx = [i for i, rid in enumerate(run_ids) if rid_to_benchmark.get(str(rid)) == bid]
-        if not idx:
-            continue
-        abs_err = np.sort(np.abs(H[np.asarray(idx)] - T[np.asarray(idx)]).reshape(-1))
-        ecdf_abs_values.append(abs_err)
-        ecdf = np.arange(1, abs_err.size + 1) / abs_err.size
-        ax.plot(abs_err, ecdf, color=color, lw=1.9, label=f"Test Target Point {_display_test_target_id(bid)}")
-    ax.set_title(r"(f) ECDF Of $|\hat{\mu}-\mu|$ By Test Target Point")
-    ax.set_xlabel(r"$|\hat{\mu}-\mu|$")
-    ax.set_ylabel("ECDF")
-    all_abs = np.concatenate(ecdf_abs_values) if ecdf_abs_values else np.asarray([], dtype=float)
-    xmax = float(np.nanpercentile(all_abs, 99.5)) if all_abs.size else 1.0
-    if np.isfinite(xmax) and xmax > 0:
-        ax.set_xlim(0.0, xmax)
-    ax.grid(alpha=0.25)
-    ax.legend(fontsize=7, ncol=2)
-
-    if caption:
-        wrapped = textwrap.fill(caption, width=215)
-        fig.text(
-            0.5,
-            0.035,
-            wrapped,
-            ha="center",
-            va="bottom",
-            fontsize=7.2,
-            linespacing=1.22,
+    def render_layout(
+        layout_name: str,
+        nrows: int,
+        ncols: int,
+        figsize: tuple[float, float],
+        *,
+        caption_width: int,
+        caption_y: float,
+        tight_rect: tuple[float, float, float, float],
+        compatibility_filenames: bool = False,
+    ) -> None:
+        fig, axs = plt.subplots(nrows, ncols, figsize=figsize)
+        axes = np.asarray(axs, dtype=object).reshape(-1)
+        draw_calibration(axes[0])
+        metric_boxplot(
+            axes[1],
+            "Bias",
+            r"Bias across Z grid ($\hat{\mu}-\mu$)",
+            "(b) Bias By Test Target Point",
         )
-        fig.tight_layout(rect=(0.0, 0.23, 1.0, 0.985))
-    else:
-        fig.tight_layout()
-    fig.savefig(outdir / f"mu_summary_{policy_code}{filename_suffix}.png", dpi=300)
-    fig.savefig(outdir / f"mu_summary_benchmarks_{policy_code}{filename_suffix}.png", dpi=300)
-    plt.close(fig)
+        metric_boxplot(
+            axes[2],
+            "MAE",
+            "MAE across Z grid",
+            "(c) MAE By Test Target Point",
+        )
+        metric_boxplot(
+            axes[3],
+            "RMSE",
+            "RMSE across Z grid",
+            "(d) RMSE By Test Target Point",
+        )
+        metric_boxplot(
+            axes[4],
+            "projected_bellman_test_risk",
+            "Projected Bellman risk",
+            "(e) Projected Bellman Risk By Test Target Point",
+        )
+        _plot_pointwise_ees_panel(
+            axes[5],
+            metrics,
+            title="(f) Pointwise Explained Embedding Signal",
+            benchmark_ids=benchmark_ids,
+            colors=colors,
+            xlabel="Test Target Point",
+        )
+        for ax in axes[6:]:
+            ax.axis("off")
+        if caption:
+            wrapped = textwrap.fill(caption, width=caption_width)
+            fig.text(
+                0.5,
+                caption_y,
+                wrapped,
+                ha="center",
+                va="bottom",
+                fontsize=7.2,
+                linespacing=1.22,
+            )
+            fig.tight_layout(rect=tight_rect)
+        else:
+            fig.tight_layout()
+
+        for prefix in ("mu_summary", "mu_summary_benchmarks"):
+            fig.savefig(outdir / f"{prefix}_{policy_code}{filename_suffix}_{layout_name}.png", dpi=PLOT_DPI)
+            if compatibility_filenames:
+                fig.savefig(outdir / f"{prefix}_{policy_code}{filename_suffix}.png", dpi=PLOT_DPI)
+        plt.close(fig)
+
+    render_layout(
+        "2x3",
+        2,
+        3,
+        (19, 12.0),
+        caption_width=215,
+        caption_y=0.035,
+        tight_rect=(0.0, 0.23, 1.0, 0.985),
+        compatibility_filenames=True,
+    )
+    render_layout(
+        "3x2",
+        3,
+        2,
+        (13.5, 17.0),
+        caption_width=150,
+        caption_y=0.025,
+        tight_rect=(0.0, 0.16, 1.0, 0.985),
+    )
 
     if make_top10 and benchmark_ids_subset is None and len(all_benchmark_ids) > 10:
         ranked = [bid for bid in all_benchmark_ids if np.isfinite(scores.get(bid, float("nan")))]
-        ranked.sort(key=lambda bid: (scores[bid], int(bid) if float(bid).is_integer() else float(bid)))
+
+        def rank_key(bid):
+            try:
+                value = float(bid)
+                value_key = int(value) if value.is_integer() else value
+            except (TypeError, ValueError):
+                value_key = str(bid)
+            return scores[bid], value_key
+
+        ranked.sort(key=rank_key)
         top10 = ranked[:10]
         if top10:
             top_caption = "Top 10 test target points closest to the ideal line in Panel (a): " + ", ".join(
@@ -1599,5 +1702,5 @@ def _plot_four_panel_summary(
     ax.grid(alpha=0.25)
 
     fig.tight_layout()
-    fig.savefig(outdir / f"mu_summary_{policy_code}.png", dpi=300)
+    fig.savefig(outdir / f"mu_summary_{policy_code}.png", dpi=PLOT_DPI)
     plt.close(fig)
