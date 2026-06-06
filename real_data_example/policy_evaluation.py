@@ -17,6 +17,8 @@ import torch
 import torch.nn as nn
 import warnings
 
+from expedia_preprocessing import fit_state_encoder, state_encoder_from_metadata
+
 warnings.filterwarnings("ignore")
 with open(os.devnull, "w") as fnull, contextlib.redirect_stderr(fnull):
     import d3rlpy
@@ -68,7 +70,7 @@ LEGACY_REDUCED_STATE_COLS = [
     "corr_pos_price",
 ]
 
-DEFAULT_REWARD_COLS = ["total_sales", "total_clicks"]
+DEFAULT_REWARD_COLS = ["gross_revenue_per_night", "total_clicks"]
 SQRT_2 = math.sqrt(2.0)
 
 import logging
@@ -120,15 +122,15 @@ _patch_findfont_nimbus()
 # ==================================== #
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Evaluate one or both Gaussian-rounded policies from d3rlpy_policy_opt4.py with KE-DRL."
+        description="Evaluate one or both reward-specific linear-Gaussian policies with KE-DRL."
     )
 
     p.add_argument("--cfg-index", type=int, default=None)
     p.add_argument("--seed", type=int, default=2026)
     p.add_argument("--run-test", type=int, default=1, help="0/1")
     p.add_argument("--do-plots", type=int, default=0, help="0/1")
-    p.add_argument("--out-root", type=str, default="data/gridsearch_runs")
-    p.add_argument("--data-base", type=str, default="data")
+    p.add_argument("--out-root", type=str, default="evaluation_results/gridsearch_runs")
+    p.add_argument("--data-base", type=str, default="Expedia_data")
 
     p.add_argument("--train-blob", type=str, default="expedia_train_timeindexed.pt")
     p.add_argument("--val-blob", type=str, default="expedia_val_timeindexed.pt")
@@ -147,6 +149,15 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--state-cols",type=str,default=None,help="Optional comma-separated state variable names."    )
     p.add_argument("--action-cols",type=str,default=None,help="Optional comma-separated action variable names.",)
     p.add_argument("--reward-cols",type=str,default=None,help="Optional comma-separated reward variable names.")
+    p.add_argument(
+        "--categorical-state-cols",
+        type=str,
+        default="auto",
+        help="Comma-separated state columns to one-hot encode, 'auto', or 'none'.",
+    )
+    p.add_argument("--one-hot-categoricals", type=int, default=1, help="0/1")
+    p.add_argument("--max-auto-categorical-cardinality", type=int, default=20)
+    p.add_argument("--state-encoder-path", type=str, default=None)
 
     p.add_argument("--full-state-cols-path", type=str, default=None)
     p.add_argument("--reduced-state-cols", type=str, default=",".join(LEGACY_REDUCED_STATE_COLS))
@@ -4113,17 +4124,71 @@ def main() -> None:
         )
         print(f"Saved reproducibility subsets: {subsets_path}")
 
+    raw_state_cols = list(state_cols)
+    s0_tr_raw_unencoded = s0_tr_raw.clone()
+    s1_tr_raw_unencoded = s1_tr_raw.clone() if s1_tr_raw is not None else None
+    s0_val_raw_unencoded = s0_val_raw.clone()
+    s0_test_raw_unencoded = s0_test_raw.clone()
+
+    encoder_path = Path(args.state_encoder_path) if args.state_encoder_path else (ckpt_dir / "state_encoder.json")
+    if encoder_path.exists():
+        state_encoder = state_encoder_from_metadata(json.loads(encoder_path.read_text()))
+        encoder_source = str(encoder_path)
+        if list(state_encoder.raw_state_names) != raw_state_cols:
+            raise ValueError(
+                "State encoder raw columns do not match evaluator state columns. "
+                f"encoder={state_encoder.raw_state_names}, evaluator={raw_state_cols}"
+            )
+    else:
+        state_encoder = fit_state_encoder(
+            raw_state_names=raw_state_cols,
+            train_states=_np(s0_tr_raw),
+            categorical_state_cols=args.categorical_state_cols,
+            one_hot=bool(int(args.one_hot_categoricals)),
+            max_auto_cardinality=int(args.max_auto_categorical_cardinality),
+        )
+        encoder_source = "fit_from_evaluation_train_subset"
+
+    state_encoder_meta = state_encoder.to_metadata()
+    state_encoding_diagnostics = {
+        "encoder_source": encoder_source,
+        "train": state_encoder.diagnostics(_np(s0_tr_raw_unencoded)),
+        "val": state_encoder.diagnostics(_np(s0_val_raw_unencoded)),
+        "test": state_encoder.diagnostics(_np(s0_test_raw_unencoded)),
+    }
+
+    def _encode_state_tensor(x: torch.Tensor) -> torch.Tensor:
+        return torch.as_tensor(
+            state_encoder.transform(_np(x)),
+            dtype=torch.float32,
+        )
+
+    s0_tr_raw = _encode_state_tensor(s0_tr_raw_unencoded)
+    s1_tr_raw = _encode_state_tensor(s1_tr_raw_unencoded) if s1_tr_raw_unencoded is not None else None
+    s0_val_raw = _encode_state_tensor(s0_val_raw_unencoded)
+    s0_test_raw = _encode_state_tensor(s0_test_raw_unencoded)
+    state_cols = list(state_encoder.encoded_state_names)
+
+    print("\nState encoding:")
+    print("  raw_state_cols        :", raw_state_cols)
+    print("  categorical_state_cols:", state_encoder_meta["categorical_state_names"])
+    print("  encoder_source        :", encoder_source)
+    print("  encoded_state_dim     :", len(state_cols))
+
     print('\nShapes after named selection + subsample:')
     print('  train:', tuple(s0_tr_raw.shape), tuple(a0_tr_raw.shape), tuple(r_tr_raw.shape))
     print('  val  :', tuple(s0_val_raw.shape), tuple(a0_val_raw.shape), tuple(r_val_raw.shape))
     print('  test :', tuple(s0_test_raw.shape), tuple(a0_test_raw.shape), tuple(r_test_raw.shape))
 
     data_summary = {
-        'train_state_summary': summarize_tensor_by_columns(s0_tr_raw, state_cols, 'TRAIN STATE SUMMARY (raw scale)'),
+        'train_raw_state_summary': summarize_tensor_by_columns(s0_tr_raw_unencoded, raw_state_cols, 'TRAIN RAW STATE SUMMARY (selected columns)'),
+        'train_encoded_state_summary': summarize_tensor_by_columns(s0_tr_raw, state_cols, 'TRAIN ENCODED STATE SUMMARY (model basis)'),
         'train_action_summary': summarize_tensor_by_columns(a0_tr_raw, action_cols, 'TRAIN ACTION SUMMARY (raw scale)'),
         'train_reward_summary': summarize_tensor_by_columns(r_tr_raw, reward_cols, 'TRAIN REWARD SUMMARY (raw scale)'),
         'val_action_summary': summarize_tensor_by_columns(a0_val_raw, action_cols, 'VAL ACTION SUMMARY (raw scale)'),
         'test_action_summary': summarize_tensor_by_columns(a0_test_raw, action_cols, 'TEST ACTION SUMMARY (raw scale)'),
+        'state_encoder': state_encoder_meta,
+        'state_encoding_diagnostics': state_encoding_diagnostics,
     }
 
     if s1_tr_raw is None or a1_tr_raw is None:
@@ -4240,10 +4305,13 @@ def main() -> None:
         'cfg_index': int(cfg_index),
         'cfg': cfg,
         'seed': int(args.seed),
+        'raw_state_cols': raw_state_cols,
         'state_cols': state_cols,
         'action_cols': action_cols,
         'reward_cols': reward_cols,
         'discrete_reward_cols': _parse_csv_list(args.discrete_reward_cols) or [],
+        'state_encoder': state_encoder_meta,
+        'state_encoding_diagnostics': state_encoding_diagnostics,
         'normalization': {
             's_mu': _np(s_mu).tolist(),
             's_sd': _np(s_sd).tolist(),

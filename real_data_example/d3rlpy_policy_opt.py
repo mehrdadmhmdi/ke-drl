@@ -54,6 +54,8 @@ import numpy as np
 import torch
 import warnings
 
+from expedia_preprocessing import fit_state_encoder
+
 warnings.filterwarnings("ignore")
 with open(os.devnull, "w") as fnull, contextlib.redirect_stderr(fnull):
     import d3rlpy
@@ -100,6 +102,37 @@ def series_color(name: str) -> str:
 def reward_suggests_click_like(name: str) -> bool:
     s = str(name).lower()
     return any(k in s for k in ['click', 'booking', 'count', 'visit', 'impression'])
+
+
+def positive_reward_summary(values: np.ndarray, min_reward: float = 1e-8) -> Dict[str, float]:
+    v = np.asarray(values, dtype=np.float64).reshape(-1)
+    finite = v[np.isfinite(v)]
+    if finite.size == 0:
+        return {
+            "positive_fraction": 0.0,
+            "zero_fraction": 0.0,
+            "min": float("nan"),
+            "max": float("nan"),
+        }
+    positive = finite >= float(min_reward)
+    return {
+        "positive_fraction": float(positive.mean()),
+        "zero_fraction": float((finite == 0.0).mean()),
+        "min": float(np.min(finite)),
+        "max": float(np.max(finite)),
+    }
+
+
+def uses_rare_positive_enrichment(
+    reward_values: np.ndarray,
+    reward_name: str,
+    threshold: float,
+    min_reward: float,
+) -> Tuple[bool, Dict[str, float]]:
+    summary = positive_reward_summary(reward_values, min_reward=min_reward)
+    pos_frac = float(summary["positive_fraction"])
+    rare_positive = 0.0 < pos_frac < float(threshold)
+    return bool(rare_positive or reward_suggests_click_like(reward_name)), summary
 
 
 # -----------------------------------------------------------------------------
@@ -308,6 +341,17 @@ def maybe_load_split(
         "action_names": action_names,
         "reward_names": reward_names,
     }
+
+
+def apply_state_encoder_to_split(split: Optional[Dict[str, np.ndarray]], encoder) -> None:
+    if split is None:
+        return
+    raw_obs = np.asarray(split["obs"], dtype=np.float64)
+    split["obs_raw_unencoded"] = raw_obs.copy()
+    split["raw_state_names"] = list(split["state_names"])
+    split["obs"] = encoder.transform(raw_obs).astype(np.float64, copy=False)
+    split["state_names"] = list(encoder.encoded_state_names)
+    split["state_encoding_diagnostics"] = encoder.diagnostics(raw_obs)
 
 
 # -----------------------------------------------------------------------------
@@ -680,26 +724,28 @@ def build_reward_focused_bank(
     reward_name: str,
     seed: int,
     standard_pool_size: int,
-    click_pool_size: int,
-    click_min_reward: float,
-    click_quantile: float,
+    enriched_pool_size: int,
+    enriched_min_reward: float,
+    enriched_quantile: float,
     min_bank_size: int,
+    use_enriched_bank: bool,
+    bank_label: str,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, object]]:
     reward_values = np.asarray(reward_values, dtype=np.float64).reshape(-1)
-    if reward_suggests_click_like(reward_name):
-        mask = reward_values >= float(click_min_reward)
-        strategy = f'reward>={float(click_min_reward):.3g}'
+    if use_enriched_bank:
+        mask = reward_values >= float(enriched_min_reward)
+        strategy = f'reward>={float(enriched_min_reward):.3g}'
         if int(mask.sum()) < int(min_bank_size):
-            qthr = float(np.quantile(reward_values, float(click_quantile)))
+            qthr = float(np.quantile(reward_values, float(enriched_quantile)))
             mask = reward_values >= qthr
-            strategy = f'reward>=q{float(click_quantile):.2f}({qthr:.4f})'
+            strategy = f'reward>=q{float(enriched_quantile):.2f}({qthr:.4f})'
         if int(mask.sum()) == 0:
             mask = np.ones_like(reward_values, dtype=bool)
             strategy = 'fallback_all_rows'
         obs_pool = obs_train[mask]
         act_pool = act_train[mask]
-        pool_size = click_pool_size
-        bank_type = 'click_enriched'
+        pool_size = enriched_pool_size
+        bank_type = f'{bank_label}_enriched'
     else:
         obs_pool = obs_train
         act_pool = act_train
@@ -721,6 +767,7 @@ def build_reward_focused_bank(
         'selection_strategy': strategy,
         'bank_n_before_subsample': int(n),
         'bank_n_after_subsample': int(bank_states.shape[0]),
+        'reward_name': str(reward_name),
     }
     return bank_states, bank_actions, info
 
@@ -1197,16 +1244,44 @@ def train_one_reward(
     action_names = split_train['action_names']
 
     click_like = reward_suggests_click_like(reward_name)
+    enriched_min_reward = (
+        float(args.click_bank_min_reward)
+        if click_like
+        else float(args.positive_bank_min_reward)
+    )
+    use_enriched_bank, reward_summary = uses_rare_positive_enrichment(
+        reward_values=rew_train_raw,
+        reward_name=reward_name,
+        threshold=float(args.rare_positive_threshold),
+        min_reward=enriched_min_reward,
+    )
     rew_train_for_critic = np.asarray(rew_train_raw, dtype=np.float64).copy()
     if click_like:
-        rew_train_for_critic = args.click_reward_scale * rew_train_for_critic
+        critic_reward_scale = float(args.click_reward_scale)
+        rew_train_for_critic = critic_reward_scale * rew_train_for_critic
         policy_steps = int(args.click_policy_steps if args.click_policy_steps > 0 else args.policy_steps)
         candidate_neighbor_k = int(args.click_candidate_neighbor_k)
         candidate_random_k = int(args.click_candidate_random_k)
+        enriched_pool_size = int(args.click_candidate_pool_size)
+        enriched_quantile = float(args.click_bank_quantile)
+        min_bank_size = int(args.click_bank_min_size)
+        bank_label = "click"
     else:
+        critic_reward_scale = float(args.positive_reward_scale) if use_enriched_bank else 1.0
+        rew_train_for_critic = critic_reward_scale * rew_train_for_critic
         policy_steps = int(args.policy_steps)
-        candidate_neighbor_k = int(args.candidate_neighbor_k)
-        candidate_random_k = int(args.candidate_random_k)
+        candidate_neighbor_k = int(args.positive_candidate_neighbor_k if use_enriched_bank else args.candidate_neighbor_k)
+        candidate_random_k = int(args.positive_candidate_random_k if use_enriched_bank else args.candidate_random_k)
+        enriched_pool_size = int(args.positive_candidate_pool_size)
+        enriched_quantile = float(args.positive_bank_quantile)
+        min_bank_size = int(args.positive_bank_min_size)
+        bank_label = "positive"
+
+    print(
+        f"\nReward '{reward_name}': positive_fraction={reward_summary['positive_fraction']:.4f}, "
+        f"zero_fraction={reward_summary['zero_fraction']:.4f}, "
+        f"enriched_bank={use_enriched_bank}, critic_reward_scale={critic_reward_scale:g}"
+    )
 
     dataset = make_dataset(obs_train, act_train, rew_train_for_critic, terminals_train)
     algo = make_iql_learner(
@@ -1240,10 +1315,12 @@ def train_one_reward(
         reward_name=reward_name,
         seed=args.seed + 17 * reward_idx,
         standard_pool_size=args.candidate_pool_size,
-        click_pool_size=args.click_candidate_pool_size,
-        click_min_reward=args.click_bank_min_reward,
-        click_quantile=args.click_bank_quantile,
-        min_bank_size=args.click_bank_min_size,
+        enriched_pool_size=enriched_pool_size,
+        enriched_min_reward=enriched_min_reward,
+        enriched_quantile=enriched_quantile,
+        min_bank_size=min_bank_size,
+        use_enriched_bank=use_enriched_bank,
+        bank_label=bank_label,
     )
 
     actor_obs = obs_train
@@ -1269,8 +1346,13 @@ def train_one_reward(
     target_best_action = _apply_integer_override(critic_targets['target_best_action'], spec)
 
     sample_weight = None
-    if click_like:
-        sample_weight = 1.0 + float(args.click_weight_boost) * np.maximum(actor_reward, 0.0)
+    if use_enriched_bank:
+        if click_like:
+            sample_weight = 1.0 + float(args.click_weight_boost) * np.maximum(actor_reward, 0.0)
+        else:
+            sample_weight = 1.0 + float(args.positive_weight_boost) * (
+                actor_reward >= enriched_min_reward
+            ).astype(np.float64)
 
     policy, fit_meta = fit_linear_gaussian_policy(
         X=actor_obs,
@@ -1308,6 +1390,7 @@ def train_one_reward(
         'value_model_path': str(value_path),
         'linear_policy_npz': str(policy_npz),
         'linear_policy_json': str(policy_json),
+        'raw_state_names': split_train.get('raw_state_names', state_names),
         'state_names': state_names,
         'action_names': action_names,
         'integer_action_name': spec.integer_name,
@@ -1335,7 +1418,9 @@ def train_one_reward(
             sampled_actions=sampled_actions,
         ),
         'reward_is_click_like': bool(click_like),
-        'critic_reward_scale_used': float(args.click_reward_scale if click_like else 1.0),
+        'reward_positive_summary': reward_summary,
+        'rare_positive_enriched_bank_used': bool(use_enriched_bank),
+        'critic_reward_scale_used': float(critic_reward_scale),
         'candidate_neighbor_k_used': int(candidate_neighbor_k),
         'candidate_random_k_used': int(candidate_random_k),
         'bank_info': bank_info,
@@ -1517,7 +1602,7 @@ def print_artifact_paths(out_dir: Path, reward_names: List[str], plot_paths: Dic
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Reward-specific plain linear-Gaussian policy fitting from raw behavior data.")
 
-    p.add_argument("--data_base", "--data-base", default="./data")
+    p.add_argument("--data_base", "--data-base", default="./Expedia_data")
     p.add_argument("--ckpt_dir", "--ckpt-dir", default="./checkpoints")
     p.add_argument("--train_blob", "--train-blob", default="expedia_train_timeindexed.pt")
     p.add_argument("--test_blob", "--test-blob", default=None)
@@ -1528,6 +1613,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--state_cols", "--state-cols", default=None)
     p.add_argument("--action_cols", "--action-cols", default=None)
     p.add_argument("--reward_cols", "--reward-cols", default=None)
+    p.add_argument(
+        "--categorical_state_cols",
+        "--categorical-state-cols",
+        default="auto",
+        help="Comma-separated state columns to one-hot encode, 'auto', or 'none'.",
+    )
+    p.add_argument("--one_hot_categoricals", "--one-hot-categoricals", type=int, default=1, help="0/1")
+    p.add_argument("--max_auto_categorical_cardinality", "--max-auto-categorical-cardinality", type=int, default=20)
     p.add_argument("--integer_action_col", "--integer-action-col", default="total_promotions")
     p.add_argument("--reward_indices", "--reward-indices", nargs="*", type=int, default=None)
 
@@ -1570,6 +1663,16 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--click_bank_min_size', '--click-bank-min-size', type=int, default=2000)
     p.add_argument('--click_weight_boost', '--click-weight-boost', type=float, default=8.0)
     p.add_argument('--click_reward_scale', '--click-reward-scale', type=float, default=8.0)
+
+    p.add_argument('--rare_positive_threshold', '--rare-positive-threshold', type=float, default=0.40)
+    p.add_argument('--positive_candidate_pool_size', '--positive-candidate-pool-size', type=int, default=16384)
+    p.add_argument('--positive_candidate_neighbor_k', '--positive-candidate-neighbor-k', type=int, default=96)
+    p.add_argument('--positive_candidate_random_k', '--positive-candidate-random-k', type=int, default=48)
+    p.add_argument('--positive_bank_min_reward', '--positive-bank-min-reward', type=float, default=1e-8)
+    p.add_argument('--positive_bank_quantile', '--positive-bank-quantile', type=float, default=0.80)
+    p.add_argument('--positive_bank_min_size', '--positive-bank-min-size', type=int, default=2000)
+    p.add_argument('--positive_weight_boost', '--positive-weight-boost', type=float, default=4.0)
+    p.add_argument('--positive_reward_scale', '--positive-reward-scale', type=float, default=1.0)
 
     p.add_argument("--device", default="cuda:0")
     p.add_argument("--seed", type=int, default=123)
@@ -1616,11 +1719,31 @@ def main(args) -> None:
     if split_train is None:
         raise ValueError("Training split could not be loaded.")
 
-    print("\nUsing raw arrays exactly as loaded from the blob.")
+    raw_state_names = list(split_train["state_names"])
+    state_encoder = fit_state_encoder(
+        raw_state_names=raw_state_names,
+        train_states=split_train["obs"],
+        categorical_state_cols=args.categorical_state_cols,
+        one_hot=bool(int(args.one_hot_categoricals)),
+        max_auto_cardinality=int(args.max_auto_categorical_cardinality),
+    )
+    apply_state_encoder_to_split(split_train, state_encoder)
+    apply_state_encoder_to_split(split_test, state_encoder)
+    state_encoder_meta = state_encoder.to_metadata()
+    state_encoder_diag = {
+        "train": split_train.get("state_encoding_diagnostics", {}),
+        "test": {} if split_test is None else split_test.get("state_encoding_diagnostics", {}),
+    }
+    (out_dir / "state_encoder.json").write_text(json.dumps(state_encoder_meta, indent=2))
+
+    print("\nUsing selected raw arrays with categorical state encoding.")
+    print("Raw state cols       :", raw_state_names)
+    print("Categorical state cols:", state_encoder_meta["categorical_state_names"])
+    print("Encoded state dim    :", len(split_train["state_names"]))
     print("Train states :", split_train["obs"].shape)
     print("Train actions:", split_train["act"].shape)
     print("Train rewards:", split_train["rew"].shape)
-    print("State cols   :", split_train["state_names"])
+    print("Model state cols:", split_train["state_names"])
     print("Action cols  :", split_train["action_names"])
     print("Reward cols  :", split_train["reward_names"])
 
@@ -1634,15 +1757,20 @@ def main(args) -> None:
         raise ValueError(f"Invalid reward indices {bad}. Available range: 0..{split_train['rew'].shape[1] - 1}")
 
     train_stats = {
+        "raw_state_mean": np.mean(split_train["obs_raw_unencoded"], axis=0).tolist(),
+        "raw_state_std": np.std(split_train["obs_raw_unencoded"], axis=0).tolist(),
         "state_mean": np.mean(split_train["obs"], axis=0).tolist(),
         "state_std": np.std(split_train["obs"], axis=0).tolist(),
         "action_mean": np.mean(split_train["act"], axis=0).tolist(),
         "action_std": np.std(split_train["act"], axis=0).tolist(),
         "reward_mean": np.mean(split_train["rew"], axis=0).tolist(),
         "reward_std": np.std(split_train["rew"], axis=0).tolist(),
+        "raw_state_names": raw_state_names,
         "state_names": split_train["state_names"],
         "action_names": split_train["action_names"],
         "reward_names": split_train["reward_names"],
+        "state_encoder": state_encoder_meta,
+        "state_encoding_diagnostics": state_encoder_diag,
     }
     (out_dir / "train_stats_raw.json").write_text(json.dumps(train_stats, indent=2))
 
@@ -1728,9 +1856,13 @@ def main(args) -> None:
         "device": args.device,
         "train_blob": str(train_path),
         "test_blob": str(test_path) if test_path is not None else None,
+        "raw_state_names": raw_state_names,
         "state_names": split_train["state_names"],
         "action_names": split_train["action_names"],
         "reward_names": split_train["reward_names"],
+        "state_encoder_path": str(out_dir / "state_encoder.json"),
+        "state_encoder": state_encoder_meta,
+        "state_encoding_diagnostics": state_encoder_diag,
         "results": results,
         "focus_matrix_path": str(out_dir / "focus_matrix.json"),
         "policy_difference_summary_path": str(out_dir / "policy_difference_summary.json"),
