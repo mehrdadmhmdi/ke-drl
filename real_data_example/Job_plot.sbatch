@@ -12,7 +12,16 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
+if [ -f "${SUBMIT_DIR}/plot_recovered_densities.py" ]; then
+  SCRIPT_DIR="$(cd "${SUBMIT_DIR}" && pwd)"
+elif [ -f "${SUBMIT_DIR}/real_data_example/plot_recovered_densities.py" ]; then
+  SCRIPT_DIR="$(cd "${SUBMIT_DIR}/real_data_example" && pwd)"
+else
+  echo "Could not locate real_data_example from SLURM_SUBMIT_DIR=${SUBMIT_DIR}" >&2
+  echo "Submit from kedrl_git/real_data_example or kedrl_git." >&2
+  exit 2
+fi
 cd "${SCRIPT_DIR}"
 mkdir -p logs
 

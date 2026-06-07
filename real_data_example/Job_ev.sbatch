@@ -14,7 +14,16 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
+if [ -f "${SUBMIT_DIR}/policy_evaluation.py" ]; then
+  SCRIPT_DIR="$(cd "${SUBMIT_DIR}" && pwd)"
+elif [ -f "${SUBMIT_DIR}/real_data_example/policy_evaluation.py" ]; then
+  SCRIPT_DIR="$(cd "${SUBMIT_DIR}/real_data_example" && pwd)"
+else
+  echo "Could not locate real_data_example from SLURM_SUBMIT_DIR=${SUBMIT_DIR}" >&2
+  echo "Submit from kedrl_git/real_data_example or kedrl_git." >&2
+  exit 2
+fi
 cd "${SCRIPT_DIR}"
 mkdir -p logs
 
@@ -33,13 +42,16 @@ echo "Mem/node:  ${SLURM_MEM_PER_NODE:-NA}"
 echo "Node:      $(hostname)"
 echo "Start:     $(date)"
 
+# Conda/module hooks can reference unset backup variables under `set -u`.
+set +u
 module purge
-module load nvidia/25.5
-module load cuda/12.9
-module load craype-accel-nvidia90
-module load python/miniforge3_pytorch/2.11.0
+module load cuda/12.6.1
+module load default gcc/14.2.0 craype-accel-nvidia90
+module load python/miniforge3_pytorch/2.7.0
+echo $SLURM_JOB_PARTITION
+echo ${CUDA_VISIBLE_DEVICES:-}
 eval "$(conda shell.bash hook)"
-conda activate deltaAI_env
+set -u
 
 DATA_BASE="${DATA_BASE:-./Expedia_data}"
 POLICY_CKPT_DIR="${POLICY_CKPT_DIR:-./policies_linear2}"
@@ -47,15 +59,16 @@ STATE_ENCODER_PATH="${STATE_ENCODER_PATH:-${POLICY_CKPT_DIR}/state_encoder.json}
 PYFILE="${PYFILE:-policy_evaluation.py}"
 TASK="${SLURM_ARRAY_TASK_ID}"
 
-NU_ARR=(3.5 4.5)
-ELL_ARR=(1.8 1.5)
-LAM_ARR=(0.003 0.0005)
+NU_ARR=(6.5 4.5)
+ELL_ARR=(1.5 2.0)
+LAM_ARR=(0.002 0.0005)
 SIG_ARR=(1.0 0.7)
 BAND_ARR=(0.0)
 BW_PER_DIM_ARR=("90,1")
 DISCRETE_REWARD_COLS="total_clicks"
 LAMREC_ARR=(0.005)
 GRID_ARR=(600)
+MEAN_EMBEDDING_BASIS_SIZE_ARR=(320)
 STEPS_ARR=(1000)
 
 N_NU=${#NU_ARR[@]}
@@ -66,9 +79,10 @@ N_BAND=${#BAND_ARR[@]}
 N_BW_PER_DIM=${#BW_PER_DIM_ARR[@]}
 N_LAMREC=${#LAMREC_ARR[@]}
 N_GRID=${#GRID_ARR[@]}
+N_BASIS=${#MEAN_EMBEDDING_BASIS_SIZE_ARR[@]}
 N_STEPS=${#STEPS_ARR[@]}
 
-TOTAL_CFG=$(( N_NU * N_ELL * N_LAM * N_SIG * N_BAND * N_BW_PER_DIM * N_LAMREC * N_GRID * N_STEPS ))
+TOTAL_CFG=$(( N_NU * N_ELL * N_LAM * N_SIG * N_BAND * N_BW_PER_DIM * N_LAMREC * N_GRID * N_BASIS * N_STEPS ))
 
 if (( TASK < 0 || TASK >= TOTAL_CFG )); then
   echo "Error: TASK=${TASK} is outside valid range 0..$((TOTAL_CFG - 1))"
@@ -77,6 +91,7 @@ fi
 
 IDX=$TASK
 I_STEPS=$(( IDX % N_STEPS )); IDX=$(( IDX / N_STEPS ))
+I_BASIS=$(( IDX % N_BASIS )); IDX=$(( IDX / N_BASIS ))
 I_GRID=$(( IDX % N_GRID )); IDX=$(( IDX / N_GRID ))
 I_LAMREC=$(( IDX % N_LAMREC )); IDX=$(( IDX / N_LAMREC ))
 I_BW_PER_DIM=$(( IDX % N_BW_PER_DIM )); IDX=$(( IDX / N_BW_PER_DIM ))
@@ -94,10 +109,11 @@ BAND=${BAND_ARR[$I_BAND]}
 BW_PER_DIM=${BW_PER_DIM_ARR[$I_BW_PER_DIM]}
 LAMREC=${LAMREC_ARR[$I_LAMREC]}
 GRID=${GRID_ARR[$I_GRID]}
+MEAN_EMBEDDING_BASIS_SIZE=${MEAN_EMBEDDING_BASIS_SIZE_ARR[$I_BASIS]}
 STEPS=${STEPS_ARR[$I_STEPS]}
 
 CFG_INDEX=${TASK}
-OUTROOT="evaluation_results/expedia_encoded_5k/cfg_${CFG_INDEX}"
+OUTROOT="evaluation_results/expedia_encoded_10k/cfg_${CFG_INDEX}"
 
 echo "Resolved config:"
 echo "  PYFILE       = ${PYFILE}"
@@ -113,6 +129,7 @@ echo "  BAND         = ${BAND}"
 echo "  BW_PER_DIM   = ${BW_PER_DIM}"
 echo "  LAMREC       = ${LAMREC}"
 echo "  GRID         = ${GRID}"
+echo "  BASIS L      = ${MEAN_EMBEDDING_BASIS_SIZE}"
 echo "  STEPS        = ${STEPS}"
 echo "  OUTROOT      = ${OUTROOT}"
 
@@ -131,7 +148,12 @@ python -u "${PYFILE}" \
   --state-encoder-path "${STATE_ENCODER_PATH}" \
   --num-steps "${STEPS}" \
   --num-grid-points "${GRID}" \
-  --max-train 5000 \
+  --mean-embedding-basis-size "${MEAN_EMBEDDING_BASIS_SIZE}" \
+  --mean-embedding-basis-method kmeans \
+  --mean-embedding-basis-standardize 1 \
+  --mean-embedding-basis-max-iter 20 \
+  --lambda-B 0.0 \
+  --max-train 10000 \
   --max-val 4000 \
   --max-test 4000 \
   --state-cols mean_hist_price,std_hist_price,prop_location_score1,srch_room_count,srch_length_of_stay,prop_review_score,comp_inv \
@@ -161,9 +183,9 @@ python -u "${PYFILE}" \
   --density-recovery-tol 1e-10 \
   --density-recovery-ridge 1e-4 \
   --density-recovery-init positive_beta \
-  --density-recovery-quad-points 64 \
-  --density-recovery-batch-atoms 128 \
-  --density-recovery-num-points 1200 \
+  --density-recovery-quad-points 256 \
+  --density-recovery-batch-atoms 512 \
+  --density-recovery-num-points 2200 \
   --mean-embedding-contour-n1 220 \
   --mean-embedding-contour-n2 220 \
   --mean-embedding-contour-levels 55 \

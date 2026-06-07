@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import contextlib
+import inspect
 import json
 import math
 import os
@@ -26,7 +27,7 @@ with open(os.devnull, "w") as fnull, contextlib.redirect_stderr(fnull):
 from ke_drl.api import (
     build_plot_config,
     compute_marginals_from_beta,
-    estimate_embedding,
+    estimate_embedding as _estimate_embedding_base,
     mean_embedding_all,
     plot_bellman_error,
     plot_densities,
@@ -142,6 +143,84 @@ def _parse_args() -> argparse.Namespace:
 
     p.add_argument("--num-steps", type=int, default=5000)
     p.add_argument("--num-grid-points", type=int, default=300)
+    p.add_argument(
+        "--mean-embedding-basis-size",
+        "--mean_embedding_basis_size",
+        dest="mean_embedding_basis_size",
+        type=int,
+        default=0,
+        help=(
+            "State-action mean-embedding conditioning basis size L. "
+            "Use 0 to let ke_drl use the full training state-action dictionary. "
+            "When L>0 this is passed directly to ke_drl.api.estimate_embedding, "
+            "whose native parameterization returns B_hat with shape L x m."
+        ),
+    )
+    p.add_argument(
+        "--mean-embedding-basis-ridge",
+        "--mean_embedding_basis_ridge",
+        dest="mean_embedding_basis_ridge",
+        type=float,
+        default=1e-6,
+        help="Ridge used when projecting the full mean-embedding operator onto the L-point basis.",
+    )
+    p.add_argument(
+        "--mean-embedding-basis-method",
+        "--mean_embedding_basis_method",
+        dest="mean_embedding_basis_method",
+        type=str,
+        default="kmeans",
+        choices=["full", "all", "none", "random", "subsample", "uniform", "kmeans", "kmeans_landmarks", "landmark", "landmarks"],
+        help="Native ke_drl conditioning-basis method for the L-row mean-embedding operator.",
+    )
+    p.add_argument(
+        "--mean-embedding-basis-seed",
+        "--mean_embedding_basis_seed",
+        dest="mean_embedding_basis_seed",
+        type=int,
+        default=None,
+        help="Seed for native ke_drl state-action basis selection. Defaults to --seed.",
+    )
+    p.add_argument(
+        "--mean-embedding-basis-standardize",
+        "--mean_embedding_basis_standardize",
+        dest="mean_embedding_basis_standardize",
+        type=int,
+        default=1,
+        help="0/1; standardize X=(S,A) before native kmeans/random basis selection diagnostics.",
+    )
+    p.add_argument(
+        "--mean-embedding-basis-candidate-pool",
+        "--mean_embedding_basis_candidate_pool",
+        dest="mean_embedding_basis_candidate_pool",
+        type=int,
+        default=0,
+        help="Candidate pool size for native ke_drl kmeans basis selection. Use 0 for package default.",
+    )
+    p.add_argument(
+        "--mean-embedding-basis-max-iter",
+        "--mean_embedding_basis_max_iter",
+        dest="mean_embedding_basis_max_iter",
+        type=int,
+        default=20,
+        help="Maximum native kmeans iterations for the mean-embedding basis.",
+    )
+    p.add_argument(
+        "--mean-embedding-basis-batch-size",
+        "--mean_embedding_basis_batch_size",
+        dest="mean_embedding_basis_batch_size",
+        type=int,
+        default=8192,
+        help="Batch size used by native ke_drl basis selection.",
+    )
+    p.add_argument(
+        "--lambda-B",
+        "--lambda_B",
+        dest="lambda_B",
+        type=float,
+        default=0.0,
+        help="Native ke_drl RKHS ridge on B: lambda_B tr(B.T K_U B).",
+    )
 
     p.add_argument("--policy-objective",type=str,default="both",help="Reward name to evaluate, or 'both' to evaluate both reward-specific policies.")
     p.add_argument("--policy-ckpt-dir", type=str, default="checkpoints")
@@ -327,6 +406,268 @@ def save_json(path: Path, obj: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         json.dump(obj, f, indent=2)
+
+
+
+def _call_estimate_embedding_compatible(**kwargs):
+    """Call ke_drl.api.estimate_embedding while remaining compatible with older APIs."""
+    sig = inspect.signature(_estimate_embedding_base)
+    filtered = {k: v for k, v in kwargs.items() if k in sig.parameters}
+    dropped = sorted(set(kwargs) - set(filtered))
+    if dropped:
+        print(
+            "estimate_embedding does not accept these optional arguments; "
+            f"they will be handled in policy_evaluation.py when possible: {dropped}",
+            flush=True,
+        )
+    return _estimate_embedding_base(**filtered)
+
+
+def _basis_size_from_args(args: argparse.Namespace, n_train: int) -> int:
+    L = int(getattr(args, "mean_embedding_basis_size", 0) or 0)
+    if L <= 0 or L >= int(n_train):
+        return int(n_train)
+    return max(1, L)
+
+
+def _kmeanspp_basis_indices(
+    x: torch.Tensor,
+    L: int,
+    seed: int,
+) -> torch.Tensor:
+    """Deterministic kmeans++-style row selection without running Lloyd iterations."""
+    n = int(x.shape[0])
+    L = min(max(1, int(L)), n)
+    if L >= n:
+        return torch.arange(n, device=x.device)
+
+    x_work = x.detach()
+    mu = x_work.mean(dim=0, keepdim=True)
+    sd = x_work.std(dim=0, unbiased=False, keepdim=True).clamp_min(1e-6)
+    xz = (x_work - mu) / sd
+
+    gen = torch.Generator(device=x.device)
+    gen.manual_seed(int(seed))
+    first = int(torch.randint(n, (1,), generator=gen, device=x.device).item())
+    chosen = torch.empty(L, dtype=torch.long, device=x.device)
+    chosen[0] = first
+    min_dist = torch.sum((xz - xz[first:first + 1]) ** 2, dim=1).clamp_min(0.0)
+
+    for t in range(1, L):
+        probs = min_dist / min_dist.sum().clamp_min(1e-30)
+        nxt = int(torch.multinomial(probs, 1, replacement=False, generator=gen).item())
+        chosen[t] = nxt
+        dist_new = torch.sum((xz - xz[nxt:nxt + 1]) ** 2, dim=1).clamp_min(0.0)
+        min_dist = torch.minimum(min_dist, dist_new)
+        min_dist[chosen[: t + 1]] = 0.0
+    return chosen
+
+
+def _select_mean_embedding_basis_indices(
+    sa_train: torch.Tensor,
+    L: int,
+    seed: int,
+    method: str,
+) -> torch.Tensor:
+    n = int(sa_train.shape[0])
+    L = min(max(1, int(L)), n)
+    if L >= n:
+        return torch.arange(n, device=sa_train.device)
+
+    method = str(method).strip().lower()
+    if method == "first":
+        return torch.arange(L, device=sa_train.device)
+    if method == "kmeans++":
+        return _kmeanspp_basis_indices(sa_train, L=L, seed=seed)
+
+    gen = torch.Generator(device=sa_train.device)
+    gen.manual_seed(int(seed))
+    return torch.randperm(n, generator=gen, device=sa_train.device)[:L]
+
+
+def _find_pre_basis_tensor(pre: dict, expected_rows: int, fallback_dim: int) -> Optional[torch.Tensor]:
+    if not isinstance(pre, dict):
+        return None
+    candidate_keys = [
+        "X_basis",                 # current ke_drl native key
+        "sa_basis",                # compatibility aliases
+        "SA_basis",
+        "state_action_basis",
+        "basis_sa",
+        "basis_points",
+        "basis",
+        "dictionary_sa",
+    ]
+    for key in candidate_keys:
+        val = pre.get(key, None)
+        if isinstance(val, torch.Tensor) and val.ndim == 2 and int(val.shape[0]) == int(expected_rows):
+            if int(val.shape[1]) == int(fallback_dim):
+                return val
+    return None
+
+
+def _project_B_to_mean_embedding_basis(
+    *,
+    B_hat: torch.Tensor,
+    pre: dict,
+    sa_train: torch.Tensor,
+    args: argparse.Namespace,
+    nu: float,
+    length_scale: float,
+    sigma: float,
+) -> Tuple[torch.Tensor, dict, torch.Tensor, torch.Tensor, torch.Tensor, Dict[str, object]]:
+    r"""Resolve the native ke_drl L-point state-action conditioning basis.
+
+    Current ke_drl implements the L-basis inside estimate_embedding.  It returns
+    B_hat with shape (L, m), pre['X_basis'] with shape (L, d_s+d_a),
+    pre['basis_indices'], and pre['mean_embedding_basis'] metadata.  This helper
+    validates those objects and returns them for downstream validation/test
+    kernels.  It keeps pre['k_sa'], pre['Phi'], and pre['K_sa'] in the package's
+    native orientation so recover_joint_beta remains compatible.
+
+    A post-fit projection fallback is kept only for older installed package
+    versions that ignore the basis arguments and return a full N x m operator.
+    """
+    if not isinstance(pre, dict):
+        pre = {}
+
+    n_train = int(sa_train.shape[0])
+    d_sa = int(sa_train.shape[1])
+    requested_raw = int(getattr(args, "mean_embedding_basis_size", 0) or 0)
+    requested_L = _basis_size_from_args(args, n_train)
+    basis_method = str(getattr(args, "mean_embedding_basis_method", "kmeans"))
+    basis_ridge = float(getattr(args, "mean_embedding_basis_ridge", 1e-6))
+
+    if B_hat.ndim != 2:
+        raise ValueError(f"B_hat must be 2D, got shape={tuple(B_hat.shape)}")
+
+    B_rows = int(B_hat.shape[0])
+    B_cols = int(B_hat.shape[1])
+
+    # Native current ke_drl path: B rows are the selected conditioning basis size L.
+    # The public package stores the basis as pre['X_basis'] and the indices as
+    # pre['basis_indices'].
+    native_basis = _find_pre_basis_tensor(pre, expected_rows=B_rows, fallback_dim=d_sa)
+    native_meta = pre.get("mean_embedding_basis", {}) if isinstance(pre.get("mean_embedding_basis", {}), dict) else {}
+    native_basis_idx = pre.get("basis_indices", pre.get("basis_idx", None))
+
+    if native_basis is not None:
+        basis = native_basis.to(device=sa_train.device, dtype=sa_train.dtype)
+        if isinstance(native_basis_idx, torch.Tensor) and int(native_basis_idx.numel()) == B_rows:
+            basis_idx = native_basis_idx.to(device=sa_train.device, dtype=torch.long)
+        else:
+            basis_idx = torch.arange(B_rows, device=sa_train.device, dtype=torch.long)
+
+        K_basis_basis = pre.get("K_sa", pre.get("K_basis", None))
+        if not isinstance(K_basis_basis, torch.Tensor) or tuple(K_basis_basis.shape) != (B_rows, B_rows):
+            K_basis_basis = matern_kernel(basis, basis, nu=nu, length_scale=length_scale, sigma=sigma)
+        else:
+            K_basis_basis = K_basis_basis.to(device=B_hat.device, dtype=B_hat.dtype)
+
+        pre_out = dict(pre)
+        # Add aliases only.  Do not overwrite pre['k_sa']; in current ke_drl it is
+        # k_X(X_basis, X_star), which recover_joint_beta expects.
+        pre_out["X_basis"] = basis
+        pre_out["sa_basis"] = basis
+        pre_out["basis_indices"] = basis_idx
+        pre_out["basis_idx"] = basis_idx
+        pre_out["K_basis"] = K_basis_basis
+        if "K_sa" not in pre_out or not isinstance(pre_out.get("K_sa"), torch.Tensor):
+            pre_out["K_sa"] = K_basis_basis
+
+        mode = "native_ke_drl_basis" if B_rows != n_train or requested_raw > 0 else "native_full_training_dictionary"
+        info = {
+            "mode": mode,
+            "requested_basis_size": int(requested_raw),
+            "effective_basis_size": int(B_rows),
+            "train_dictionary_size": int(n_train),
+            "B_shape_before": [int(B_rows), int(B_cols)],
+            "B_shape_after": [int(B_rows), int(B_cols)],
+            "basis_method": str(native_meta.get("method", basis_method)),
+            "basis_ridge": float(basis_ridge),
+            "ke_drl_native_basis_metadata": native_meta,
+            "basis_indices_preview": [int(x) for x in basis_idx[: min(20, int(basis_idx.numel()))].detach().cpu().tolist()],
+        }
+        return B_hat, pre_out, basis, basis_idx, K_basis_basis, info
+
+    # If no basis tensor was returned but the operator is full-size, treat the full
+    # training dictionary as the basis.  This keeps compatibility with older full
+    # dictionary fits and does not alter package-native pre['k_sa']/pre['Phi'].
+    if B_rows == n_train and requested_L >= n_train:
+        basis = sa_train
+        basis_idx = torch.arange(n_train, device=sa_train.device, dtype=torch.long)
+        K_basis_basis = pre.get("K_sa", pre.get("K_basis", None))
+        if not isinstance(K_basis_basis, torch.Tensor) or tuple(K_basis_basis.shape) != (n_train, n_train):
+            K_basis_basis = matern_kernel(basis, basis, nu=nu, length_scale=length_scale, sigma=sigma)
+        else:
+            K_basis_basis = K_basis_basis.to(device=B_hat.device, dtype=B_hat.dtype)
+        pre_out = dict(pre)
+        pre_out["X_basis"] = basis
+        pre_out["sa_basis"] = basis
+        pre_out["basis_indices"] = basis_idx
+        pre_out["basis_idx"] = basis_idx
+        pre_out["K_basis"] = K_basis_basis
+        info = {
+            "mode": "full_training_dictionary_no_native_basis_key",
+            "requested_basis_size": int(requested_raw),
+            "effective_basis_size": int(n_train),
+            "train_dictionary_size": int(n_train),
+            "B_shape_before": [int(B_rows), int(B_cols)],
+            "B_shape_after": [int(B_rows), int(B_cols)],
+            "basis_method": "full",
+            "basis_ridge": float(basis_ridge),
+        }
+        return B_hat, pre_out, basis, basis_idx, K_basis_basis, info
+
+    # Fallback only for older installed ke_drl versions that do not implement the
+    # native L-basis and returned B with N rows even though L<N was requested.
+    if B_rows != n_train:
+        raise ValueError(
+            "B_hat row count does not match the training dictionary, and no native "
+            "basis tensor was found in pre. Current ke_drl should return pre['X_basis']."
+        )
+
+    basis_idx = _select_mean_embedding_basis_indices(
+        sa_train=sa_train,
+        L=requested_L,
+        seed=int(getattr(args, "mean_embedding_basis_seed", None) or getattr(args, "seed", 0)) + 7919,
+        method="random" if basis_method in {"kmeans", "kmeans_landmarks", "landmark", "landmarks"} else basis_method,
+    )
+    basis = sa_train.index_select(0, basis_idx)
+    K_basis_basis = matern_kernel(basis, basis, nu=nu, length_scale=length_scale, sigma=sigma).to(dtype=B_hat.dtype)
+    K_basis_train = matern_kernel(basis, sa_train, nu=nu, length_scale=length_scale, sigma=sigma).to(dtype=B_hat.dtype)
+    eye = torch.eye(K_basis_basis.shape[0], device=K_basis_basis.device, dtype=K_basis_basis.dtype)
+    B_basis = torch.linalg.solve(K_basis_basis + basis_ridge * eye, K_basis_train @ B_hat)
+
+    # Recompute target-space k_sa and Phi for the fallback if enough package
+    # internals were returned.  This preserves recover_joint_beta dimensions.
+    pre_out = dict(pre)
+    pre_out["X_basis"] = basis
+    pre_out["sa_basis"] = basis
+    pre_out["basis_indices"] = basis_idx
+    pre_out["basis_idx"] = basis_idx
+    pre_out["K_basis"] = K_basis_basis
+    pre_out["K_sa"] = K_basis_basis
+    if isinstance(pre.get("X_star", None), torch.Tensor):
+        pre_out["k_sa"] = matern_kernel(basis, pre["X_star"].to(device=basis.device, dtype=basis.dtype), nu=nu, length_scale=length_scale, sigma=sigma).to(dtype=B_hat.dtype)
+    if all(isinstance(pre.get(k, None), torch.Tensor) for k in ["X_successor", "Gamma", "eta_plus"]):
+        K_basis_plus = matern_kernel(basis, pre["X_successor"].to(device=basis.device, dtype=basis.dtype), nu=nu, length_scale=length_scale, sigma=sigma).to(dtype=B_hat.dtype)
+        pre_out["K_basis_plus"] = K_basis_plus
+        pre_out["Phi"] = K_basis_plus @ (pre["Gamma"].to(device=K_basis_plus.device, dtype=K_basis_plus.dtype) * pre["eta_plus"].reshape(-1, 1).to(device=K_basis_plus.device, dtype=K_basis_plus.dtype))
+
+    info = {
+        "mode": "legacy_postfit_nystrom_projection_fallback",
+        "requested_basis_size": int(requested_raw),
+        "effective_basis_size": int(basis.shape[0]),
+        "train_dictionary_size": int(n_train),
+        "B_shape_before": [int(B_rows), int(B_cols)],
+        "B_shape_after": [int(B_basis.shape[0]), int(B_basis.shape[1])],
+        "basis_method": "postfit_random_fallback" if basis_method.startswith("kmeans") else basis_method,
+        "basis_ridge": float(basis_ridge),
+        "warning": "Native ke_drl L-basis was not used; update/install the current ke-drl package for the intended training-time L-basis.",
+        "basis_indices_preview": [int(x) for x in basis_idx[: min(20, int(basis_idx.numel()))].detach().cpu().tolist()],
+    }
+    return B_basis, pre_out, basis, basis_idx, K_basis_basis, info
 
 def _save_array_csv(path: Path, arr, col_names: Optional[Sequence[str]] = None) -> None:
     path = Path(path)
@@ -3464,9 +3805,11 @@ def run_one_policy(
     lambda_rec = float(args.lambda_rec)
     method = str(args.method)
 
+    sa_tr = torch.cat([s0_tr, a0_tr], dim=1)
+
     t_train_start = time.time()
     t0 = tic(f'START estimate_embedding [{policy_name}]')
-    B_hat, hist_obj, hist_be, pre = estimate_embedding(
+    embedding_kwargs = dict(
         s0=s0_tr,
         s1=s1_tr,
         a0=a0_tr,
@@ -3482,6 +3825,7 @@ def run_one_policy(
         sigma=sigma_Z,
         gamma_val=gamma_val,
         lambda_reg=lambda_reg,
+        lambda_B=float(getattr(args, "lambda_B", 0.0)),
         num_grid_points=m_Z,
         hull_expand_factor=hull_expand_factor,
         lr=lr,
@@ -3492,14 +3836,41 @@ def run_one_policy(
         NonNeg_W=NonNeg_W,
         mass_anchor_lambda=mass_anchor_lambda,
         target_mass=target_mass,
+        mean_embedding_basis_size=(None if int(getattr(args, "mean_embedding_basis_size", 0) or 0) <= 0 else int(getattr(args, "mean_embedding_basis_size", 0))),
+        mean_embedding_basis_method=str(getattr(args, "mean_embedding_basis_method", "kmeans")),
+        mean_embedding_basis_seed=(int(getattr(args, "mean_embedding_basis_seed", getattr(args, "seed", 0))) if getattr(args, "mean_embedding_basis_seed", None) is not None else int(getattr(args, "seed", 0))),
+        mean_embedding_basis_standardize=bool(int(getattr(args, "mean_embedding_basis_standardize", 1))),
+        mean_embedding_basis_candidate_pool=(None if int(getattr(args, "mean_embedding_basis_candidate_pool", 0) or 0) <= 0 else int(getattr(args, "mean_embedding_basis_candidate_pool", 0))),
+        mean_embedding_basis_max_iter=int(getattr(args, "mean_embedding_basis_max_iter", 20)),
+        mean_embedding_basis_batch_size=int(getattr(args, "mean_embedding_basis_batch_size", 8192)),
         device=str(device),
         dtype=torch.float32,
     )
+    B_hat, hist_obj, hist_be, pre = _call_estimate_embedding_compatible(**embedding_kwargs)
     toc(t0, f'DONE estimate_embedding [{policy_name}]')
+
+    t0 = tic(f'START mean-embedding state-action basis resolution [{policy_name}]')
+    B_hat, pre_basis, sa_basis, sa_basis_idx, K_sa_basis, mean_embedding_basis_info = _project_B_to_mean_embedding_basis(
+        B_hat=B_hat,
+        pre=pre,
+        sa_train=sa_tr,
+        args=args,
+        nu=nu_Z,
+        length_scale=ell_Z,
+        sigma=sigma_Z,
+    )
+    pre = pre_basis
+    toc(t0, f'DONE mean-embedding state-action basis resolution [{policy_name}]')
+    print(
+        f"Mean-embedding operator basis: mode={mean_embedding_basis_info['mode']} | "
+        f"B_shape={tuple(B_hat.shape)} | L={mean_embedding_basis_info['effective_basis_size']} | "
+        f"m={B_hat.shape[1]}",
+        flush=True,
+    )
     train_time = time.time() - t_train_start
 
     # IMPORTANT:
-    # B_hat was optimized against pre['Z_grid'].  Do not replace that grid after
+    # B_hat was optimized/projected against pre['Z_grid'].  Do not replace that grid after
     # training for risk computation.  If support corrections are needed for
     # visualization, apply them only to plotting atoms below.
     Z_grid = pre['Z_grid']
@@ -3532,11 +3903,21 @@ def run_one_policy(
         reward_cols,
     )
 
-    # Export KE-DRL learned embedding operator weights
+    # Export KE-DRL learned embedding operator weights and its state-action basis.
     _save_array_csv(
         out_dir / "B_hat_mean_embedding_operator.csv",
         B_hat.detach().cpu(),
     )
+    _save_array_csv(
+        out_dir / "mean_embedding_state_action_basis.csv",
+        sa_basis.detach().cpu(),
+    )
+    _save_array_csv(
+        out_dir / "mean_embedding_state_action_basis_indices.csv",
+        sa_basis_idx.detach().cpu(),
+        ["basis_row_index"],
+    )
+    save_json(out_dir / "mean_embedding_basis_diagnostics.json", mean_embedding_basis_info)
     Z_grid_raw_support_shift_max = float(
         torch.max(torch.abs(Z_grid_raw_supported.to(Z_grid_raw_est.device) - Z_grid_raw_est)).item()
     )
@@ -3546,14 +3927,12 @@ def run_one_policy(
             f"{Z_grid_raw_support_shift_max:.6g}. Risk is computed on the original optimized grid; "
             f"support-projected atoms are used only for plots."
         )
-        sa_tr = torch.cat([s0_tr, a0_tr], dim=1)
-
         simplex_calibration_diagnostics = {"simplex_calibrate_B": bool(int(args.simplex_calibrate_B))}
         if bool(int(args.simplex_calibrate_B)):
             print("\nSTART simplex calibration of B_hat")
             B_hat, simplex_calibration_diagnostics = _calibrate_B_hat_to_simplex(
                 B_hat=B_hat,
-                sa_train=sa_tr,
+                sa_train=sa_basis,
                 nu=nu_Z,
                 length_scale=ell_Z,
                 sigma=sigma_Z,
@@ -3572,11 +3951,14 @@ def run_one_policy(
     _save_array_csv(out_dir / "Z_grid_raw_est.csv", Z_grid_raw_est.detach().cpu(), reward_cols)
     _save_array_csv(out_dir / "Z_grid_raw_supported_for_plots.csv", Z_grid_raw_supported.detach().cpu(), reward_cols)
     _save_array_csv(out_dir / "B_hat_mean_embedding_operator.csv", B_hat.detach().cpu())
+    _save_array_csv(out_dir / "mean_embedding_state_action_basis.csv", sa_basis.detach().cpu())
+    _save_array_csv(out_dir / "mean_embedding_state_action_basis_indices.csv", sa_basis_idx.detach().cpu(), ["basis_row_index"])
+    save_json(out_dir / "mean_embedding_basis_diagnostics.json", mean_embedding_basis_info)
 
     t_val_start = time.time()
     t0 = tic(f'START val kernel [{policy_name}]')
     sa_val = torch.cat([s0_val, a0_val], dim=1)
-    k_sa_val = matern_kernel(sa_val, sa_tr, nu=nu_Z, length_scale=ell_Z, sigma=sigma_Z)
+    k_sa_val = matern_kernel(sa_val, sa_basis, nu=nu_Z, length_scale=ell_Z, sigma=sigma_Z)
     toc(t0, f'DONE val kernel [{policy_name}]')
 
     def diagnose_W(k_sa, B_hat, name):
@@ -3610,7 +3992,7 @@ def run_one_policy(
         t_test_start = time.time()
         t0 = tic(f'START test kernel [{policy_name}]')
         sa_test = torch.cat([s0_test, a0_test], dim=1)
-        k_sa_test = matern_kernel(sa_test, sa_tr, nu=nu_Z, length_scale=ell_Z, sigma=sigma_Z)
+        k_sa_test = matern_kernel(sa_test, sa_basis, nu=nu_Z, length_scale=ell_Z, sigma=sigma_Z)
         toc(t0, f'DONE test kernel [{policy_name}]')
         diagnose_W(k_sa_test, B_hat, "TEST")
         risk_test = embedding_test_risk(
@@ -3651,6 +4033,12 @@ def run_one_policy(
             'method': method,
             'num_steps': int(args.num_steps),
             'num_grid_points': int(m_Z),
+            'mean_embedding_basis_size_requested': int(getattr(args, "mean_embedding_basis_size", 0) or 0),
+            'mean_embedding_basis_size_effective': int(mean_embedding_basis_info['effective_basis_size']),
+            'mean_embedding_basis_method': str(mean_embedding_basis_info['basis_method']),
+            'mean_embedding_basis_mode': str(mean_embedding_basis_info['mode']),
+            'mean_embedding_basis_ridge': float(mean_embedding_basis_info['basis_ridge']),
+            'B_hat_shape': [int(B_hat.shape[0]), int(B_hat.shape[1])],
             'discrete_reward_cols': discrete_reward_cols,
             'discrete_reward_dims': discrete_reward_dims,
         },
@@ -3677,12 +4065,18 @@ def run_one_policy(
         'discrete_reward_dims': discrete_reward_dims,
         'reward_support_info': reward_support_info,
         'Z_grid_raw_support_shift_max': float(Z_grid_raw_support_shift_max),
+        'mean_embedding_basis_info': mean_embedding_basis_info,
     }
     save_json(out_dir / 'metrics.json', metrics)
 
     torch.save(
         {
             'B_hat': B_hat.detach().cpu(),
+            'B_hat_shape': tuple(B_hat.shape),
+            'mean_embedding_basis_info': mean_embedding_basis_info,
+            'mean_embedding_state_action_basis': sa_basis.detach().cpu(),
+            'mean_embedding_state_action_basis_indices': sa_basis_idx.detach().cpu(),
+            'K_mean_embedding_basis': K_sa_basis.detach().cpu(),
             'Z_grid': Z_grid.detach().cpu(),
             'Z_grid_normalized_optimized': Z_grid.detach().cpu(),
             's_star': s_star.detach().cpu(),
@@ -3723,6 +4117,9 @@ def run_one_policy(
             "Z_grid_raw_est": Z_grid_raw_est.detach().cpu(),
             "Z_grid_raw_supported_for_plots": Z_grid_raw_supported.detach().cpu(),
             "B_hat_mean_embedding_operator": B_hat.detach().cpu(),
+            "mean_embedding_state_action_basis": sa_basis.detach().cpu(),
+            "mean_embedding_state_action_basis_indices": sa_basis_idx.detach().cpu(),
+            "K_mean_embedding_basis": K_sa_basis.detach().cpu(),
         },
 
         out_dir / 'artifacts.pt',

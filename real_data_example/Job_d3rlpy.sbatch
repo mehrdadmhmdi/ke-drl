@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --account=bfez-delta-cpu
-#SBATCH --partition=cpu
+#SBATCH --partition=cpu-preempt
 #SBATCH --job-name=expedia_iql
 #SBATCH --output=logs/opt_%A.log
 #SBATCH --time=48:00:00
@@ -12,9 +12,27 @@
 
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
+if [ -f "${SUBMIT_DIR}/d3rlpy_policy_opt.py" ]; then
+  SCRIPT_DIR="$(cd "${SUBMIT_DIR}" && pwd)"
+elif [ -f "${SUBMIT_DIR}/real_data_example/d3rlpy_policy_opt.py" ]; then
+  SCRIPT_DIR="$(cd "${SUBMIT_DIR}/real_data_example" && pwd)"
+else
+  echo "Could not locate real_data_example from SLURM_SUBMIT_DIR=${SUBMIT_DIR}" >&2
+  echo "Submit from kedrl_git/real_data_example or kedrl_git." >&2
+  exit 2
+fi
+echo "SLURM_SUBMIT_DIR=${SUBMIT_DIR}"
+echo "Resolved SCRIPT_DIR=${SCRIPT_DIR}"
 cd "${SCRIPT_DIR}"
-mkdir -p logs
+if [ ! -d logs ]; then
+  mkdir logs
+fi
+if [ ! -w logs ]; then
+  echo "logs directory is not writable: ${SCRIPT_DIR}/logs" >&2
+  ls -ld "${SCRIPT_DIR}" "${SCRIPT_DIR}/logs" >&2 || true
+  exit 2
+fi
 
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 export PYTHONPATH="${REPO_ROOT}/src:${SCRIPT_DIR}:${PYTHONPATH:-}"
@@ -30,11 +48,15 @@ echo "Mem/node:  ${SLURM_MEM_PER_NODE:-NA}"
 echo "Node:      $(hostname)"
 echo "Start:     $(date)"
 
+# Conda's activate/deactivate hooks can reference unset backup variables.
+# Keep nounset off only while module and conda hooks are being sourced.
+set +u
 module load slurm-env/0.1
 module load cudatoolkit/25.3_12.8
 module load pytorch-conda/2.8
 eval "$(conda shell.bash hook)"
 conda activate delta_env
+set -u
 
 DATA_BASE="${DATA_BASE:-./Expedia_data}"
 CKPT_DIR="${CKPT_DIR:-./policies_linear2}"
