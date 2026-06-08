@@ -59,12 +59,12 @@ python -u plot_recovered_densities.py \
   --reward-cols gross_revenue_per_night,total_clicks \
   --discrete-reward-cols total_clicks \
   --nu-Z 4.5 \
-  --ell-Z 1.8 \
+  --ell-Z 1.0 \
   --sigma-Z 1.0 \
-  --bandwidth-per-dim 90,1 \
-  --steps 5000 \
-  --lr 0.0001 \
-  --quad-points 21 \
+  --bandwidth-per-dim 30,1 \
+  --steps 10000 \
+  --lr 0.005 \
+  --quad-points 31 \
   --device cpu
 
 echo "End time: $(date)"

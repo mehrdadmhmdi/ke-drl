@@ -298,6 +298,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--mean-embedding-contour-levels", type=int, default=30)
 
     # Policy diagnostics.
+    p.add_argument("--policy-specific-initial-action", type=int, default=1, help="0/1; use the policy greedy action at s_star instead of the logged a_star.")
     p.add_argument("--support-sample-n", type=int, default=1024)
     p.add_argument("--clip-sampled-actions", type=int, default=0, help="0/1")
     p.add_argument("--std-cap-for-diagnostics", type=float, default=None)
@@ -2960,20 +2961,21 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         zB_plot = _mask_zero_surface(zB, rel_tol=1e-4)
 
         from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-        fig = plt.figure(figsize=(11.2, 8.2), constrained_layout=False)
+        fig = plt.figure(figsize=(12.6, 8.8), constrained_layout=False)
         ax = fig.add_subplot(111, projection="3d")
+        ax.set_proj_type("ortho")
         ax.plot_surface(XA, YA, zA_plot, color=color_A, alpha=0.45, linewidth=0, antialiased=True)
         ax.plot_surface(XB, YB, zB_plot, color=color_B, alpha=0.45, linewidth=0, antialiased=True)
-        ax.set_xlabel(pretty_rewards[1], labelpad=10)
-        ax.set_ylabel(pretty_rewards[0], labelpad=10)
-        ax.set_zlabel("Mean embedding value", labelpad=10)
-        ax.set_box_aspect((1.25, 1.05, 0.70))
-        ax.view_init(elev=25, azim=-55)
+        ax.set_xlabel(pretty_rewards[1], labelpad=14)
+        ax.set_ylabel(pretty_rewards[0], labelpad=16)
+        ax.set_zlabel("Mean embedding value", labelpad=16)
+        ax.set_box_aspect((1.60, 1.05, 0.55))
+        ax.view_init(elev=24, azim=-55)
         _set_discrete_ticks_if_needed(ax, mean_A)
         ax.legend(handles=surface_handles, loc="upper right")
-        fig.subplots_adjust(left=0.04, right=0.94, bottom=0.08, top=0.92)
+        fig.subplots_adjust(left=0.03, right=0.96, bottom=0.08, top=0.92)
         p = out_dir / "overlay_3d_mean_embedding_surface.png"
-        fig.savefig(p, bbox_inches="tight", pad_inches=0.25, dpi=700)
+        fig.savefig(p, bbox_inches="tight", pad_inches=0.35, dpi=700)
         plt.close(fig)
         paths["overlay_3d_mean_embedding_surface"] = str(p)
 
@@ -2981,9 +2983,16 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         # Combined panel: mean embedding top row + recovered marginals bottom row.
         # No density surface and no difference heatmap.
         # -------------------------
-        fig = plt.figure(figsize=(15.8, 11.2), constrained_layout=False)
+        fig = plt.figure(figsize=(17.5, 11.5), constrained_layout=False)
+        gs = fig.add_gridspec(
+            2, 2,
+            width_ratios=[1.0, 1.32],
+            height_ratios=[1.0, 1.0],
+            left=0.06, right=0.97, bottom=0.06, top=0.90,
+            wspace=0.25, hspace=0.34,
+        )
 
-        ax1 = fig.add_subplot(2, 2, 1)
+        ax1 = fig.add_subplot(gs[0, 0])
         _draw_contour(ax1, mean_A, color_A, ls_A, pretty_A)
         _draw_contour(ax1, mean_B, color_B, ls_B, pretty_B)
         _set_discrete_ticks_if_needed(ax1, mean_A)
@@ -2992,19 +3001,23 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         ax1.set_title("Mean-embedding Contours")
         ax1.legend(handles=contour_handles, frameon=True)
 
-        ax2 = fig.add_subplot(2, 2, 2, projection="3d")
+        ax2 = fig.add_subplot(gs[0, 1], projection="3d")
         ax2.plot_surface(XA, YA, zA_plot, color=color_A, alpha=0.45, linewidth=0, antialiased=True)
         ax2.plot_surface(XB, YB, zB_plot, color=color_B, alpha=0.45, linewidth=0, antialiased=True)
-        ax2.set_xlabel(pretty_rewards[1], labelpad=8)
-        ax2.set_ylabel(pretty_rewards[0], labelpad=8)
-        ax2.set_zlabel("Mean embedding value", labelpad=8)
-        ax2.set_box_aspect((1.25, 1.05, 0.70))
-        ax2.view_init(elev=25, azim=-55)
+        ax2.set_proj_type("ortho")
+        ax2.set_xlabel(pretty_rewards[1], labelpad=14)
+        ax2.set_ylabel(pretty_rewards[0], labelpad=16)
+        ax2.set_zlabel("Mean embedding value", labelpad=16)
+        ax2.set_box_aspect((1.60, 1.05, 0.55))
+        ax2.view_init(elev=24, azim=-55)
+        ax2.tick_params(axis="x", pad=3)
+        ax2.tick_params(axis="y", pad=3)
+        ax2.tick_params(axis="z", pad=5)
         _set_discrete_ticks_if_needed(ax2, mean_A)
-        ax2.set_title("Mean-embedding Surface")
-        ax2.legend(handles=surface_handles, loc="upper right")
+        ax2.set_title("Mean-embedding Surface", pad=12)
+        ax2.legend(handles=surface_handles, loc="upper left", bbox_to_anchor=(0.02, 0.98))
 
-        ax3 = fig.add_subplot(2, 2, 3)
+        ax3 = fig.add_subplot(gs[1, 0])
         if 0 in one_d:
             item = one_d[0]
             if item["kind"] == "discrete":
@@ -3027,7 +3040,7 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
             ax3.set_xlabel(pretty_rewards[0])
             ax3.legend(frameon=True)
 
-        ax4 = fig.add_subplot(2, 2, 4)
+        ax4 = fig.add_subplot(gs[1, 1])
         if 1 in one_d:
             item = one_d[1]
             if item["kind"] == "discrete":
@@ -3051,9 +3064,8 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
             ax4.legend(frameon=True)
 
         fig.suptitle(f"Mean Embedding and Recovered Marginal Comparison: {pretty_A} vs {pretty_B}", y=0.965)
-        fig.subplots_adjust(left=0.07, right=0.96, bottom=0.06, top=0.90, wspace=0.28, hspace=0.36)
         p = out_dir / "overlay_all_mean_embedding_marginal_comparison.png"
-        fig.savefig(p, bbox_inches="tight", pad_inches=0.25, dpi=700)
+        fig.savefig(p, bbox_inches="tight", pad_inches=0.35, dpi=700)
         plt.close(fig)
         paths["overlay_all_mean_embedding_marginal_comparison"] = str(p)
     else:
@@ -3830,6 +3842,23 @@ def run_one_policy(
 
     sa_tr = torch.cat([s0_tr, a0_tr], dim=1)
 
+    if bool(int(getattr(args, "policy_specific_initial_action", 1))):
+        with torch.no_grad():
+            s_star_raw = _denorm(s_star, s_mu, s_sd)
+            a_star_raw_policy = gaussian_policy_stats_raw(model, s_star_raw)["greedy_raw"]
+            a_star_eval = _zscore(a_star_raw_policy, a_mu, a_sd)
+        initial_action_mode = "policy_greedy_at_s_star"
+    else:
+        a_star_raw_policy = _denorm(a_star, a_mu, a_sd)
+        a_star_eval = a_star
+        initial_action_mode = "fixed_logged_a_star"
+
+    print(
+        f"Initial action mode [{policy_name}]: {initial_action_mode} | "
+        f"a_star_raw={_array_str(_np(a_star_raw_policy).reshape(-1))}",
+        flush=True,
+    )
+
     t_train_start = time.time()
     t0 = tic(f'START estimate_embedding [{policy_name}]')
     embedding_kwargs = dict(
@@ -3838,7 +3867,7 @@ def run_one_policy(
         a0=a0_tr,
         a1=a1_tr,
         s_star=s_star,
-        a_star=a_star,
+        a_star=a_star_eval,
         r=r_tr,
         discrete_dims=discrete_reward_dims,
         target_p_choice=target_p_choice,
@@ -4080,6 +4109,8 @@ def run_one_policy(
         'test_policy_gaussian_mean_raw': _np(mu_test_raw.mean(0)).tolist(),
         'test_policy_action_std_raw_mean': _np(std_test_raw.mean(0)).tolist(),
         'test_data_action_mean_raw': _np(a0_test_raw.mean(0)).tolist(),
+        'initial_action_mode': initial_action_mode,
+        'a_star_raw_used_for_embedding': _np(a_star_raw_policy).reshape(-1).tolist(),
         'off_support_greedy_train': off_support_greedy_train,
         'off_support_greedy_test': off_support_greedy_test,
         'off_support_sampled_test': off_support_sampled_test,
@@ -4184,7 +4215,7 @@ def run_one_policy(
             reward_dim=d_r,
             action_dim=d_a,
             s_star=s_star,
-            a_star=a_star,
+            a_star=a_star_eval,
             target_policy=target_p_choice,
         )
 

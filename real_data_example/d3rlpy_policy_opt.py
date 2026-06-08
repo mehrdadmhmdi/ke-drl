@@ -457,6 +457,93 @@ def make_reward_weights(reward_values: np.ndarray, reward_name: str, args) -> Tu
     return w.astype(np.float64), diag
 
 
+
+
+def compute_reward_contrast_shift(
+    A_std: np.ndarray,
+    reward_values: np.ndarray,
+    action_names: Sequence[str],
+    reward_name: str,
+    weights: np.ndarray,
+    args,
+) -> Tuple[np.ndarray, Dict[str, object]]:
+    """Build an interpretable reward-specific intercept shift in standardized action scale.
+
+    The Gaussian MLE is still fitted from logged state-action pairs.  This step
+    deliberately makes the two target policies separated enough to be useful for
+    a policy-comparison experiment: it pulls each policy toward the action
+    profile observed in the high-reward tail for that reward and adds a small
+    domain-aligned contrast on price/promotions when those action names exist.
+    """
+    A = np.asarray(A_std, dtype=np.float64)
+    r = np.asarray(reward_values, dtype=np.float64).reshape(-1)
+    w = np.asarray(weights, dtype=np.float64).reshape(-1)
+    names = [str(x).lower() for x in action_names]
+    click_like = reward_suggests_click_like(reward_name)
+
+    q = float(args.contrast_top_quantile)
+    q = min(max(q, 0.50), 0.99)
+    threshold = float(np.quantile(r, q))
+    mask = r >= threshold
+    if int(mask.sum()) < max(25, int(0.01 * A.shape[0])):
+        threshold = float(np.quantile(r, 0.80))
+        mask = r >= threshold
+    if int(mask.sum()) == 0:
+        mask = np.ones(A.shape[0], dtype=bool)
+
+    base_mean = np.mean(A, axis=0)
+    tail_weights = np.maximum(w[mask], 1e-12)
+    tail_mean = np.average(A[mask], axis=0, weights=tail_weights)
+    empirical_shift = tail_mean - base_mean
+
+    strength = float(args.click_contrast_strength if click_like else args.revenue_contrast_strength)
+    shift = strength * empirical_shift
+
+    # Explicit, transparent action-axis contrast.  This prevents revenue and click
+    # policies from collapsing to nearly identical behavior when the empirical
+    # reward tails have similar logged actions.  Values are in standardized action
+    # units and are clipped below.
+    for j, nm in enumerate(names):
+        is_price = ('price' in nm) or ('rate' in nm)
+        is_promo = ('promotion' in nm) or ('promo' in nm)
+        is_spread = ('std' in nm) or ('deviation' in nm) or ('dispersion' in nm)
+        if click_like:
+            if is_promo:
+                shift[j] += float(args.click_promotion_shift_std)
+            if is_price:
+                shift[j] += float(args.click_price_shift_std)
+            if is_spread:
+                shift[j] += float(args.click_spread_shift_std)
+        else:
+            if is_promo:
+                shift[j] += float(args.revenue_promotion_shift_std)
+            if is_price:
+                shift[j] += float(args.revenue_price_shift_std)
+            if is_spread:
+                shift[j] += float(args.revenue_spread_shift_std)
+
+    clip = float(args.action_shift_clip_std)
+    if clip > 0:
+        shift = np.clip(shift, -clip, clip)
+
+    if not bool(int(args.enable_policy_contrast_shift)):
+        shift = np.zeros_like(shift)
+
+    diag = {
+        'enabled': bool(int(args.enable_policy_contrast_shift)),
+        'reward_name': str(reward_name),
+        'click_like': bool(click_like),
+        'contrast_top_quantile': float(q),
+        'tail_threshold': float(threshold),
+        'tail_n': int(mask.sum()),
+        'strength': float(strength),
+        'empirical_tail_minus_behavior_shift_std': empirical_shift.tolist(),
+        'final_intercept_shift_std': shift.tolist(),
+        'final_intercept_shift_l2_std': float(np.linalg.norm(shift)),
+    }
+    return shift.astype(np.float64), diag
+
+
 def fit_weighted_gaussian_mle(
     X_std: np.ndarray,
     A_std: np.ndarray,
@@ -794,6 +881,18 @@ def train_one_reward(
         a_sd_raw=a_sd,
     )
 
+    contrast_shift_std, contrast_diag = compute_reward_contrast_shift(
+        A_std=A_std,
+        reward_values=rew_train,
+        action_names=action_names,
+        reward_name=reward_name,
+        weights=weights,
+        args=args,
+    )
+    std_params["epsilon_mu_std"] = np.asarray(std_params["epsilon_mu_std"], dtype=np.float64) + contrast_shift_std
+    fit_meta["reward_contrast_shift"] = contrast_diag
+    print("reward-contrast intercept shift (standardized action units):", contrast_diag)
+
     theta_mu_raw, eps_mu_raw, theta_sigma_raw, eps_sigma_raw = convert_standardized_policy_to_raw(
         theta_mu_std=std_params["theta_mu_std"],
         epsilon_mu_std=std_params["epsilon_mu_std"],
@@ -897,8 +996,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-auto-categorical-cardinality", type=int, default=20)
     p.add_argument("--state-encoder-path", type=str, default=None)
 
-    p.add_argument("--policy_steps", "--policy-steps", type=int, default=10000)
-    p.add_argument("--policy_steps_per_epoch", "--policy-steps-per-epoch", type=int, default=1000)
+    p.add_argument("--policy_steps", "--policy-steps", type=int, default=20000)
+    p.add_argument("--policy_steps_per_epoch", "--policy-steps-per-epoch", type=int, default=2000)
     p.add_argument("--policy_batch", "--policy-batch", type=int, default=512)
     p.add_argument("--gaussian-lr", type=float, default=2e-3)
     p.add_argument("--linear_ridge", "--linear-ridge", type=float, default=1e-3)
@@ -908,14 +1007,28 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--grad-clip", type=float, default=10.0)
 
     p.add_argument("--reward-weight-mode", type=str, default="rank_softmax", choices=["uniform", "rank_softmax", "positive_boost", "top_quantile"])
-    p.add_argument("--reward-temperature", type=float, default=3.0)
-    p.add_argument("--click-reward-temperature", type=float, default=3.0)
-    p.add_argument("--reward-top-quantile", type=float, default=0.80)
+    p.add_argument("--reward-temperature", type=float, default=10.0)
+    p.add_argument("--click-reward-temperature", type=float, default=14.0)
+    p.add_argument("--reward-top-quantile", type=float, default=0.90)
     p.add_argument("--weight-min", type=float, default=1e-4)
-    p.add_argument("--weight-max", type=float, default=100.0)
-    p.add_argument("--positive-weight-boost", type=float, default=4.0)
-    p.add_argument("--click_weight_boost", "--click-weight-boost", type=float, default=8.0)
+    p.add_argument("--weight-max", type=float, default=1000.0)
+    p.add_argument("--positive-weight-boost", type=float, default=20.0)
+    p.add_argument("--click_weight_boost", "--click-weight-boost", type=float, default=30.0)
     p.add_argument("--click_bank_min_reward", "--click-bank-min-reward", type=float, default=1.0)
+
+    # Explicit contrast calibration. These are in standardized action units and
+    # make revenue- and click-focused Gaussian policies visibly separated.
+    p.add_argument("--enable-policy-contrast-shift", type=int, default=1, help="0/1")
+    p.add_argument("--contrast-top-quantile", type=float, default=0.90)
+    p.add_argument("--revenue-contrast-strength", type=float, default=0.85)
+    p.add_argument("--click-contrast-strength", type=float, default=1.25)
+    p.add_argument("--action-shift-clip-std", type=float, default=2.0)
+    p.add_argument("--revenue-price-shift-std", type=float, default=0.70)
+    p.add_argument("--revenue-promotion-shift-std", type=float, default=-0.45)
+    p.add_argument("--revenue-spread-shift-std", type=float, default=0.25)
+    p.add_argument("--click-price-shift-std", type=float, default=-0.85)
+    p.add_argument("--click-promotion-shift-std", type=float, default=1.35)
+    p.add_argument("--click-spread-shift-std", type=float, default=-0.25)
 
     # Legacy arguments accepted but intentionally ignored.  This lets old sbatch
     # files run without accidentally invoking IQL behavior.

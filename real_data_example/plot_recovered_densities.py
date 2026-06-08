@@ -762,7 +762,7 @@ def plot_overlay(payloads: List[dict], labels: List[str], reward_cols: Sequence[
         # discrete and the other is continuous.
         # ------------------------------------------------------------
         n_pol = len(payloads)
-        fig, axes = plt.subplots(1, n_pol, figsize=(6 * n_pol, 5), squeeze=False)
+        fig, axes = plt.subplots(1, n_pol, figsize=(6.8 * n_pol, 5.6), squeeze=False, constrained_layout=False)
         vmax = max(float(np.nanmax(p["joint"]["z"])) for p in payloads if p.get("joint") is not None)
         for k, (payload, label) in enumerate(zip(payloads, labels)):
             joint = payload["joint"]
@@ -780,7 +780,8 @@ def plot_overlay(payloads: List[dict], labels: List[str], reward_cols: Sequence[
             fig.colorbar(im, ax=ax, label="Recovered mixed density / probability")
         fig.suptitle("Recovered joint heatmaps by policy")
         p = out_dir / "overlay_joint_heatmaps_by_policy.png"
-        fig.savefig(p, bbox_inches="tight",dpi=700)
+        fig.subplots_adjust(left=0.06, right=0.97, bottom=0.10, top=0.88, wspace=0.25)
+        fig.savefig(p, bbox_inches="tight", pad_inches=0.25, dpi=700)
         plt.close(fig)
         paths["overlay_joint_heatmaps_by_policy"] = str(p)
 
@@ -790,8 +791,9 @@ def plot_overlay(payloads: List[dict], labels: List[str], reward_cols: Sequence[
         # ------------------------------------------------------------
         try:
             from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-            fig = plt.figure(figsize=(9, 7))
+            fig = plt.figure(figsize=(12.6, 8.8), constrained_layout=False)
             ax = fig.add_subplot(111, projection="3d")
+            ax.set_proj_type("ortho")
             from matplotlib.patches import Patch
             handles = []
             for k, (payload, label) in enumerate(zip(payloads, labels)):
@@ -806,9 +808,11 @@ def plot_overlay(payloads: List[dict], labels: List[str], reward_cols: Sequence[
                     z_plot[z_plot <= max(1e-12, 1e-6 * zmax_local)] = np.nan
                 ax.plot_surface(X, Y, z_plot, color=color, alpha=0.48, linewidth=0, antialiased=True)
                 handles.append(Patch(facecolor=color, edgecolor=color, alpha=0.48, label=label))
-            ax.set_xlabel(pretty_label(reward_cols[1]))
-            ax.set_ylabel(pretty_label(reward_cols[0]))
-            ax.set_zlabel("Recovered mixed density / probability")
+            ax.set_xlabel(pretty_label(reward_cols[1]), labelpad=14)
+            ax.set_ylabel(pretty_label(reward_cols[0]), labelpad=16)
+            ax.set_zlabel("Recovered mixed density / probability", labelpad=16)
+            ax.set_box_aspect((1.60, 1.05, 0.55))
+            ax.view_init(elev=24, azim=-55)
             if payloads[0]["joint"]["kind1"] == "discrete":
                 ax.set_xticks(payloads[0]["joint"]["y"])
             if payloads[0]["joint"]["kind0"] == "discrete":
@@ -816,7 +820,8 @@ def plot_overlay(payloads: List[dict], labels: List[str], reward_cols: Sequence[
             ax.set_title("Overlay recovered joint surface")
             ax.legend(handles=handles, loc="upper right")
             p = out_dir / "overlay_joint_surface3d.png"
-            fig.savefig(p, bbox_inches="tight",dpi=700)
+            fig.subplots_adjust(left=0.03, right=0.96, bottom=0.08, top=0.92)
+            fig.savefig(p, bbox_inches="tight", pad_inches=0.35, dpi=700)
             plt.close(fig)
             paths["overlay_joint_surface3d"] = str(p)
         except Exception as e:

@@ -54,24 +54,22 @@ eval "$(conda shell.bash hook)"
 set -u
 
 DATA_BASE="${DATA_BASE:-./Expedia_data}"
-POLICY_CKPT_DIR="${POLICY_CKPT_DIR:-./policies_linear_direct}"
+POLICY_CKPT_DIR="${POLICY_CKPT_DIR:-./policies_linear2}"
 STATE_ENCODER_PATH="${STATE_ENCODER_PATH:-${POLICY_CKPT_DIR}/state_encoder.json}"
 PYFILE="${PYFILE:-policy_evaluation.py}"
 TASK="${SLURM_ARRAY_TASK_ID}"
 
-NU_ARR=(6.5 4.5)
-ELL_ARR=(1.5 2.0)
+NU_ARR=(3.5 4.5)
+ELL_ARR=(0.8 1.2)
 LAM_ARR=(0.002 0.0005)
 SIG_ARR=(1.0 0.7)
 BAND_ARR=(0.0)
-BW_PER_DIM_ARR=("90,1")
+BW_PER_DIM_ARR=("30,1")
 DISCRETE_REWARD_COLS="total_clicks"
 LAMREC_ARR=(0.005)
 GRID_ARR=(600)
 MEAN_EMBEDDING_BASIS_SIZE_ARR=(320)
-MEAN_EMBEDDING_BASIS_METHOD_ARR=(kmeans)
-LAMBDA_B_ARR=(1e-4)
-STEPS_ARR=(1000)
+STEPS_ARR=(3000)
 
 N_NU=${#NU_ARR[@]}
 N_ELL=${#ELL_ARR[@]}
@@ -82,11 +80,9 @@ N_BW_PER_DIM=${#BW_PER_DIM_ARR[@]}
 N_LAMREC=${#LAMREC_ARR[@]}
 N_GRID=${#GRID_ARR[@]}
 N_BASIS=${#MEAN_EMBEDDING_BASIS_SIZE_ARR[@]}
-N_BASIS_METHOD=${#MEAN_EMBEDDING_BASIS_METHOD_ARR[@]}
-N_LAMBDA_B=${#LAMBDA_B_ARR[@]}
 N_STEPS=${#STEPS_ARR[@]}
 
-TOTAL_CFG=$(( N_NU * N_ELL * N_LAM * N_SIG * N_BAND * N_BW_PER_DIM * N_LAMREC * N_GRID * N_BASIS * N_BASIS_METHOD * N_LAMBDA_B * N_STEPS ))
+TOTAL_CFG=$(( N_NU * N_ELL * N_LAM * N_SIG * N_BAND * N_BW_PER_DIM * N_LAMREC * N_GRID * N_BASIS * N_STEPS ))
 
 if (( TASK < 0 || TASK >= TOTAL_CFG )); then
   echo "Error: TASK=${TASK} is outside valid range 0..$((TOTAL_CFG - 1))"
@@ -95,8 +91,6 @@ fi
 
 IDX=$TASK
 I_STEPS=$(( IDX % N_STEPS )); IDX=$(( IDX / N_STEPS ))
-I_LAMBDA_B=$(( IDX % N_LAMBDA_B )); IDX=$(( IDX / N_LAMBDA_B ))
-I_BASIS_METHOD=$(( IDX % N_BASIS_METHOD )); IDX=$(( IDX / N_BASIS_METHOD ))
 I_BASIS=$(( IDX % N_BASIS )); IDX=$(( IDX / N_BASIS ))
 I_GRID=$(( IDX % N_GRID )); IDX=$(( IDX / N_GRID ))
 I_LAMREC=$(( IDX % N_LAMREC )); IDX=$(( IDX / N_LAMREC ))
@@ -116,8 +110,6 @@ BW_PER_DIM=${BW_PER_DIM_ARR[$I_BW_PER_DIM]}
 LAMREC=${LAMREC_ARR[$I_LAMREC]}
 GRID=${GRID_ARR[$I_GRID]}
 MEAN_EMBEDDING_BASIS_SIZE=${MEAN_EMBEDDING_BASIS_SIZE_ARR[$I_BASIS]}
-MEAN_EMBEDDING_BASIS_METHOD=${MEAN_EMBEDDING_BASIS_METHOD_ARR[$I_BASIS_METHOD]}
-LAMBDA_B=${LAMBDA_B_ARR[$I_LAMBDA_B]}
 STEPS=${STEPS_ARR[$I_STEPS]}
 
 CFG_INDEX=${TASK}
@@ -138,8 +130,6 @@ echo "  BW_PER_DIM   = ${BW_PER_DIM}"
 echo "  LAMREC       = ${LAMREC}"
 echo "  GRID         = ${GRID}"
 echo "  BASIS L      = ${MEAN_EMBEDDING_BASIS_SIZE}"
-echo "  BASIS METHOD = ${MEAN_EMBEDDING_BASIS_METHOD}"
-echo "  LAMBDA_B     = ${LAMBDA_B}"
 echo "  STEPS        = ${STEPS}"
 echo "  OUTROOT      = ${OUTROOT}"
 
@@ -159,10 +149,10 @@ python -u "${PYFILE}" \
   --num-steps "${STEPS}" \
   --num-grid-points "${GRID}" \
   --mean-embedding-basis-size "${MEAN_EMBEDDING_BASIS_SIZE}" \
-  --mean-embedding-basis-method "${MEAN_EMBEDDING_BASIS_METHOD}" \
+  --mean-embedding-basis-method kmeans \
   --mean-embedding-basis-standardize 1 \
   --mean-embedding-basis-max-iter 20 \
-  --lambda-B "${LAMBDA_B}" \
+  --lambda-B 1e-4 \
   --max-train 10000 \
   --max-val 4000 \
   --max-test 4000 \
@@ -183,9 +173,10 @@ python -u "${PYFILE}" \
   --support-sample-n 500 \
   --clip-sampled-actions 1 \
   --std-cap-for-diagnostics 0.25 \
+  --policy-specific-initial-action 1 \
   --discrete-reward-cols "${DISCRETE_REWARD_COLS}" \
   --export-subsets 1 \
-  --simplex-calibrate-B 1 \
+  --simplex-calibrate-B 0 \
   --simplex-calib-ridge 1e-3 \
   --simplex-calib-max-rows 0 \
   --density-recovery-steps 20000 \
@@ -193,12 +184,12 @@ python -u "${PYFILE}" \
   --density-recovery-tol 1e-10 \
   --density-recovery-ridge 1e-4 \
   --density-recovery-init positive_beta \
-  --density-recovery-quad-points 256 \
-  --density-recovery-batch-atoms 512 \
-  --density-recovery-num-points 2200 \
+  --density-recovery-quad-points 31 \
+  --density-recovery-batch-atoms 128 \
+  --density-recovery-num-points 700 \
   --mean-embedding-contour-n1 220 \
   --mean-embedding-contour-n2 220 \
-  --mean-embedding-contour-levels 55 \
-  --mean-embedding-contour-pad 0
+  --mean-embedding-contour-levels 25 \
+  --mean-embedding-contour-pad 0.03
 
 echo "End: $(date)"
