@@ -54,7 +54,7 @@ eval "$(conda shell.bash hook)"
 set -u
 
 DATA_BASE="${DATA_BASE:-./Expedia_data}"
-POLICY_CKPT_DIR="${POLICY_CKPT_DIR:-./policies_linear2}"
+POLICY_CKPT_DIR="${POLICY_CKPT_DIR:-./policies_linear_direct}"
 STATE_ENCODER_PATH="${STATE_ENCODER_PATH:-${POLICY_CKPT_DIR}/state_encoder.json}"
 PYFILE="${PYFILE:-policy_evaluation.py}"
 TASK="${SLURM_ARRAY_TASK_ID}"
@@ -69,6 +69,8 @@ DISCRETE_REWARD_COLS="total_clicks"
 LAMREC_ARR=(0.005)
 GRID_ARR=(600)
 MEAN_EMBEDDING_BASIS_SIZE_ARR=(320)
+MEAN_EMBEDDING_BASIS_METHOD_ARR=(kmeans)
+LAMBDA_B_ARR=(1e-4)
 STEPS_ARR=(1000)
 
 N_NU=${#NU_ARR[@]}
@@ -80,9 +82,11 @@ N_BW_PER_DIM=${#BW_PER_DIM_ARR[@]}
 N_LAMREC=${#LAMREC_ARR[@]}
 N_GRID=${#GRID_ARR[@]}
 N_BASIS=${#MEAN_EMBEDDING_BASIS_SIZE_ARR[@]}
+N_BASIS_METHOD=${#MEAN_EMBEDDING_BASIS_METHOD_ARR[@]}
+N_LAMBDA_B=${#LAMBDA_B_ARR[@]}
 N_STEPS=${#STEPS_ARR[@]}
 
-TOTAL_CFG=$(( N_NU * N_ELL * N_LAM * N_SIG * N_BAND * N_BW_PER_DIM * N_LAMREC * N_GRID * N_BASIS * N_STEPS ))
+TOTAL_CFG=$(( N_NU * N_ELL * N_LAM * N_SIG * N_BAND * N_BW_PER_DIM * N_LAMREC * N_GRID * N_BASIS * N_BASIS_METHOD * N_LAMBDA_B * N_STEPS ))
 
 if (( TASK < 0 || TASK >= TOTAL_CFG )); then
   echo "Error: TASK=${TASK} is outside valid range 0..$((TOTAL_CFG - 1))"
@@ -91,6 +95,8 @@ fi
 
 IDX=$TASK
 I_STEPS=$(( IDX % N_STEPS )); IDX=$(( IDX / N_STEPS ))
+I_LAMBDA_B=$(( IDX % N_LAMBDA_B )); IDX=$(( IDX / N_LAMBDA_B ))
+I_BASIS_METHOD=$(( IDX % N_BASIS_METHOD )); IDX=$(( IDX / N_BASIS_METHOD ))
 I_BASIS=$(( IDX % N_BASIS )); IDX=$(( IDX / N_BASIS ))
 I_GRID=$(( IDX % N_GRID )); IDX=$(( IDX / N_GRID ))
 I_LAMREC=$(( IDX % N_LAMREC )); IDX=$(( IDX / N_LAMREC ))
@@ -110,6 +116,8 @@ BW_PER_DIM=${BW_PER_DIM_ARR[$I_BW_PER_DIM]}
 LAMREC=${LAMREC_ARR[$I_LAMREC]}
 GRID=${GRID_ARR[$I_GRID]}
 MEAN_EMBEDDING_BASIS_SIZE=${MEAN_EMBEDDING_BASIS_SIZE_ARR[$I_BASIS]}
+MEAN_EMBEDDING_BASIS_METHOD=${MEAN_EMBEDDING_BASIS_METHOD_ARR[$I_BASIS_METHOD]}
+LAMBDA_B=${LAMBDA_B_ARR[$I_LAMBDA_B]}
 STEPS=${STEPS_ARR[$I_STEPS]}
 
 CFG_INDEX=${TASK}
@@ -130,6 +138,8 @@ echo "  BW_PER_DIM   = ${BW_PER_DIM}"
 echo "  LAMREC       = ${LAMREC}"
 echo "  GRID         = ${GRID}"
 echo "  BASIS L      = ${MEAN_EMBEDDING_BASIS_SIZE}"
+echo "  BASIS METHOD = ${MEAN_EMBEDDING_BASIS_METHOD}"
+echo "  LAMBDA_B     = ${LAMBDA_B}"
 echo "  STEPS        = ${STEPS}"
 echo "  OUTROOT      = ${OUTROOT}"
 
@@ -149,10 +159,10 @@ python -u "${PYFILE}" \
   --num-steps "${STEPS}" \
   --num-grid-points "${GRID}" \
   --mean-embedding-basis-size "${MEAN_EMBEDDING_BASIS_SIZE}" \
-  --mean-embedding-basis-method kmeans \
+  --mean-embedding-basis-method "${MEAN_EMBEDDING_BASIS_METHOD}" \
   --mean-embedding-basis-standardize 1 \
   --mean-embedding-basis-max-iter 20 \
-  --lambda-B 0.0 \
+  --lambda-B "${LAMBDA_B}" \
   --max-train 10000 \
   --max-val 4000 \
   --max-test 4000 \

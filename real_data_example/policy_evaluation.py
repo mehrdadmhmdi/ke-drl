@@ -21,8 +21,11 @@ import warnings
 from expedia_preprocessing import fit_state_encoder, state_encoder_from_metadata
 
 warnings.filterwarnings("ignore")
-with open(os.devnull, "w") as fnull, contextlib.redirect_stderr(fnull):
-    import d3rlpy
+try:
+    with open(os.devnull, "w") as fnull, contextlib.redirect_stderr(fnull):
+        import d3rlpy
+except Exception:
+    d3rlpy = None
 
 from ke_drl.api import (
     build_plot_config,
@@ -3343,7 +3346,12 @@ def gaussian_policy_stats_raw(model, states_raw: torch.Tensor) -> Dict[str, torc
             std_raw = torch.exp(log_std_raw)
             mu_raw = _linear_policy_clamp_and_round(model, mu_raw_unclipped)
             greedy_raw = mu_raw.clone()
-        return {'mu_raw': mu_raw, 'std_raw': std_raw, 'greedy_raw': greedy_raw}
+        return {
+            'mu_raw': mu_raw,
+            'mu_raw_unclipped': mu_raw_unclipped,
+            'std_raw': std_raw,
+            'greedy_raw': greedy_raw,
+        }
 
     with torch.no_grad():
         mu_raw, std_raw = model.gaussian_params(states_raw)
@@ -3382,7 +3390,11 @@ def distill_gaussian_policy_to_linear_surrogate(
     a_sd: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, float, float, torch.Tensor, torch.Tensor]:
     stats = gaussian_policy_stats_raw(model, s_raw)
-    mu_raw = stats['mu_raw']
+    # For KE-DRL's target-policy sampler, use the actual Gaussian mean before
+    # the greedy diagnostic clipping/rounding.  Clipping/rounding remains only a
+    # diagnostic/visual action summary unless the downstream sampler explicitly
+    # supports truncated/rounded Gaussian policies.
+    mu_raw = stats.get('mu_raw_unclipped', stats['mu_raw'])
     std_raw = stats['std_raw'].clamp_min(1e-6)
 
     mu_norm = (mu_raw - a_mu) / (a_sd + 1e-12)
@@ -3524,6 +3536,8 @@ def _subsample_rows_tensor(x: torch.Tensor, max_rows: int, seed: int) -> torch.T
 #           d3rlpy utilities           #
 # ==================================== #
 def load_d3(path: str, device: Optional[str] = None):
+    if d3rlpy is None:
+        raise ImportError("d3rlpy is not installed. Value-model cross-metrics are unavailable, but direct Gaussian policy evaluation does not require them.")
     kwargs = {}
     if device is not None:
         kwargs['device'] = device
@@ -3774,12 +3788,21 @@ def run_one_policy(
         )
 
     target_p_choice = 'gaussian'
+    action_lows_norm = (torch.as_tensor(spec.lows, dtype=a_mu.dtype, device=a_mu.device) - a_mu) / (a_sd + 1e-12)
+    action_highs_norm = (torch.as_tensor(spec.highs, dtype=a_mu.dtype, device=a_mu.device) - a_mu) / (a_sd + 1e-12)
     target_p_params = {
         'gaussian': {
             'theta_mean': theta_mean_vec,
             'theta_std': theta_std_vec,
             'epsilon_mean': epsilon_mean,
             'epsilon_std': epsilon_std,
+            # Optional support metadata. Current ke_drl versions that do not use
+            # these keys will ignore them; newer versions can use them to sample
+            # the same clipped Gaussian support used in diagnostics.
+            'action_lows': action_lows_norm,
+            'action_highs': action_highs_norm,
+            'integer_idx': None if spec.integer_idx is None else int(spec.integer_idx),
+            'integer_action_name': spec.integer_name,
         }
     }
 
@@ -3927,24 +3950,25 @@ def run_one_policy(
             f"{Z_grid_raw_support_shift_max:.6g}. Risk is computed on the original optimized grid; "
             f"support-projected atoms are used only for plots."
         )
-        simplex_calibration_diagnostics = {"simplex_calibrate_B": bool(int(args.simplex_calibrate_B))}
-        if bool(int(args.simplex_calibrate_B)):
-            print("\nSTART simplex calibration of B_hat")
-            B_hat, simplex_calibration_diagnostics = _calibrate_B_hat_to_simplex(
-                B_hat=B_hat,
-                sa_train=sa_basis,
-                nu=nu_Z,
-                length_scale=ell_Z,
-                sigma=sigma_Z,
-                ridge=float(args.simplex_calib_ridge),
-                max_rows=int(args.simplex_calib_max_rows),
-                seed=int(args.seed),
-            )
-            print("DONE simplex calibration of B_hat")
-            for k, v in simplex_calibration_diagnostics.items():
-                print(f"  {k}: {v}")
 
-        save_json(out_dir / "simplex_calibration_diagnostics.json", simplex_calibration_diagnostics)
+    simplex_calibration_diagnostics = {"simplex_calibrate_B": bool(int(args.simplex_calibrate_B))}
+    if bool(int(args.simplex_calibrate_B)):
+        print("\nSTART simplex calibration of B_hat")
+        B_hat, simplex_calibration_diagnostics = _calibrate_B_hat_to_simplex(
+            B_hat=B_hat,
+            sa_train=sa_basis,
+            nu=nu_Z,
+            length_scale=ell_Z,
+            sigma=sigma_Z,
+            ridge=float(args.simplex_calib_ridge),
+            max_rows=int(args.simplex_calib_max_rows),
+            seed=int(args.seed),
+        )
+        print("DONE simplex calibration of B_hat")
+        for k, v in simplex_calibration_diagnostics.items():
+            print(f"  {k}: {v}")
+
+    save_json(out_dir / "simplex_calibration_diagnostics.json", simplex_calibration_diagnostics)
 
     # Export the learned reward atom grid in both normalized and raw scales.
     _save_array_csv(out_dir / "Z_grid_normalized_optimized.csv", Z_grid.detach().cpu(), reward_cols)
