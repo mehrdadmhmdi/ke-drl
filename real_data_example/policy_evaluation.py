@@ -2813,6 +2813,30 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         X, Y = np.meshgrid(y, x)  # X: reward dim 1, Y: reward dim 0
         return X, Y, z
 
+    def _surface_data_limits(*surface_tuples):
+        """Compute tight x/y/z limits from one or more (X, Y, z_masked) triples."""
+        all_finite_z = []
+        xlims, ylims = [], []
+        for X, Y, z in surface_tuples:
+            mask = np.isfinite(z)
+            if not mask.any():
+                continue
+            all_finite_z.append(z[mask])
+            xlims.extend([float(X[mask].min()), float(X[mask].max())])
+            ylims.extend([float(Y[mask].min()), float(Y[mask].max())])
+        if not all_finite_z:
+            return None
+        fz = np.concatenate(all_finite_z)
+        pad_x = max((max(xlims) - min(xlims)) * 0.03, 0.25)
+        pad_y = max((max(ylims) - min(ylims)) * 0.03, 1.0)
+        zmin, zmax = float(fz.min()), float(fz.max())
+        pad_z = max((zmax - zmin) * 0.05, 1e-4)
+        return {
+            "xlim": (min(xlims) - pad_x, max(xlims) + pad_x),
+            "ylim": (min(ylims) - pad_y, max(ylims) + pad_y),
+            "zlim": (max(zmin - pad_z, 0.0), zmax + pad_z),
+        }
+
     def _draw_contour(ax, surface_tuple, color: str, linestyle: str, label: str) -> None:
         X, Y, z = _surface_grid(surface_tuple)
 
@@ -2972,6 +2996,11 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         ax.set_box_aspect((1.60, 1.05, 0.55))
         ax.view_init(elev=24, azim=-55)
         _set_discrete_ticks_if_needed(ax, mean_A)
+        dlims = _surface_data_limits((XA, YA, zA_plot), (XB, YB, zB_plot))
+        if dlims is not None:
+            ax.set_xlim(*dlims["xlim"])
+            ax.set_ylim(*dlims["ylim"])
+            ax.set_zlim(*dlims["zlim"])
         ax.legend(handles=surface_handles, loc="upper right")
         fig.subplots_adjust(left=0.03, right=0.96, bottom=0.08, top=0.92)
         p = out_dir / "overlay_3d_mean_embedding_surface.png"
@@ -2983,13 +3012,13 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         # Combined panel: mean embedding top row + recovered marginals bottom row.
         # No density surface and no difference heatmap.
         # -------------------------
-        fig = plt.figure(figsize=(17.5, 11.5), constrained_layout=False)
+        fig = plt.figure(figsize=(19.0, 12.0), constrained_layout=False)
         gs = fig.add_gridspec(
             2, 2,
-            width_ratios=[1.0, 1.32],
-            height_ratios=[1.0, 1.0],
+            width_ratios=[1.0, 1.55],
+            height_ratios=[1.15, 1.0],
             left=0.06, right=0.97, bottom=0.06, top=0.90,
-            wspace=0.25, hspace=0.34,
+            wspace=0.22, hspace=0.30,
         )
 
         ax1 = fig.add_subplot(gs[0, 0])
@@ -3005,16 +3034,21 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         ax2.plot_surface(XA, YA, zA_plot, color=color_A, alpha=0.45, linewidth=0, antialiased=True)
         ax2.plot_surface(XB, YB, zB_plot, color=color_B, alpha=0.45, linewidth=0, antialiased=True)
         ax2.set_proj_type("ortho")
-        ax2.set_xlabel(pretty_rewards[1], labelpad=14)
-        ax2.set_ylabel(pretty_rewards[0], labelpad=16)
-        ax2.set_zlabel("Mean embedding value", labelpad=16)
-        ax2.set_box_aspect((1.60, 1.05, 0.55))
-        ax2.view_init(elev=24, azim=-55)
-        ax2.tick_params(axis="x", pad=3)
-        ax2.tick_params(axis="y", pad=3)
-        ax2.tick_params(axis="z", pad=5)
+        ax2.set_xlabel(pretty_rewards[1], labelpad=10)
+        ax2.set_ylabel(pretty_rewards[0], labelpad=12)
+        ax2.set_zlabel("Mean embedding value", labelpad=10)
+        ax2.set_box_aspect((1.45, 1.0, 0.65))
+        ax2.view_init(elev=26, azim=-50)
+        ax2.tick_params(axis="x", pad=2, labelsize=9)
+        ax2.tick_params(axis="y", pad=2, labelsize=9)
+        ax2.tick_params(axis="z", pad=4, labelsize=9)
         _set_discrete_ticks_if_needed(ax2, mean_A)
-        ax2.set_title("Mean-embedding Surface", pad=12)
+        dlims = _surface_data_limits((XA, YA, zA_plot), (XB, YB, zB_plot))
+        if dlims is not None:
+            ax2.set_xlim(*dlims["xlim"])
+            ax2.set_ylim(*dlims["ylim"])
+            ax2.set_zlim(*dlims["zlim"])
+        ax2.set_title("Mean-embedding Surface", pad=8)
         ax2.legend(handles=surface_handles, loc="upper left", bbox_to_anchor=(0.02, 0.98))
 
         ax3 = fig.add_subplot(gs[1, 0])
