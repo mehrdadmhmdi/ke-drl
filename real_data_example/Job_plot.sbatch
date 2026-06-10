@@ -18,7 +18,7 @@ if [ -f "${SUBMIT_DIR}/plot_recovered_densities.py" ]; then
 elif [ -f "${SUBMIT_DIR}/real_data_example/plot_recovered_densities.py" ]; then
   SCRIPT_DIR="$(cd "${SUBMIT_DIR}/real_data_example" && pwd)"
 else
-  echo "Could not locate real_data_example from SLURM_SUBMIT_DIR=${SUBMIT_DIR}" >&2
+  echo "Could not locate plot_recovered_densities.py from SLURM_SUBMIT_DIR=${SUBMIT_DIR}" >&2
   echo "Submit from kedrl_git/real_data_example or kedrl_git." >&2
   exit 2
 fi
@@ -46,22 +46,29 @@ conda activate /u/mehrdad3/.conda/envs/delta_env
 
 INPUT_ROOT="${INPUT_ROOT:-plotting_files}"
 OUT_DIR="${OUT_DIR:-plotting_files}"
+POLICY_DIRS="${POLICY_DIRS:-rev_policy click_policy}"
+LABELS="${LABELS:-rev_policy,click_policy}"
+BW_PER_DIM="${BW_PER_DIM:-90,1}"
 
 echo "Using Python from: $(which python)"
 python -m pip show ke-drl || true
 python -m pip show torch || true
 
+echo "Input root: ${INPUT_ROOT}"
+echo "Output dir: ${OUT_DIR}"
+echo "Policy dirs: ${POLICY_DIRS}"
+echo "Labels: ${LABELS}"
+echo "Bandwidth per dim: ${BW_PER_DIM}"
+echo "Kernel params are read from each policy metrics.json unless explicit CLI overrides are added."
+
 python -u plot_recovered_densities.py \
   --input-root "${INPUT_ROOT}" \
-  --policy-dirs rev_policy click_policy \
-  --labels rev_policy,click_policy \
+  --policy-dirs ${POLICY_DIRS} \
+  --labels "${LABELS}" \
   --out-dir "${OUT_DIR}" \
   --reward-cols gross_revenue_per_night,total_clicks \
   --discrete-reward-cols total_clicks \
-  --nu-Z 4.5 \
-  --ell-Z 1.0 \
-  --sigma-Z 1.0 \
-  --bandwidth-per-dim 30,1 \
+  --bandwidth-per-dim "${BW_PER_DIM}" \
   --steps 10000 \
   --lr 0.005 \
   --quad-points 31 \

@@ -131,17 +131,17 @@ def _parse_args() -> argparse.Namespace:
 
     p.add_argument("--cfg-index", type=int, default=None)
     p.add_argument("--seed", type=int, default=2026)
-    p.add_argument("--run-test", type=int, default=1, help="0/1")
+    p.add_argument("--run-test", type=int, default=1, help="Deprecated; test evaluation is always computed. Kept for backward compatibility.")
     p.add_argument("--do-plots", type=int, default=0, help="0/1")
     p.add_argument("--out-root", type=str, default="evaluation_results/gridsearch_runs")
     p.add_argument("--data-base", type=str, default="Expedia_data")
 
     p.add_argument("--train-blob", type=str, default="expedia_train_timeindexed.pt")
-    p.add_argument("--val-blob", type=str, default="expedia_val_timeindexed.pt")
+    p.add_argument("--val-blob", type=str, default="expedia_val_timeindexed.pt", help="Deprecated; validation split is no longer loaded or evaluated. Kept for backward compatibility.")
     p.add_argument("--test-blob", type=str, default="expedia_test_timeindexed.pt")
 
     p.add_argument("--max-train", type=int, default=10000)
-    p.add_argument("--max-val", type=int, default=2000)
+    p.add_argument("--max-val", type=int, default=2000, help="Deprecated; validation split is no longer used. Kept for backward compatibility.")
     p.add_argument("--max-test", type=int, default=3000)
 
     p.add_argument("--num-steps", type=int, default=5000)
@@ -253,6 +253,30 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--ell-Z", type=float, default=0.8)
     p.add_argument("--lambda-reg", type=float, default=7e-3)
     p.add_argument("--sigma-Z", type=float, default=1.0)
+    p.add_argument(
+        "--nu-sa",
+        "--nu_sa",
+        dest="nu_sa",
+        type=float,
+        default=2.5,
+        help="State-action Matérn smoothness. Separate from return-space --nu-Z.",
+    )
+    p.add_argument(
+        "--ell-sa",
+        "--ell_sa",
+        dest="ell_sa",
+        type=float,
+        default=10.0,
+        help="State-action Matérn length scale. Separate from return-space --ell-Z.",
+    )
+    p.add_argument(
+        "--sigma-sa",
+        "--sigma_sa",
+        dest="sigma_sa",
+        type=float,
+        default=1.0,
+        help="State-action Matérn signal scale. Separate from return-space --sigma-Z.",
+    )
     p.add_argument("--gamma", type=float, default=0.8)
     p.add_argument("--hull-expand-factor", type=float, default=1.0)
     p.add_argument("--embedding-lr", type=float, default=1e-3)
@@ -746,13 +770,12 @@ def save_reproducibility_subsets(
         "cfg_index": int(cfg_index),
         "seed": int(seed),
         "train_blob_path": train_blob_path,
-        "val_blob_path": val_blob_path,
         "test_blob_path": test_blob_path,
+        "validation_removed": True,
         "state_cols": list(state_cols),
         "action_cols": list(action_cols),
         "reward_cols": list(reward_cols),
         "idx_tr": idx_tr.clone().cpu(),
-        "idx_val": idx_val.clone().cpu(),
         "idx_test": idx_test.clone().cpu(),
         "train": {
             "s0": s0_tr_raw.clone().cpu(),
@@ -760,11 +783,6 @@ def save_reproducibility_subsets(
             "a0": a0_tr_raw.clone().cpu(),
             "a1": None if a1_tr_raw is None else a1_tr_raw.clone().cpu(),
             "r": r_tr_raw.clone().cpu(),
-        },
-        "val": {
-            "s0": s0_val_raw.clone().cpu(),
-            "a0": a0_val_raw.clone().cpu(),
-            "r": r_val_raw.clone().cpu(),
         },
         "test": {
             "s0": s0_test_raw.clone().cpu(),
@@ -781,8 +799,8 @@ def save_reproducibility_subsets(
             "seed": int(seed),
             "saved_pt": str(path),
             "train_n": int(s0_tr_raw.shape[0]),
-            "val_n": int(s0_val_raw.shape[0]),
             "test_n": int(s0_test_raw.shape[0]),
+            "validation_removed": True,
             "state_cols": list(state_cols),
             "action_cols": list(action_cols),
             "reward_cols": list(reward_cols),
@@ -795,6 +813,9 @@ def _resolve_cfg(args: argparse.Namespace) -> dict:
         "ell_Z": float(args.ell_Z),
         "lambda_reg": float(args.lambda_reg),
         "sigma_Z": float(args.sigma_Z),
+        "nu_sa": float(args.nu_sa),
+        "ell_sa": float(args.ell_sa),
+        "sigma_sa": float(args.sigma_sa),
     }
 
 def _save_array_csv(path: Path, arr, col_names=None) -> None:
@@ -3725,7 +3746,6 @@ def run_one_policy(
     )
 
     stats_tr = gaussian_policy_stats_raw(model, s0_tr_raw)
-    stats_val = gaussian_policy_stats_raw(model, s0_val_raw)
     stats_test = gaussian_policy_stats_raw(model, s0_test_raw)
 
     def _raw_to_norm_stats(stats: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -3734,22 +3754,17 @@ def run_one_policy(
         return mu_norm, logstd_norm
 
     mu_tr_norm, logstd_tr_norm = _raw_to_norm_stats(stats_tr)
-    mu_val_norm, logstd_val_norm = _raw_to_norm_stats(stats_val)
     mu_test_norm, logstd_test_norm = _raw_to_norm_stats(stats_test)
 
     mu_tr_raw = stats_tr['mu_raw']
-    mu_val_raw = stats_val['mu_raw']
     mu_test_raw = stats_test['mu_raw']
     std_tr_raw = stats_tr['std_raw']
-    std_val_raw = stats_val['std_raw']
     std_test_raw = stats_test['std_raw']
     greedy_tr_raw = stats_tr['greedy_raw']
-    greedy_val_raw = stats_val['greedy_raw']
     greedy_test_raw = stats_test['greedy_raw']
 
     policy_output_summary = {
         'train': summarize_policy_outputs(mu_tr_norm, logstd_tr_norm, a_mu, a_sd, action_cols, f'POLICY OUTPUT SUMMARY ON TRAIN: {policy_name}'),
-        'val': summarize_policy_outputs(mu_val_norm, logstd_val_norm, a_mu, a_sd, action_cols, f'POLICY OUTPUT SUMMARY ON VAL: {policy_name}'),
         'test': summarize_policy_outputs(mu_test_norm, logstd_test_norm, a_mu, a_sd, action_cols, f'POLICY OUTPUT SUMMARY ON TEST: {policy_name}'),
     }
 
@@ -3856,6 +3871,9 @@ def run_one_policy(
     ell_Z = float(cfg['ell_Z'])
     lambda_reg = float(cfg['lambda_reg'])
     sigma_Z = float(cfg['sigma_Z'])
+    nu_sa = float(cfg.get('nu_sa', getattr(args, 'nu_sa', nu_Z)))
+    ell_sa = float(cfg.get('ell_sa', getattr(args, 'ell_sa', ell_Z)))
+    sigma_sa = float(cfg.get('sigma_sa', getattr(args, 'sigma_sa', 1.0)))
 
     gamma_val = float(args.gamma)
     hull_expand_factor = float(args.hull_expand_factor)
@@ -3906,9 +3924,21 @@ def run_one_policy(
         discrete_dims=discrete_reward_dims,
         target_p_choice=target_p_choice,
         target_p_params=target_p_params,
+        # Legacy return-kernel names kept for older ke_drl versions.
         nu=nu_Z,
         length_scale=ell_Z,
         sigma=sigma_Z,
+        # Split-kernel names are passed only when the installed ke_drl API accepts them.
+        # If older ke_drl drops them, this script will still use the separate state-action
+        # kernel for holdout-risk diagnostics below, and it will print the dropped keys.
+        nu_sa=nu_sa,
+        length_scale_sa=ell_sa,
+        ell_sa=ell_sa,
+        sigma_sa=sigma_sa,
+        nu_Z=nu_Z,
+        length_scale_Z=ell_Z,
+        ell_Z=ell_Z,
+        sigma_Z=sigma_Z,
         gamma_val=gamma_val,
         lambda_reg=lambda_reg,
         lambda_B=float(getattr(args, "lambda_B", 0.0)),
@@ -3941,9 +3971,9 @@ def run_one_policy(
         pre=pre,
         sa_train=sa_tr,
         args=args,
-        nu=nu_Z,
-        length_scale=ell_Z,
-        sigma=sigma_Z,
+        nu=nu_sa,
+        length_scale=ell_sa,
+        sigma=sigma_sa,
     )
     pre = pre_basis
     toc(t0, f'DONE mean-embedding state-action basis resolution [{policy_name}]')
@@ -3961,7 +3991,7 @@ def run_one_policy(
     # visualization, apply them only to plotting atoms below.
     Z_grid = pre['Z_grid']
 
-    observed_rewards_all_raw = torch.cat([r_tr_raw, r_val_raw, r_test_raw], dim=0)
+    observed_rewards_all_raw = torch.cat([r_tr_raw, r_test_raw], dim=0)
     Z_grid_raw_est = _denorm(Z_grid, r_mu, r_sd)
     Z_grid_raw_supported, reward_support_info = _enforce_reward_support_raw(
         Z_grid_raw=Z_grid_raw_est,
@@ -4020,9 +4050,9 @@ def run_one_policy(
         B_hat, simplex_calibration_diagnostics = _calibrate_B_hat_to_simplex(
             B_hat=B_hat,
             sa_train=sa_basis,
-            nu=nu_Z,
-            length_scale=ell_Z,
-            sigma=sigma_Z,
+            nu=nu_sa,
+            length_scale=ell_sa,
+            sigma=sigma_sa,
             ridge=float(args.simplex_calib_ridge),
             max_rows=int(args.simplex_calib_max_rows),
             seed=int(args.seed),
@@ -4042,11 +4072,11 @@ def run_one_policy(
     _save_array_csv(out_dir / "mean_embedding_state_action_basis_indices.csv", sa_basis_idx.detach().cpu(), ["basis_row_index"])
     save_json(out_dir / "mean_embedding_basis_diagnostics.json", mean_embedding_basis_info)
 
-    t_val_start = time.time()
-    t0 = tic(f'START val kernel [{policy_name}]')
-    sa_val = torch.cat([s0_val, a0_val], dim=1)
-    k_sa_val = matern_kernel(sa_val, sa_basis, nu=nu_Z, length_scale=ell_Z, sigma=sigma_Z)
-    toc(t0, f'DONE val kernel [{policy_name}]')
+    t_test_start = time.time()
+    t0 = tic(f'START test state-action kernel [{policy_name}]')
+    sa_test = torch.cat([s0_test, a0_test], dim=1)
+    k_sa_test = matern_kernel(sa_test, sa_basis, nu=nu_sa, length_scale=ell_sa, sigma=sigma_sa)
+    toc(t0, f'DONE test state-action kernel [{policy_name}]')
 
     def diagnose_W(k_sa, B_hat, name):
         W = k_sa @ B_hat
@@ -4059,44 +4089,34 @@ def run_one_policy(
         print("negative mass mean:", float(torch.clamp(-W, min=0).sum(1).mean()))
         print("L1 mass mean:", float(W.abs().sum(1).mean()))
         print("")
-    diagnose_W(k_sa_val, B_hat, "VAL")
+        return {
+            "shape": [int(W.shape[0]), int(W.shape[1])],
+            "min": float(W.min()),
+            "max": float(W.max()),
+            "row_sum_mean": float(W.sum(1).mean()),
+            "row_sum_std": float(W.sum(1).std()),
+            "negative_mass_mean": float(torch.clamp(-W, min=0).sum(1).mean()),
+            "l1_mass_mean": float(W.abs().sum(1).mean()),
+        }
 
-    risk_val = embedding_test_risk(
-        Z_test=r_val,
-        k_sa_test=k_sa_val,
+    test_W_diagnostics = diagnose_W(k_sa_test, B_hat, "TEST")
+    risk_test = embedding_test_risk(
+        Z_test=r_test,
+        k_sa_test=k_sa_test,
         B_hat_torch=B_hat,
         Z_grid=Z_grid,
         nu=nu_Z,
         length_scale=ell_Z,
         sigma=sigma_Z,
     )
-    val_time = time.time() - t_val_start
-    risk_val = float(risk_val)
-
-    risk_test = None
-    test_time = None
-    if run_test:
-        t_test_start = time.time()
-        t0 = tic(f'START test kernel [{policy_name}]')
-        sa_test = torch.cat([s0_test, a0_test], dim=1)
-        k_sa_test = matern_kernel(sa_test, sa_basis, nu=nu_Z, length_scale=ell_Z, sigma=sigma_Z)
-        toc(t0, f'DONE test kernel [{policy_name}]')
-        diagnose_W(k_sa_test, B_hat, "TEST")
-        risk_test = embedding_test_risk(
-            Z_test=r_test,
-            k_sa_test=k_sa_test,
-            B_hat_torch=B_hat,
-            Z_grid=Z_grid,
-            nu=nu_Z,
-            length_scale=ell_Z,
-            sigma=sigma_Z,
-        )
-        test_time = time.time() - t_test_start
-        risk_test = float(risk_test)
+    test_time = time.time() - t_test_start
+    risk_test = float(risk_test)
+    risk_test_sigma_normalized = float(risk_test / max(sigma_Z ** 2, 1e-30))
 
     print(
-        f'[{policy_name}] val_risk={risk_val:.6f} | train={train_time/3600:.2f}h | val={val_time/60:.2f}m'
-        + (f' | test_risk={risk_test:.6f} | test={test_time/60:.2f}m' if run_test else '')
+        f'[{policy_name}] test_risk={risk_test:.6f} | '
+        f'test_risk_sigma_normalized={risk_test_sigma_normalized:.6f} | '
+        f'train={train_time/3600:.2f}h | test={test_time/60:.2f}m'
     )
 
     metrics = {
@@ -4128,17 +4148,26 @@ def run_one_policy(
             'B_hat_shape': [int(B_hat.shape[0]), int(B_hat.shape[1])],
             'discrete_reward_cols': discrete_reward_cols,
             'discrete_reward_dims': discrete_reward_dims,
+            'return_kernel': {
+                'nu_Z': float(nu_Z),
+                'ell_Z': float(ell_Z),
+                'sigma_Z': float(sigma_Z),
+            },
+            'state_action_kernel': {
+                'nu_sa': float(nu_sa),
+                'ell_sa': float(ell_sa),
+                'sigma_sa': float(sigma_sa),
+            },
         },
         'train_time_sec': float(train_time),
-        'val_time_sec': float(val_time),
-        'test_time_sec': None if test_time is None else float(test_time),
-        'val_risk': float(risk_val),
-        'test_risk': None if risk_test is None else float(risk_test),
+        'test_time_sec': float(test_time),
+        'test_risk': float(risk_test),
+        'test_risk_sigma_normalized': float(risk_test_sigma_normalized),
+        'test_W_diagnostics': test_W_diagnostics,
         'surrogate_distill_mu_mse': float(mu_mse),
         'surrogate_distill_logstd_mse': float(ls_mse),
         'policy_output_summary': policy_output_summary,
         'train_policy_action_mean_raw': _np(greedy_tr_raw.mean(0)).tolist(),
-        'val_policy_action_mean_raw': _np(greedy_val_raw.mean(0)).tolist(),
         'test_policy_action_mean_raw': _np(greedy_test_raw.mean(0)).tolist(),
         'test_policy_gaussian_mean_raw': _np(mu_test_raw.mean(0)).tolist(),
         'test_policy_action_std_raw_mean': _np(std_test_raw.mean(0)).tolist(),
@@ -4186,7 +4215,6 @@ def run_one_policy(
             },
             'raw_action_means': {
                 'train_policy_action_mean_raw': greedy_tr_raw.mean(0).detach().cpu(),
-                'val_policy_action_mean_raw': greedy_val_raw.mean(0).detach().cpu(),
                 'test_policy_action_mean_raw': greedy_test_raw.mean(0).detach().cpu(),
                 'test_policy_gaussian_mean_raw': mu_test_raw.mean(0).detach().cpu(),
                 'test_policy_action_std_raw_mean': std_test_raw.mean(0).detach().cpu(),
@@ -4503,8 +4531,8 @@ def main() -> None:
     external_state_cols = load_full_state_cols(full_cols_path) if full_cols_path else LEGACY_FULL_STATE_COLS
 
     train_blob = normalize_blob_payload(torch.load(base / args.train_blob, map_location='cpu'))
-    val_blob = normalize_blob_payload(torch.load(base / args.val_blob, map_location='cpu'))
     test_blob = normalize_blob_payload(torch.load(base / args.test_blob, map_location='cpu'))
+    # Validation is intentionally removed.  The only holdout split used below is test.
 
     if args.state_cols is not None:
         state_cols = _parse_csv_list(args.state_cols)
@@ -4548,20 +4576,15 @@ def main() -> None:
     a0_tr_raw, a1_tr_raw = select_named_pair(train_blob, action_cols, 'a0', 'a1', 'action_cols', external_state_cols)
     r_tr_raw = select_named_columns(train_blob, reward_cols, reward_tensor_key, 'reward_cols', external_state_cols)
 
-    reward_tensor_key_val = 'r0' if 'r0' in val_blob else 'r'
     reward_tensor_key_test = 'r0' if 'r0' in test_blob else 'r'
-
-    s0_val_raw, _ = select_named_pair(val_blob, state_cols, 's0', 's1', 'state_cols', external_state_cols)
-    a0_val_raw, _ = select_named_pair(val_blob, action_cols, 'a0', 'a1', 'action_cols', external_state_cols)
-    r_val_raw = select_named_columns(val_blob, reward_cols, reward_tensor_key_val, 'reward_cols', external_state_cols)
 
     s0_test_raw, _ = select_named_pair(test_blob, state_cols, 's0', 's1', 'state_cols', external_state_cols)
     a0_test_raw, _ = select_named_pair(test_blob, action_cols, 'a0', 'a1', 'action_cols', external_state_cols)
     r_test_raw = select_named_columns(test_blob, reward_cols, reward_tensor_key_test, 'reward_cols', external_state_cols)
 
     idx_tr = _subsample_idx(s0_tr_raw.shape[0], args.max_train, args.seed)
-    idx_val = _subsample_idx(s0_val_raw.shape[0], args.max_val, args.seed + 1)
     idx_test = _subsample_idx(s0_test_raw.shape[0], args.max_test, args.seed + 2)
+    idx_val = idx_test  # backward-compatible placeholder; validation is not evaluated.
 
     s0_tr_raw = s0_tr_raw[idx_tr]
     s1_tr_raw = s1_tr_raw[idx_tr] if s1_tr_raw is not None else None
@@ -4569,13 +4592,14 @@ def main() -> None:
     a1_tr_raw = a1_tr_raw[idx_tr] if a1_tr_raw is not None else None
     r_tr_raw = r_tr_raw[idx_tr]
 
-    s0_val_raw = s0_val_raw[idx_val]
-    a0_val_raw = a0_val_raw[idx_val]
-    r_val_raw = r_val_raw[idx_val]
-
     s0_test_raw = s0_test_raw[idx_test]
     a0_test_raw = a0_test_raw[idx_test]
     r_test_raw = r_test_raw[idx_test]
+
+    # Backward-compatible aliases for legacy helper signatures.  These are not evaluated.
+    s0_val_raw = s0_test_raw
+    a0_val_raw = a0_test_raw
+    r_val_raw = r_test_raw
 
     if bool(int(getattr(args, "export_subsets", 1))):
         subsets_path = (
@@ -4613,8 +4637,8 @@ def main() -> None:
     raw_state_cols = list(state_cols)
     s0_tr_raw_unencoded = s0_tr_raw.clone()
     s1_tr_raw_unencoded = s1_tr_raw.clone() if s1_tr_raw is not None else None
-    s0_val_raw_unencoded = s0_val_raw.clone()
     s0_test_raw_unencoded = s0_test_raw.clone()
+    s0_val_raw_unencoded = s0_test_raw_unencoded  # legacy alias; validation removed.
 
     encoder_path = Path(args.state_encoder_path) if args.state_encoder_path else (ckpt_dir / "state_encoder.json")
     if encoder_path.exists():
@@ -4639,7 +4663,6 @@ def main() -> None:
     state_encoding_diagnostics = {
         "encoder_source": encoder_source,
         "train": state_encoder.diagnostics(_np(s0_tr_raw_unencoded)),
-        "val": state_encoder.diagnostics(_np(s0_val_raw_unencoded)),
         "test": state_encoder.diagnostics(_np(s0_test_raw_unencoded)),
     }
 
@@ -4651,8 +4674,8 @@ def main() -> None:
 
     s0_tr_raw = _encode_state_tensor(s0_tr_raw_unencoded)
     s1_tr_raw = _encode_state_tensor(s1_tr_raw_unencoded) if s1_tr_raw_unencoded is not None else None
-    s0_val_raw = _encode_state_tensor(s0_val_raw_unencoded)
     s0_test_raw = _encode_state_tensor(s0_test_raw_unencoded)
+    s0_val_raw = s0_test_raw  # legacy alias; validation removed.
     state_cols = list(state_encoder.encoded_state_names)
 
     print("\nState encoding:")
@@ -4663,7 +4686,6 @@ def main() -> None:
 
     print('\nShapes after named selection + subsample:')
     print('  train:', tuple(s0_tr_raw.shape), tuple(a0_tr_raw.shape), tuple(r_tr_raw.shape))
-    print('  val  :', tuple(s0_val_raw.shape), tuple(a0_val_raw.shape), tuple(r_val_raw.shape))
     print('  test :', tuple(s0_test_raw.shape), tuple(a0_test_raw.shape), tuple(r_test_raw.shape))
 
     data_summary = {
@@ -4671,7 +4693,6 @@ def main() -> None:
         'train_encoded_state_summary': summarize_tensor_by_columns(s0_tr_raw, state_cols, 'TRAIN ENCODED STATE SUMMARY (model basis)'),
         'train_action_summary': summarize_tensor_by_columns(a0_tr_raw, action_cols, 'TRAIN ACTION SUMMARY (raw scale)'),
         'train_reward_summary': summarize_tensor_by_columns(r_tr_raw, reward_cols, 'TRAIN REWARD SUMMARY (raw scale)'),
-        'val_action_summary': summarize_tensor_by_columns(a0_val_raw, action_cols, 'VAL ACTION SUMMARY (raw scale)'),
         'test_action_summary': summarize_tensor_by_columns(a0_test_raw, action_cols, 'TEST ACTION SUMMARY (raw scale)'),
         'state_encoder': state_encoder_meta,
         'state_encoding_diagnostics': state_encoding_diagnostics,
@@ -4707,13 +4728,14 @@ def main() -> None:
     a1_tr = _zscore(a1_tr_raw, a_mu, a_sd)
     r_tr = _zscore(r_tr_raw, r_mu, r_sd)
 
-    s0_val = _zscore(s0_val_raw, s_mu, s_sd)
-    a0_val = _zscore(a0_val_raw, a_mu, a_sd)
-    r_val = _zscore(r_val_raw, r_mu, r_sd)
-
     s0_test = _zscore(s0_test_raw, s_mu, s_sd)
     a0_test = _zscore(a0_test_raw, a_mu, a_sd)
     r_test = _zscore(r_test_raw, r_mu, r_sd)
+
+    # Backward-compatible normalized aliases for legacy helper signatures. Not evaluated.
+    s0_val = s0_test
+    a0_val = a0_test
+    r_val = r_test
 
     sa_tr = torch.cat([s0_tr, a0_tr], dim=1)
     mu_sa = sa_tr.mean(0)
@@ -4738,7 +4760,7 @@ def main() -> None:
 
     compare_results = {}
     for policy_name in policies_to_run:
-        tag = f"{_sanitize_reward_tag(policy_name)}_cfg{cfg_index:03d}_nu{cfg['nu_Z']}_ell{cfg['ell_Z']}_lam{cfg['lambda_reg']:g}_sigmaZ{cfg['sigma_Z']}"
+        tag = f"{_sanitize_reward_tag(policy_name)}_cfg{cfg_index:03d}_nuZ{cfg['nu_Z']}_ellZ{cfg['ell_Z']}_nuSA{cfg['nu_sa']}_ellSA{cfg['ell_sa']}_lam{cfg['lambda_reg']:g}_sigmaZ{cfg['sigma_Z']}"
         policy_out_dir = out_root / tag
         result = run_one_policy(
             policy_name=policy_name,
@@ -4848,9 +4870,9 @@ def main() -> None:
             print(f'  {A} policy action mean      : {_array_str(_np(aA_raw.mean(0)))}')
             print(f'  {B} policy action mean      : {_array_str(_np(aB_raw.mean(0)))}')
             print('  Per-dim mean |Δ| raw        :', _array_str(per_dim_abs_delta_raw))
-            print('\nKE-DRL risks:')
-            print(f"  {A}: val={compare_results[A]['val_risk']:.6f} test={compare_results[A]['test_risk'] if compare_results[A]['test_risk'] is not None else 'NA'}")
-            print(f"  {B}: val={compare_results[B]['val_risk']:.6f} test={compare_results[B]['test_risk'] if compare_results[B]['test_risk'] is not None else 'NA'}")
+            print('\nKE-DRL test risks:')
+            print(f"  {A}: test={compare_results[A]['test_risk']:.6f} normalized={compare_results[A]['test_risk_sigma_normalized']:.6f}")
+            print(f"  {B}: test={compare_results[B]['test_risk']:.6f} normalized={compare_results[B]['test_risk_sigma_normalized']:.6f}")
             print('\nValue-model cross-metrics:')
             print(f"  {A} policy metrics:", compare_results[A].get('value_metrics', {}))
             print(f"  {B} policy metrics:", compare_results[B].get('value_metrics', {}))
@@ -4868,20 +4890,20 @@ def main() -> None:
                 'policy_A_action_mean_raw': _np(aA_raw.mean(0)).tolist(),
                 'policy_B_action_mean_raw': _np(aB_raw.mean(0)).tolist(),
                 'test_data_action_mean_raw': _np(a0_test_raw.mean(0)).tolist(),
-                'val_risk_A': compare_results[A]['val_risk'],
-                'val_risk_B': compare_results[B]['val_risk'],
                 'test_risk_A': compare_results[A]['test_risk'],
                 'test_risk_B': compare_results[B]['test_risk'],
+                'test_risk_sigma_normalized_A': compare_results[A]['test_risk_sigma_normalized'],
+                'test_risk_sigma_normalized_B': compare_results[B]['test_risk_sigma_normalized'],
             }
 
             if do_plots:
                 payload_A = torch.load(
-                    out_root / f"{_sanitize_reward_tag(A)}_cfg{cfg_index:03d}_nu{cfg['nu_Z']}_ell{cfg['ell_Z']}_lam{cfg['lambda_reg']:g}_sigmaZ{cfg['sigma_Z']}" / "plot_payload.pt",
+                    out_root / f"{_sanitize_reward_tag(A)}_cfg{cfg_index:03d}_nuZ{cfg['nu_Z']}_ellZ{cfg['ell_Z']}_nuSA{cfg['nu_sa']}_ellSA{cfg['ell_sa']}_lam{cfg['lambda_reg']:g}_sigmaZ{cfg['sigma_Z']}" / "plot_payload.pt",
                     map_location="cpu",
                     weights_only=False,
                 )
                 payload_B = torch.load(
-                    out_root / f"{_sanitize_reward_tag(B)}_cfg{cfg_index:03d}_nu{cfg['nu_Z']}_ell{cfg['ell_Z']}_lam{cfg['lambda_reg']:g}_sigmaZ{cfg['sigma_Z']}" / "plot_payload.pt",
+                    out_root / f"{_sanitize_reward_tag(B)}_cfg{cfg_index:03d}_nuZ{cfg['nu_Z']}_ellZ{cfg['ell_Z']}_nuSA{cfg['nu_sa']}_ellSA{cfg['ell_sa']}_lam{cfg['lambda_reg']:g}_sigmaZ{cfg['sigma_Z']}" / "plot_payload.pt",
                     map_location="cpu",
                     weights_only=False,
                 )

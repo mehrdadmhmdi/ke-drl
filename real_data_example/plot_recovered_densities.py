@@ -850,6 +850,53 @@ def plot_overlay(payloads: List[dict], labels: List[str], reward_cols: Sequence[
     return paths
 
 
+
+def _nested_get(d: dict, keys: Sequence[str], default=None):
+    cur = d
+    for key in keys:
+        if not isinstance(cur, dict) or key not in cur:
+            return default
+        cur = cur[key]
+    return cur
+
+
+def _resolve_plot_kernel_and_bandwidths(data: dict, args, reward_dim: int) -> Tuple[float, float, float, List[float]]:
+    """Resolve plotting/recovery parameters from metrics.json unless CLI overrides them.
+
+    This prevents the external plotting job from recovering densities with a
+    different return-space kernel or bandwidth than the fitted KE-DRL run.
+    CLI values still override metrics when explicitly provided.
+    """
+    metrics = data.get("metrics", {}) if isinstance(data.get("metrics", {}), dict) else {}
+    cfg = metrics.get("cfg", {}) if isinstance(metrics.get("cfg", {}), dict) else {}
+    emb = metrics.get("embedding_config", {}) if isinstance(metrics.get("embedding_config", {}), dict) else {}
+    return_kernel = emb.get("return_kernel", {}) if isinstance(emb.get("return_kernel", {}), dict) else {}
+
+    nu_Z = args.nu_Z
+    if nu_Z is None:
+        nu_Z = return_kernel.get("nu_Z", cfg.get("nu_Z", 3.5))
+
+    ell_Z = args.ell_Z
+    if ell_Z is None:
+        ell_Z = return_kernel.get("ell_Z", cfg.get("ell_Z", 0.8))
+
+    sigma_Z = args.sigma_Z
+    if sigma_Z is None:
+        sigma_Z = return_kernel.get("sigma_Z", cfg.get("sigma_Z", 1.0))
+
+    bandwidth_per_dim = args.bandwidth_per_dim
+    if bandwidth_per_dim is None or str(bandwidth_per_dim).strip() == "":
+        fitted_bw = emb.get("bandwidth_per_dim", None)
+        if isinstance(fitted_bw, (list, tuple)) and len(fitted_bw) > 0:
+            bandwidths_raw = [float(x) for x in fitted_bw]
+        else:
+            # Project default required for this Expedia experiment.
+            bandwidths_raw = parse_float_list("90,1", reward_dim, 90.0)
+    else:
+        bandwidths_raw = parse_float_list(bandwidth_per_dim, reward_dim, args.bandwidth)
+
+    return float(nu_Z), float(ell_Z), float(sigma_Z), bandwidths_raw
+
 # ---------------------------
 # high-level recovery function
 # ---------------------------
@@ -860,7 +907,7 @@ def recovery_plot(policy_dir: Path, args, out_dir: Path, label: Optional[str] = 
     label = data["label"]
     reward_cols = data["reward_cols"]
     d = len(reward_cols)
-    bandwidths_raw = parse_float_list(args.bandwidth_per_dim, d, args.bandwidth)
+    nu_Z, ell_Z, sigma_Z, bandwidths_raw = _resolve_plot_kernel_and_bandwidths(data, args, d)
 
     print("\n" + "=" * 90)
     print(f"RECOVERY FOR: {label}")
@@ -870,6 +917,7 @@ def recovery_plot(policy_dir: Path, args, out_dir: Path, label: Optional[str] = 
     print(f"discrete_dims  : {data['discrete_dims']}")
     print(f"Z shape        : {data['Z_norm_dict'].shape}")
     print(f"beta shape     : {data['beta_hat'].shape}")
+    print(f"kernel_Z       : nu={nu_Z}, ell={ell_Z}, sigma={sigma_Z}")
     print(f"bandwidth_raw  : {bandwidths_raw}")
 
     A = build_induced_A_matrix(
@@ -879,9 +927,9 @@ def recovery_plot(policy_dir: Path, args, out_dir: Path, label: Optional[str] = 
         r_sd=data["r_sd"],
         bandwidths_raw=bandwidths_raw,
         discrete_dims=data["discrete_dims"],
-        nu=args.nu_Z,
-        ell=args.ell_Z,
-        sigma=args.sigma_Z,
+        nu=nu_Z,
+        ell=ell_Z,
+        sigma=sigma_Z,
         quad_points=args.quad_points,
         device=args.device,
         batch_atoms=args.batch_atoms,
@@ -891,9 +939,9 @@ def recovery_plot(policy_dir: Path, args, out_dir: Path, label: Optional[str] = 
         beta_hat=data["beta_hat"],
         Z_norm_dict=data["Z_norm_dict"],
         A=A,
-        nu=args.nu_Z,
-        ell=args.ell_Z,
-        sigma=args.sigma_Z,
+        nu=nu_Z,
+        ell=ell_Z,
+        sigma=sigma_Z,
         ridge=args.ridge,
         lr=args.lr,
         steps=args.steps,
@@ -941,6 +989,8 @@ def recovery_plot(policy_dir: Path, args, out_dir: Path, label: Optional[str] = 
         "payload": payload,
         "diagnostics": diagnostics,
         "paths": paths,
+        "resolved_kernel_Z": {"nu_Z": nu_Z, "ell_Z": ell_Z, "sigma_Z": sigma_Z},
+        "resolved_bandwidths_raw": bandwidths_raw,
     }
 
 
@@ -990,13 +1040,13 @@ def main() -> None:
     parser.add_argument("--discrete-reward-cols", type=str, default="total_clicks")
     parser.add_argument("--clip-nonnegative", type=int, default=1)
 
-    parser.add_argument("--nu-Z", type=float, default=3.5)
-    parser.add_argument("--ell-Z", type=float, default=0.8)
-    parser.add_argument("--sigma-Z", type=float, default=1.0)
+    parser.add_argument("--nu-Z", type=float, default=None, help="Override return-space Matérn nu. Default: read from metrics.json.")
+    parser.add_argument("--ell-Z", type=float, default=None, help="Override return-space Matérn length scale. Default: read from metrics.json.")
+    parser.add_argument("--sigma-Z", type=float, default=None, help="Override return-space Matérn sigma. Default: read from metrics.json.")
     parser.add_argument("--ridge", type=float, default=1e-4, help="Ridge in beta_tilde=(K+ridge I)^(-1)Aw.")
 
-    parser.add_argument("--bandwidth", type=float, default=40.0)
-    parser.add_argument("--bandwidth-per-dim", type=str, default="40,1", help="Raw-scale bandwidths, e.g. '40,1'.")
+    parser.add_argument("--bandwidth", type=float, default=90.0)
+    parser.add_argument("--bandwidth-per-dim", type=str, default=None, help="Raw-scale bandwidths, e.g. '90,1'. Default: read from metrics.json, else 90,1.")
     parser.add_argument("--quad-points", type=int, default=31)
     parser.add_argument("--batch-atoms", type=int, default=64)
     parser.add_argument("--num-points", type=int, default=500)
@@ -1051,6 +1101,8 @@ def main() -> None:
                 "policy_dir": r["policy_dir"],
                 "diagnostics": r["diagnostics"],
                 "paths": r["paths"],
+                "resolved_kernel_Z": r.get("resolved_kernel_Z", {}),
+                "resolved_bandwidths_raw": r.get("resolved_bandwidths_raw", []),
             }
             for r in results
         ],

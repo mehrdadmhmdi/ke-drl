@@ -10,7 +10,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-287
+#SBATCH --array=0-431
 
 set -euo pipefail
 
@@ -59,23 +59,31 @@ STATE_ENCODER_PATH="${STATE_ENCODER_PATH:-${POLICY_CKPT_DIR}/state_encoder.json}
 PYFILE="${PYFILE:-policy_evaluation.py}"
 TASK="${SLURM_ARRAY_TASK_ID}"
 
-# Main high-capacity estimation grid.
+# Main estimation grid.
+# Validation is removed in policy_evaluation.py; every run reports test risk only.
+# sigma_Z is fixed because Matérn risk scales mechanically with sigma_Z^2.
 # Keep BW_PER_DIM fixed at (90,1) for all runs.
-NU_ARR=(1.5 2.5 3.5)
-ELL_ARR=(0.20 0.35 0.50 0.80)
-LAM_ARR=(1e-10 1e-8 1e-6)
-SIG_ARR=(1.0)
+NU_Z_ARR=(2.5 3.5 4.5)
+ELL_Z_ARR=(0.80 1.20 2.50)
+LAM_ARR=(1e-8 1e-7 1e-6 1e-5)
+SIGMA_Z_ARR=(1.0)
+NU_SA_ARR=(2.5)
+ELL_SA_ARR=(5.0 10.0 20.0)
+SIGMA_SA_ARR=(1.0)
 BAND_ARR=(0.0)
 BW_PER_DIM_ARR=("90,1")
 LAMREC_ARR=(0.0)
 GRID_ARR=(1200 2000)
 MEAN_EMBEDDING_BASIS_SIZE_ARR=(6000 10000)
-STEPS_ARR=(40000 60000)
+STEPS_ARR=(40000)
 
-N_NU=${#NU_ARR[@]}
-N_ELL=${#ELL_ARR[@]}
+N_NU_Z=${#NU_Z_ARR[@]}
+N_ELL_Z=${#ELL_Z_ARR[@]}
 N_LAM=${#LAM_ARR[@]}
-N_SIG=${#SIG_ARR[@]}
+N_SIGMA_Z=${#SIGMA_Z_ARR[@]}
+N_NU_SA=${#NU_SA_ARR[@]}
+N_ELL_SA=${#ELL_SA_ARR[@]}
+N_SIGMA_SA=${#SIGMA_SA_ARR[@]}
 N_BAND=${#BAND_ARR[@]}
 N_BW_PER_DIM=${#BW_PER_DIM_ARR[@]}
 N_LAMREC=${#LAMREC_ARR[@]}
@@ -83,7 +91,7 @@ N_GRID=${#GRID_ARR[@]}
 N_BASIS=${#MEAN_EMBEDDING_BASIS_SIZE_ARR[@]}
 N_STEPS=${#STEPS_ARR[@]}
 
-TOTAL_CFG=$(( N_NU * N_ELL * N_LAM * N_SIG * N_BAND * N_BW_PER_DIM * N_LAMREC * N_GRID * N_BASIS * N_STEPS ))
+TOTAL_CFG=$(( N_NU_Z * N_ELL_Z * N_LAM * N_SIGMA_Z * N_NU_SA * N_ELL_SA * N_SIGMA_SA * N_BAND * N_BW_PER_DIM * N_LAMREC * N_GRID * N_BASIS * N_STEPS ))
 
 if (( TASK < 0 || TASK >= TOTAL_CFG )); then
   echo "Error: TASK=${TASK} is outside valid range 0..$((TOTAL_CFG - 1))"
@@ -97,15 +105,21 @@ I_GRID=$(( IDX % N_GRID )); IDX=$(( IDX / N_GRID ))
 I_LAMREC=$(( IDX % N_LAMREC )); IDX=$(( IDX / N_LAMREC ))
 I_BW_PER_DIM=$(( IDX % N_BW_PER_DIM )); IDX=$(( IDX / N_BW_PER_DIM ))
 I_BAND=$(( IDX % N_BAND )); IDX=$(( IDX / N_BAND ))
-I_SIG=$(( IDX % N_SIG )); IDX=$(( IDX / N_SIG ))
+I_SIGMA_SA=$(( IDX % N_SIGMA_SA )); IDX=$(( IDX / N_SIGMA_SA ))
+I_ELL_SA=$(( IDX % N_ELL_SA )); IDX=$(( IDX / N_ELL_SA ))
+I_NU_SA=$(( IDX % N_NU_SA )); IDX=$(( IDX / N_NU_SA ))
+I_SIGMA_Z=$(( IDX % N_SIGMA_Z )); IDX=$(( IDX / N_SIGMA_Z ))
 I_LAM=$(( IDX % N_LAM )); IDX=$(( IDX / N_LAM ))
-I_ELL=$(( IDX % N_ELL )); IDX=$(( IDX / N_ELL ))
-I_NU=$(( IDX % N_NU ))
+I_ELL_Z=$(( IDX % N_ELL_Z )); IDX=$(( IDX / N_ELL_Z ))
+I_NU_Z=$(( IDX % N_NU_Z ))
 
-NU=${NU_ARR[$I_NU]}
-ELL=${ELL_ARR[$I_ELL]}
+NU_Z=${NU_Z_ARR[$I_NU_Z]}
+ELL_Z=${ELL_Z_ARR[$I_ELL_Z]}
 LAM=${LAM_ARR[$I_LAM]}
-SIG=${SIG_ARR[$I_SIG]}
+SIGMA_Z=${SIGMA_Z_ARR[$I_SIGMA_Z]}
+NU_SA=${NU_SA_ARR[$I_NU_SA]}
+ELL_SA=${ELL_SA_ARR[$I_ELL_SA]}
+SIGMA_SA=${SIGMA_SA_ARR[$I_SIGMA_SA]}
 BAND=${BAND_ARR[$I_BAND]}
 BW_PER_DIM=${BW_PER_DIM_ARR[$I_BW_PER_DIM]}
 LAMREC=${LAMREC_ARR[$I_LAMREC]}
@@ -122,10 +136,13 @@ echo "  DATA_BASE    = ${DATA_BASE}"
 echo "  POLICY_CKPT  = ${POLICY_CKPT_DIR}"
 echo "  ENCODER      = ${STATE_ENCODER_PATH}"
 echo "  CFG_INDEX    = ${CFG_INDEX}"
-echo "  NU           = ${NU}"
-echo "  ELL          = ${ELL}"
+echo "  NU_Z         = ${NU_Z}"
+echo "  ELL_Z        = ${ELL_Z}"
 echo "  LAM          = ${LAM}"
-echo "  SIG          = ${SIG}"
+echo "  SIGMA_Z      = ${SIGMA_Z}"
+echo "  NU_SA        = ${NU_SA}"
+echo "  ELL_SA       = ${ELL_SA}"
+echo "  SIGMA_SA     = ${SIGMA_SA}"
 echo "  BAND         = ${BAND}"
 echo "  BW_PER_DIM   = ${BW_PER_DIM}"
 echo "  LAMREC       = ${LAMREC}"
@@ -139,7 +156,17 @@ python - <<'PY' || true
 import inspect
 from ke_drl.api import estimate_embedding
 sig = str(inspect.signature(estimate_embedding))
-for x in ["mean_embedding_basis_size", "mean_embedding_basis_method", "lambda_B"]:
+for x in [
+    "mean_embedding_basis_size",
+    "mean_embedding_basis_method",
+    "lambda_B",
+    "nu_sa",
+    "length_scale_sa",
+    "sigma_sa",
+    "nu_Z",
+    "length_scale_Z",
+    "sigma_Z",
+]:
     print(f"  {x}: {x in sig}")
 PY
 
@@ -152,7 +179,6 @@ python -u "${PYFILE}" \
   --out-root "${OUTROOT}" \
   --data-base "${DATA_BASE}" \
   --train-blob expedia_train_timeindexed.pt \
-  --val-blob expedia_val_timeindexed.pt \
   --test-blob expedia_test_timeindexed.pt \
   --policy-ckpt-dir "${POLICY_CKPT_DIR}" \
   --state-encoder-path "${STATE_ENCODER_PATH}" \
@@ -167,7 +193,6 @@ python -u "${PYFILE}" \
   --mean-embedding-basis-batch-size 8192 \
   --lambda-B 1e-10 \
   --max-train 10000 \
-  --max-val 4000 \
   --max-test 4000 \
   --state-cols mean_hist_price,std_hist_price,prop_location_score1,srch_room_count,srch_length_of_stay,prop_review_score,comp_inv \
   --categorical-state-cols srch_room_count,srch_length_of_stay,comp_inv \
@@ -175,10 +200,13 @@ python -u "${PYFILE}" \
   --action-cols avg_price_per_night,total_promotions,std_price_usd \
   --reward-cols gross_revenue_per_night,total_clicks \
   --device cuda \
-  --nu-Z "${NU}" \
-  --ell-Z "${ELL}" \
+  --nu-Z "${NU_Z}" \
+  --ell-Z "${ELL_Z}" \
   --lambda-reg "${LAM}" \
-  --sigma-Z "${SIG}" \
+  --sigma-Z "${SIGMA_Z}" \
+  --nu-sa "${NU_SA}" \
+  --ell-sa "${ELL_SA}" \
+  --sigma-sa "${SIGMA_SA}" \
   --gamma 0.8 \
   --bandwidth "${BAND}" \
   --bandwidth-per-dim "${BW_PER_DIM}" \
