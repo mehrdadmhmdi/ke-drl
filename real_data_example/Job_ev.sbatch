@@ -10,7 +10,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-431
+#SBATCH --array=0-47
 
 set -euo pipefail
 
@@ -60,21 +60,21 @@ PYFILE="${PYFILE:-policy_evaluation.py}"
 TASK="${SLURM_ARRAY_TASK_ID}"
 
 # Main estimation grid.
-# Validation is removed in policy_evaluation.py; every run reports test risk only.
-# sigma_Z is fixed because Matérn risk scales mechanically with sigma_Z^2.
-# Keep BW_PER_DIM fixed at (90,1) for all runs.
-NU_Z_ARR=(2.5 3.5 4.5)
+# The reported risk is the zero-baseline projected Bellman fit risk.
+# sigma_Z is fixed so the return-kernel scale is comparable across runs.
+# Keep BW_PER_DIM fixed at (90,1) for recovered density/PMF displays.
+NU_Z_ARR=(3.5 7.5)
 ELL_Z_ARR=(0.80 1.20 2.50)
 LAM_ARR=(1e-8 1e-7 1e-6 1e-5)
 SIGMA_Z_ARR=(1.0)
 NU_SA_ARR=(2.5)
-ELL_SA_ARR=(5.0 10.0 20.0)
+ELL_SA_ARR=(1.0 10.0)
 SIGMA_SA_ARR=(1.0)
 BAND_ARR=(0.0)
 BW_PER_DIM_ARR=("90,1")
 LAMREC_ARR=(0.0)
-GRID_ARR=(1200 2000)
-MEAN_EMBEDDING_BASIS_SIZE_ARR=(6000 10000)
+GRID_ARR=(1200)
+MEAN_EMBEDDING_BASIS_SIZE_ARR=(6000)
 STEPS_ARR=(40000)
 
 N_NU_Z=${#NU_Z_ARR[@]}
@@ -92,6 +92,8 @@ N_BASIS=${#MEAN_EMBEDDING_BASIS_SIZE_ARR[@]}
 N_STEPS=${#STEPS_ARR[@]}
 
 TOTAL_CFG=$(( N_NU_Z * N_ELL_Z * N_LAM * N_SIGMA_Z * N_NU_SA * N_ELL_SA * N_SIGMA_SA * N_BAND * N_BW_PER_DIM * N_LAMREC * N_GRID * N_BASIS * N_STEPS ))
+
+echo "Total configs in this grid: ${TOTAL_CFG}"
 
 if (( TASK < 0 || TASK >= TOTAL_CFG )); then
   echo "Error: TASK=${TASK} is outside valid range 0..$((TOTAL_CFG - 1))"
@@ -175,7 +177,7 @@ python -u "${PYFILE}" \
   --cfg-index "${CFG_INDEX}" \
   --seed 2026 \
   --run-test 1 \
-  --do-plots 0 \
+  --do-plots 1 \
   --out-root "${OUTROOT}" \
   --data-base "${DATA_BASE}" \
   --train-blob expedia_train_timeindexed.pt \
