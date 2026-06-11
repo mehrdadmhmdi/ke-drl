@@ -427,6 +427,11 @@ def optimize_probability_weights(
     prev_obj = None
     prev_w = None
 
+    if int(steps) <= 0:
+        print(
+            "Warning: --steps <= 0; using the simplex initialization without fitting recovered density/PMF weights.",
+            flush=True,
+        )
     for t in range(int(steps)):
         opt.zero_grad(set_to_none=True)
         w = torch.softmax(theta, dim=0)
@@ -549,6 +554,19 @@ def normalize_joint(z: np.ndarray, x: np.ndarray, y: np.ndarray, kind0: str, kin
     return z
 
 
+def probability_weights(w: np.ndarray, n_atoms: Optional[int] = None) -> np.ndarray:
+    w = np.asarray(w, dtype=float).reshape(-1)
+    if n_atoms is not None and w.size != int(n_atoms):
+        raise ValueError(f"Expected {int(n_atoms)} density weights, got {w.size}.")
+    if w.size == 0:
+        raise ValueError("Density weights must be non-empty.")
+    w = np.maximum(np.nan_to_num(w, nan=0.0, posinf=0.0, neginf=0.0), 0.0)
+    total = float(w.sum())
+    if total <= 0.0 or not np.isfinite(total):
+        return np.full(w.size, 1.0 / float(w.size), dtype=float)
+    return (w / total).astype(float)
+
+
 def build_recovery_payload(
     Z_raw: np.ndarray,
     w: np.ndarray,
@@ -558,9 +576,7 @@ def build_recovery_payload(
     num_points: int,
 ) -> dict:
     m, d = Z_raw.shape
-    w = np.asarray(w, dtype=float).reshape(-1)
-    w = np.maximum(w, 0.0)
-    w = w / max(w.sum(), 1e-300)
+    w = probability_weights(w, n_atoms=m)
 
     one_d = {}
     A_mats = []
@@ -578,7 +594,7 @@ def build_recovery_payload(
             A = hard_discrete_allocation(vals, support)
             pmf = A @ w
             pmf = np.maximum(pmf, 0.0)
-            pmf = pmf / max(pmf.sum(), 1e-300)
+            pmf = probability_weights(pmf)
             one_d[str(j)] = {"kind": "discrete", "grid": support, "density": pmf, "ylabel": "Probability"}
             A_mats.append(A)
             grids.append(support)
@@ -634,7 +650,7 @@ def plot_individual(payload: dict, label: str, reward_cols: Sequence[str], out_d
         plt.xlabel(pretty_label(reward_cols[j]))
         plt.title(title)
         p = out_dir / f"{label}_marginal_dim{j}_{reward_cols[j]}.png"
-        fig.savefig(p, bbox_inches="tight",dpi=700)
+        fig.savefig(p, bbox_inches="tight", dpi=300)
         plt.close(fig)
         paths[f"marginal_dim{j}"] = str(p)
 
@@ -657,13 +673,13 @@ def plot_individual(payload: dict, label: str, reward_cols: Sequence[str], out_d
             plt.yticks(x)
         plt.title(f"{label}: recovered mixed joint display")
         p = out_dir / f"{label}_joint_heatmap.png"
-        fig.savefig(p, bbox_inches="tight",dpi=700)
+        fig.savefig(p, bbox_inches="tight", dpi=300)
         plt.close(fig)
         paths["joint_heatmap"] = str(p)
 
         try:
             from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-            fig = plt.figure(figsize=(8, 6))
+            fig = plt.figure(figsize=(7.2, 7.2))
             ax = fig.add_subplot(111, projection="3d")
             ax.plot_surface(X, Y, z, alpha=0.75, linewidth=0, antialiased=True)
             ax.set_xlabel(pretty_label(reward_cols[1]))
@@ -671,7 +687,7 @@ def plot_individual(payload: dict, label: str, reward_cols: Sequence[str], out_d
             ax.set_zlabel("Recovered display value")
             ax.set_title(f"{label}: recovered joint surface")
             p = out_dir / f"{label}_joint_surface3d.png"
-            fig.savefig(p, bbox_inches="tight",dpi=700)
+            fig.savefig(p, bbox_inches="tight", dpi=300)
             plt.close(fig)
             paths["joint_surface3d"] = str(p)
         except Exception:
@@ -719,7 +735,7 @@ def plot_overlay(payloads: List[dict], labels: List[str], reward_cols: Sequence[
         plt.title(title)
         plt.legend(frameon=True)
         p = out_dir / f"overlay_marginal_dim{j}_{reward_cols[j]}.png"
-        fig.savefig(p, bbox_inches="tight",dpi=700)
+        fig.savefig(p, bbox_inches="tight", dpi=300)
         plt.close(fig)
         paths[f"overlay_marginal_dim{j}"] = str(p)
 
@@ -752,7 +768,7 @@ def plot_overlay(payloads: List[dict], labels: List[str], reward_cols: Sequence[
         plt.title("Overlay recovered mixed joint contours")
         plt.legend(frameon=True)
         p = out_dir / "overlay_joint_contours.png"
-        fig.savefig(p, bbox_inches="tight",dpi=700)
+        fig.savefig(p, bbox_inches="tight", dpi=300)
         plt.close(fig)
         paths["overlay_joint_contours"] = str(p)
 
@@ -781,7 +797,7 @@ def plot_overlay(payloads: List[dict], labels: List[str], reward_cols: Sequence[
         fig.suptitle("Recovered joint heatmaps by policy")
         p = out_dir / "overlay_joint_heatmaps_by_policy.png"
         fig.subplots_adjust(left=0.06, right=0.97, bottom=0.10, top=0.88, wspace=0.25)
-        fig.savefig(p, bbox_inches="tight", pad_inches=0.25, dpi=700)
+        fig.savefig(p, bbox_inches="tight", pad_inches=0.25, dpi=300)
         plt.close(fig)
         paths["overlay_joint_heatmaps_by_policy"] = str(p)
 
@@ -791,7 +807,7 @@ def plot_overlay(payloads: List[dict], labels: List[str], reward_cols: Sequence[
         # ------------------------------------------------------------
         try:
             from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-            fig = plt.figure(figsize=(12.6, 8.8), constrained_layout=False)
+            fig = plt.figure(figsize=(8.8, 8.8), constrained_layout=False)
             ax = fig.add_subplot(111, projection="3d")
             ax.set_proj_type("ortho")
             from matplotlib.patches import Patch
@@ -801,17 +817,13 @@ def plot_overlay(payloads: List[dict], labels: List[str], reward_cols: Sequence[
                 x, y, z = joint["x"], joint["y"], joint["z"]
                 X, Y = np.meshgrid(y, x)
                 color = colors[k % len(colors)]
-                z_plot = np.asarray(z, dtype=float).copy()
-                z_plot[~np.isfinite(z_plot)] = np.nan
-                zmax_local = float(np.nanmax(z_plot)) if z_plot.size else 0.0
-                if zmax_local > 0:
-                    z_plot[z_plot <= max(1e-12, 1e-6 * zmax_local)] = np.nan
+                z_plot = np.maximum(np.nan_to_num(np.asarray(z, dtype=float), nan=0.0, posinf=0.0, neginf=0.0), 0.0)
                 ax.plot_surface(X, Y, z_plot, color=color, alpha=0.48, linewidth=0, antialiased=True)
                 handles.append(Patch(facecolor=color, edgecolor=color, alpha=0.48, label=label))
             ax.set_xlabel(pretty_label(reward_cols[1]), labelpad=14)
             ax.set_ylabel(pretty_label(reward_cols[0]), labelpad=16)
             ax.set_zlabel("Recovered mixed density / probability", labelpad=16)
-            ax.set_box_aspect((1.60, 1.05, 0.55))
+            ax.set_box_aspect((1.20, 1.00, 0.60))
             ax.view_init(elev=24, azim=-55)
             if payloads[0]["joint"]["kind1"] == "discrete":
                 ax.set_xticks(payloads[0]["joint"]["y"])
@@ -821,7 +833,7 @@ def plot_overlay(payloads: List[dict], labels: List[str], reward_cols: Sequence[
             ax.legend(handles=handles, loc="upper right")
             p = out_dir / "overlay_joint_surface3d.png"
             fig.subplots_adjust(left=0.03, right=0.96, bottom=0.08, top=0.92)
-            fig.savefig(p, bbox_inches="tight", pad_inches=0.35, dpi=700)
+            fig.savefig(p, bbox_inches="tight", pad_inches=0.30, dpi=300)
             plt.close(fig)
             paths["overlay_joint_surface3d"] = str(p)
         except Exception as e:
@@ -844,7 +856,7 @@ def plot_overlay(payloads: List[dict], labels: List[str], reward_cols: Sequence[
                 if A["kind0"] == "discrete":
                     plt.yticks(A["x"])
                 p = out_dir / "overlay_joint_difference_heatmap.png"
-                fig.savefig(p, bbox_inches="tight",dpi=700)
+                fig.savefig(p, bbox_inches="tight", dpi=300)
                 plt.close(fig)
                 paths["overlay_joint_difference_heatmap"] = str(p)
     return paths

@@ -38,7 +38,7 @@ from ke_drl.api import (
     plot_total_loss,
     recover_joint_beta,
 )
-from ke_drl.evaluation_metric import embedding_test_risk
+from ke_drl.evaluation_metric import projected_bellman_risk
 from ke_drl.matern_kernel import matern_kernel
 
 
@@ -1303,6 +1303,39 @@ def _project_to_simplex(v: torch.Tensor) -> torch.Tensor:
         return torch.full_like(x, 1.0 / x.numel(), dtype=torch.float64).to(dtype=torch.float32)
     return (w / total).to(dtype=torch.float32)
 
+
+def _probability_weights_np(weights, n_atoms: Optional[int] = None) -> np.ndarray:
+    """Return a finite nonnegative vector with sum one."""
+    w = np.asarray(
+        weights.detach().cpu().numpy() if isinstance(weights, torch.Tensor) else weights,
+        dtype=float,
+    ).reshape(-1)
+    if n_atoms is not None and w.size != int(n_atoms):
+        raise ValueError(f"Expected {int(n_atoms)} density weights, got {w.size}.")
+    if w.size == 0:
+        raise ValueError("Density weights must be non-empty.")
+    w = np.maximum(np.nan_to_num(w, nan=0.0, posinf=0.0, neginf=0.0), 0.0)
+    total = float(w.sum())
+    if total <= 0.0 or not np.isfinite(total):
+        w = np.full(w.size, 1.0 / float(w.size), dtype=float)
+    else:
+        w = w / total
+    return w.astype(float)
+
+
+def _probability_weights_tensor(weights, n_atoms: int) -> torch.Tensor:
+    return torch.as_tensor(_probability_weights_np(weights, n_atoms=n_atoms), dtype=torch.float32)
+
+
+def _probability_weight_diagnostics(weights, prefix: str = "density_weight") -> Dict[str, float]:
+    w = _probability_weights_np(weights)
+    return {
+        f"{prefix}_sum": float(w.sum()),
+        f"{prefix}_min": float(w.min()),
+        f"{prefix}_max": float(w.max()),
+        f"{prefix}_n_positive": int(np.sum(w > 1e-12)),
+    }
+
 def _project_rows_to_simplex(W: torch.Tensor, chunk_size: int = 2048) -> torch.Tensor:
     W = torch.as_tensor(W, dtype=torch.float32)
     rows = []
@@ -1532,6 +1565,7 @@ def _prepare_density_weights(
 
     if K_Z is None:
         w = _project_to_simplex(beta)
+        w = _probability_weights_tensor(w, n_atoms=int(n_atoms))
         diag = {
             **base_diag,
             "projection_method": "euclidean_simplex_fallback_no_K_Z",
@@ -1551,6 +1585,7 @@ def _prepare_density_weights(
         max_iter=int(projection_max_iter),
         tol=float(projection_tol),
     )
+    w = _probability_weights_tensor(w, n_atoms=int(n_atoms))
     return w, {**base_diag, **metric_diag}
 
 def _finite_1d_np(x: Optional[np.ndarray]) -> np.ndarray:
@@ -1677,8 +1712,7 @@ def _enforce_reward_support_raw(
     - Discrete/count-like rewards are snapped to the observed integer support.
     - Nonnegative rewards are clipped below at 0.
 
-    This is applied before evaluation plots and before the holdout-risk calculation
-    that depends on reward atom locations.
+    This is applied before evaluation plots that depend on reward atom locations.
 
     force_discrete_dims can be used to override the heuristic detection for
     selected reward dimensions.
@@ -1781,6 +1815,8 @@ def recover_marginal_densities_per_dim(
         n_atoms=m,
         K_Z=K_proj,
     )
+    weights_t = _probability_weights_tensor(weights_t, n_atoms=m)
+    proj_diag = {**proj_diag, **_probability_weight_diagnostics(weights_t)}
     weights_np = weights_t.detach().cpu().numpy().astype(float)
     Z_np = Z.detach().cpu().numpy().astype(float)
     obs_np = None
@@ -2048,6 +2084,12 @@ def _optimize_induced_probability_weights(
     converged = False
 
     print_every = max(1, int(print_every))
+    if int(steps) <= 0:
+        print(
+            "Warning: --density-recovery-steps <= 0; using the simplex initialization "
+            "without fitting recovered density/PMF weights.",
+            flush=True,
+        )
     for t in range(int(steps)):
         opt.zero_grad(set_to_none=True)
         w = torch.softmax(theta, dim=0)
@@ -2194,7 +2236,9 @@ def recover_marginal_densities_per_dim_induced(
         print_every=int(args.density_recovery_print_every),
     )
 
+    weights_t = _probability_weights_tensor(weights_t, n_atoms=m)
     weights_np = weights_t.detach().cpu().numpy().astype(float).reshape(-1)
+    diag = {**diag, **_probability_weight_diagnostics(weights_t)}
     Z_np = Z_raw.detach().cpu().numpy().astype(float)
     obs_np = None
     if observed_rewards_raw is not None:
@@ -2344,19 +2388,19 @@ def plot_mean_embedding_2d_continuous_contour(
     csv_path = outdir / f"{policy_name}_mean_embedding_2d_continuous_values.csv"
     np.savetxt(csv_path, csv_arr, delimiter=",", header=f"{reward_cols[0]},{reward_cols[1]},mean_embedding_value", comments="")
 
-    fig = plt.figure(figsize=(7.5, 5.8))
+    fig = plt.figure(figsize=(6.8, 6.8))
     cf = plt.contourf(Y, X, V, levels=int(max(5, levels)))
     plt.colorbar(cf, label="Mean embedding value")
     plt.xlabel(_pretty_label(reward_cols[1]))
     plt.ylabel(_pretty_label(reward_cols[0]))
     plt.title(f"{policy_name}: continuous 2D mean embedding contour")
     contour_path = outdir / f"{policy_name}_mean_embedding_2d_continuous_contour.png"
-    fig.savefig(contour_path, bbox_inches="tight", dpi=700)
+    fig.savefig(contour_path, bbox_inches="tight", dpi=300)
     plt.close(fig)
 
     try:
         from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-        fig = plt.figure(figsize=(9, 7))
+        fig = plt.figure(figsize=(7.2, 7.2))
         ax = fig.add_subplot(111, projection="3d")
         ax.plot_surface(Y, X, V, alpha=0.75, linewidth=0, antialiased=True)
         ax.set_xlabel(_pretty_label(reward_cols[1]))
@@ -2364,7 +2408,7 @@ def plot_mean_embedding_2d_continuous_contour(
         ax.set_zlabel("Mean embedding value", labelpad=14)
         fig.subplots_adjust(left=0.03, right=0.88, bottom=0.05, top=0.92)
         surface_path = outdir / f"{policy_name}_mean_embedding_2d_continuous_surface3d.png"
-        fig.savefig(surface_path, bbox_inches="tight", pad_inches=0.4, dpi=700)
+        fig.savefig(surface_path, bbox_inches="tight", pad_inches=0.35, dpi=300)
         plt.close(fig)
     except Exception:
         surface_path = None
@@ -2550,23 +2594,21 @@ def _build_joint_surface_from_atoms(
         return None
 
     if density_weights is not None:
-        weights = np.asarray(
-            density_weights.detach().cpu().numpy() if isinstance(density_weights, torch.Tensor) else density_weights,
-            dtype=float,
-        ).reshape(-1)
+        try:
+            weights = _probability_weights_np(density_weights, n_atoms=Z.shape[0])
+        except ValueError:
+            return None
     else:
         try:
             weights_t, _ = _prepare_density_weights(torch.as_tensor(beta_full), n_atoms=Z.shape[0])
         except Exception:
             return None
-        weights = weights_t.detach().cpu().numpy().astype(float).reshape(-1)
+        try:
+            weights = _probability_weights_np(weights_t, n_atoms=Z.shape[0])
+        except ValueError:
+            return None
     if weights.size != Z.shape[0]:
         return None
-    weights = np.maximum(np.nan_to_num(weights, nan=0.0, posinf=0.0, neginf=0.0), 0.0)
-    total_w = float(weights.sum())
-    if total_w <= 0.0 or not np.isfinite(total_w):
-        return None
-    weights = weights / total_w
 
     dim_payload = []
     for d in [0, 1]:
@@ -2645,8 +2687,11 @@ def _build_overlay_data_explicit(
                 dens = _normalize_nonnegative_density(dens, grid)
             else:
                 dens = np.maximum(dens, 0.0)
-                s = dens.sum()
-                dens = dens / s if s > 0 else dens
+                s = float(dens.sum())
+                if s > 0.0 and np.isfinite(s):
+                    dens = dens / s
+                elif dens.size > 0:
+                    dens = np.full_like(dens, 1.0 / float(dens.size), dtype=float)
 
             overlay_one_d[str(d)] = {
                 "kind": kind,
@@ -2747,8 +2792,11 @@ def _extract_1d_density_from_payload(payload: dict, dim_idx: int) -> Optional[Di
             dens = _normalize_nonnegative_density(dens, grid)
         else:
             dens = np.maximum(dens, 0.0)
-            s = dens.sum()
-            dens = dens / s if s > 0 else dens
+            s = float(dens.sum())
+            if s > 0.0 and np.isfinite(s):
+                dens = dens / s
+            elif dens.size > 0:
+                dens = np.full_like(dens, 1.0 / float(dens.size), dtype=float)
         return {"kind": kind, "grid": grid, "density": dens, "ylabel": ylabel}
     return None
 
@@ -2772,18 +2820,11 @@ def _policy_overlay_label(name: str) -> str:
     return mapping.get(name, _pretty_label(name))
 
 
-def _mask_zero_surface(z: np.ndarray, rel_tol: float = 1e-6) -> np.ndarray:
+def _finite_surface_values(z: np.ndarray) -> np.ndarray:
     z = np.asarray(z, dtype=float)
     if z.size == 0:
         return z
-    z = np.nan_to_num(z, nan=0.0, posinf=0.0, neginf=0.0)
-    zmax = float(np.nanmax(np.abs(z))) if np.isfinite(z).any() else 0.0
-    if zmax <= 0.0:
-        return np.full_like(z, np.nan)
-    thresh = max(rel_tol * zmax, 1e-12)
-    z_masked = z.copy()
-    z_masked[np.abs(z_masked) <= thresh] = np.nan
-    return z_masked
+    return np.nan_to_num(z, nan=0.0, posinf=0.0, neginf=0.0)
 
 
 def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_cols: List[str], label_A: str, label_B: str, out_dir: Path) -> Dict[str, str]:
@@ -2861,9 +2902,7 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
     def _draw_contour(ax, surface_tuple, color: str, linestyle: str, label: str) -> None:
         X, Y, z = _surface_grid(surface_tuple)
 
-        # Do not draw the near-zero boundary contour. That boundary is what makes
-        # the mean-embedding plot look like it spills outside the useful support.
-        z_plot = _mask_zero_surface(z, rel_tol=1e-4)
+        z_plot = _finite_surface_values(z)
         finite = z_plot[np.isfinite(z_plot)]
         if finite.size == 0:
             return
@@ -2941,7 +2980,7 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         gB, fB, kindB = B["grid"], B["density"], B["kind"]
         kind = kindA if kindA == kindB else "continuous"
 
-        fig = plt.figure(figsize=(7, 5))
+        fig = plt.figure(figsize=(6.5, 6.5))
         if kind == "discrete":
             all_support, vals_A, vals_B, xlim, xticks = _pmf_plot_arrays(gA, fA, gB, fB, rname)
             width = 0.35
@@ -2962,7 +3001,7 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         plt.title(title)
         plt.legend(frameon=True)
         p = out_dir / f"overlay_1d_{rname}.png"
-        fig.savefig(p, bbox_inches="tight", pad_inches=0.15, dpi=700)
+        fig.savefig(p, bbox_inches="tight", pad_inches=0.15, dpi=300)
         plt.close(fig)
 
         paths[f"overlay_1d_{rname}"] = str(p)
@@ -2984,7 +3023,7 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         # -------------------------
         # Overlay contour of the RKHS mean embedding, not density.
         # -------------------------
-        fig = plt.figure(figsize=(7.5, 5.8))
+        fig = plt.figure(figsize=(6.8, 6.8))
         ax = fig.add_subplot(111)
         _draw_contour(ax, mean_A, color_A, ls_A, pretty_A)
         _draw_contour(ax, mean_B, color_B, ls_B, pretty_B)
@@ -2993,7 +3032,7 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         ax.set_ylabel(pretty_rewards[0])
         ax.legend(handles=contour_handles, frameon=True)
         p = out_dir / "overlay_2d_mean_embedding_contour.png"
-        fig.savefig(p, bbox_inches="tight", pad_inches=0.20, dpi=700)
+        fig.savefig(p, bbox_inches="tight", pad_inches=0.20, dpi=300)
         plt.close(fig)
         paths["overlay_2d_mean_embedding_contour"] = str(p)
 
@@ -3002,11 +3041,11 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         # -------------------------
         XA, YA, zA = _surface_grid(mean_A)
         XB, YB, zB = _surface_grid(mean_B)
-        zA_plot = _mask_zero_surface(zA, rel_tol=1e-4)
-        zB_plot = _mask_zero_surface(zB, rel_tol=1e-4)
+        zA_plot = _finite_surface_values(zA)
+        zB_plot = _finite_surface_values(zB)
 
         from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
-        fig = plt.figure(figsize=(12.6, 8.8), constrained_layout=False)
+        fig = plt.figure(figsize=(8.8, 8.8), constrained_layout=False)
         ax = fig.add_subplot(111, projection="3d")
         ax.set_proj_type("ortho")
         ax.plot_surface(XA, YA, zA_plot, color=color_A, alpha=0.45, linewidth=0, antialiased=True)
@@ -3014,7 +3053,7 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         ax.set_xlabel(pretty_rewards[1], labelpad=14)
         ax.set_ylabel(pretty_rewards[0], labelpad=16)
         ax.set_zlabel("Mean embedding value", labelpad=16)
-        ax.set_box_aspect((1.60, 1.05, 0.55))
+        ax.set_box_aspect((1.20, 1.00, 0.60))
         ax.view_init(elev=24, azim=-55)
         _set_discrete_ticks_if_needed(ax, mean_A)
         dlims = _surface_data_limits((XA, YA, zA_plot), (XB, YB, zB_plot))
@@ -3025,7 +3064,7 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         ax.legend(handles=surface_handles, loc="upper right")
         fig.subplots_adjust(left=0.03, right=0.96, bottom=0.08, top=0.92)
         p = out_dir / "overlay_3d_mean_embedding_surface.png"
-        fig.savefig(p, bbox_inches="tight", pad_inches=0.35, dpi=700)
+        fig.savefig(p, bbox_inches="tight", pad_inches=0.30, dpi=300)
         plt.close(fig)
         paths["overlay_3d_mean_embedding_surface"] = str(p)
 
@@ -3033,13 +3072,13 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         # Combined panel: mean embedding top row + recovered marginals bottom row.
         # No density surface and no difference heatmap.
         # -------------------------
-        fig = plt.figure(figsize=(19.0, 12.0), constrained_layout=False)
+        fig = plt.figure(figsize=(12.0, 12.0), constrained_layout=False)
         gs = fig.add_gridspec(
             2, 2,
-            width_ratios=[1.0, 1.55],
-            height_ratios=[1.15, 1.0],
-            left=0.06, right=0.97, bottom=0.06, top=0.90,
-            wspace=0.22, hspace=0.30,
+            width_ratios=[1.0, 1.0],
+            height_ratios=[1.0, 1.0],
+            left=0.07, right=0.96, bottom=0.07, top=0.90,
+            wspace=0.25, hspace=0.34,
         )
 
         ax1 = fig.add_subplot(gs[0, 0])
@@ -3058,7 +3097,7 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         ax2.set_xlabel(pretty_rewards[1], labelpad=10)
         ax2.set_ylabel(pretty_rewards[0], labelpad=12)
         ax2.set_zlabel("Mean embedding value", labelpad=10)
-        ax2.set_box_aspect((1.45, 1.0, 0.65))
+        ax2.set_box_aspect((1.12, 1.0, 0.65))
         ax2.view_init(elev=26, azim=-50)
         ax2.tick_params(axis="x", pad=2, labelsize=9)
         ax2.tick_params(axis="y", pad=2, labelsize=9)
@@ -3120,7 +3159,7 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
 
         fig.suptitle(f"Mean Embedding and Recovered Marginal Comparison: {pretty_A} vs {pretty_B}", y=0.965)
         p = out_dir / "overlay_all_mean_embedding_marginal_comparison.png"
-        fig.savefig(p, bbox_inches="tight", pad_inches=0.35, dpi=700)
+        fig.savefig(p, pad_inches=0.25, dpi=300)
         plt.close(fig)
         paths["overlay_all_mean_embedding_marginal_comparison"] = str(p)
     else:
@@ -4069,7 +4108,7 @@ def run_one_policy(
     _save_array_csv(out_dir / "mean_embedding_state_action_basis_indices.csv", sa_basis_idx.detach().cpu(), ["basis_row_index"])
     save_json(out_dir / "mean_embedding_basis_diagnostics.json", mean_embedding_basis_info)
 
-    t_test_start = time.time()
+    risk_eval_start = time.time()
     t0 = tic(f'START test state-action kernel [{policy_name}]')
     sa_test = torch.cat([s0_test, a0_test], dim=1)
     k_sa_test = matern_kernel(sa_test, sa_basis, nu=nu_sa, length_scale=ell_sa, sigma=sigma_sa)
@@ -4097,23 +4136,26 @@ def run_one_policy(
         }
 
     test_W_diagnostics = diagnose_W(k_sa_test, B_hat, "TEST")
-    risk_test = embedding_test_risk(
-        Z_test=r_test,
-        k_sa_test=k_sa_test,
-        B_hat_torch=B_hat,
-        Z_grid=Z_grid,
-        nu=nu_Z,
-        length_scale=ell_Z,
-        sigma=sigma_Z,
+
+    K_Z_fit = pre.get("K_Z", None)
+    if not isinstance(K_Z_fit, torch.Tensor):
+        K_Z_fit = matern_kernel(Z_grid, Z_grid, nu=nu_Z, length_scale=ell_Z, sigma=sigma_Z)
+    risk = float(
+        projected_bellman_risk(
+            k_current=pre["k_sa"],
+            phi_current=pre["Phi"],
+            B_hat_torch=B_hat,
+            K_Z=K_Z_fit,
+            reduction="mean",
+        ).detach().cpu().item()
     )
-    test_time = time.time() - t_test_start
-    risk_test = float(risk_test)
-    risk_test_sigma_normalized = float(risk_test / max(sigma_Z ** 2, 1e-30))
+    risk_eval_time = time.time() - risk_eval_start
 
     print(
-        f'[{policy_name}] test_risk={risk_test:.6f} | '
-        f'test_risk_sigma_normalized={risk_test_sigma_normalized:.6f} | '
-        f'train={train_time/3600:.2f}h | test={test_time/60:.2f}m'
+        f"[{policy_name}] risk={risk:.8e} | "
+        f"projected_bellman_fit_risk | train={train_time/3600:.2f}h | "
+        f"risk_eval={risk_eval_time/60:.2f}m",
+        flush=True,
     )
 
     metrics = {
@@ -4158,9 +4200,10 @@ def run_one_policy(
             },
         },
         'train_time_sec': float(train_time),
-        'test_time_sec': float(test_time),
-        'test_risk': float(risk_test),
-        'test_risk_sigma_normalized': float(risk_test_sigma_normalized),
+        'risk_eval_time_sec': float(risk_eval_time),
+        'risk': float(risk),
+        'risk_name': 'projected_bellman_fit_risk',
+        'projected_bellman_fit_risk': float(risk),
         'test_W_diagnostics': test_W_diagnostics,
         'surrogate_distill_mu_mse': float(mu_mse),
         'surrogate_distill_logstd_mse': float(ls_mse),
@@ -4868,9 +4911,9 @@ def main() -> None:
             print(f'  {A} policy action mean      : {_array_str(_np(aA_raw.mean(0)))}')
             print(f'  {B} policy action mean      : {_array_str(_np(aB_raw.mean(0)))}')
             print('  Per-dim mean |Δ| raw        :', _array_str(per_dim_abs_delta_raw))
-            print('\nKE-DRL test risks:')
-            print(f"  {A}: test={compare_results[A]['test_risk']:.6f} normalized={compare_results[A]['test_risk_sigma_normalized']:.6f}")
-            print(f"  {B}: test={compare_results[B]['test_risk']:.6f} normalized={compare_results[B]['test_risk_sigma_normalized']:.6f}")
+            print('\nKE-DRL projected Bellman risks:')
+            print(f"  {A}: risk={compare_results[A]['risk']:.8e}")
+            print(f"  {B}: risk={compare_results[B]['risk']:.8e}")
             print('\nValue-model cross-metrics:')
             print(f"  {A} policy metrics:", compare_results[A].get('value_metrics', {}))
             print(f"  {B} policy metrics:", compare_results[B].get('value_metrics', {}))
@@ -4888,10 +4931,11 @@ def main() -> None:
                 'policy_A_action_mean_raw': _np(aA_raw.mean(0)).tolist(),
                 'policy_B_action_mean_raw': _np(aB_raw.mean(0)).tolist(),
                 'test_data_action_mean_raw': _np(a0_test_raw.mean(0)).tolist(),
-                'test_risk_A': compare_results[A]['test_risk'],
-                'test_risk_B': compare_results[B]['test_risk'],
-                'test_risk_sigma_normalized_A': compare_results[A]['test_risk_sigma_normalized'],
-                'test_risk_sigma_normalized_B': compare_results[B]['test_risk_sigma_normalized'],
+                'risk_A': compare_results[A]['risk'],
+                'risk_B': compare_results[B]['risk'],
+                'risk_name': 'projected_bellman_fit_risk',
+                'projected_bellman_fit_risk_A': compare_results[A]['projected_bellman_fit_risk'],
+                'projected_bellman_fit_risk_B': compare_results[B]['projected_bellman_fit_risk'],
             }
 
             if do_plots:

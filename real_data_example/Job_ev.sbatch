@@ -220,7 +220,7 @@ python -u "${PYFILE}" \
   --simplex-calibrate-B 0 \
   --simplex-calib-ridge 1e-3 \
   --simplex-calib-max-rows 0 \
-  --density-recovery-steps 0 \
+  --density-recovery-steps 20000 \
   --density-recovery-lr 1e-2 \
   --density-recovery-tol 1e-10 \
   --density-recovery-ridge 1e-6 \

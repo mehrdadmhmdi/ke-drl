@@ -96,6 +96,11 @@ def projected_bellman_test_risk(
     raise ValueError("reduction must be one of {'none', 'sum', 'mean'}.")
 
 
+def projected_bellman_risk(*args, **kwargs) -> torch.Tensor:
+    """Alias for the zero-baseline projected Bellman diagnostic."""
+    return projected_bellman_test_risk(*args, **kwargs)
+
+
 @torch.no_grad()
 def projected_bellman_test_risk_from_inputs(
     *,
