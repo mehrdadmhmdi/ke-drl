@@ -3924,21 +3924,18 @@ def run_one_policy(
         discrete_dims=discrete_reward_dims,
         target_p_choice=target_p_choice,
         target_p_params=target_p_params,
-        # Legacy return-kernel names kept for older ke_drl versions.
+        # Native ke_drl uses (nu, length_scale, sigma) for return-space Z
+        # and the x_* parameters for the state-action kernel. The holdout
+        # risk below must use the same state-action kernel as fitting.
         nu=nu_Z,
         length_scale=ell_Z,
         sigma=sigma_Z,
-        # Split-kernel names are passed only when the installed ke_drl API accepts them.
-        # If older ke_drl drops them, this script will still use the separate state-action
-        # kernel for holdout-risk diagnostics below, and it will print the dropped keys.
-        nu_sa=nu_sa,
-        length_scale_sa=ell_sa,
-        ell_sa=ell_sa,
-        sigma_sa=sigma_sa,
-        nu_Z=nu_Z,
-        length_scale_Z=ell_Z,
-        ell_Z=ell_Z,
-        sigma_Z=sigma_Z,
+        x_nu=nu_sa,
+        x_length_scale=ell_sa,
+        x_sigma=sigma_sa,
+        ratio_nu=nu_sa,
+        ratio_length_scale=ell_sa,
+        ratio_sigma=sigma_sa,
         gamma_val=gamma_val,
         lambda_reg=lambda_reg,
         lambda_B=float(getattr(args, "lambda_B", 0.0)),
@@ -4157,6 +4154,7 @@ def run_one_policy(
                 'nu_sa': float(nu_sa),
                 'ell_sa': float(ell_sa),
                 'sigma_sa': float(sigma_sa),
+                'ke_drl_api_params': 'x_nu/x_length_scale/x_sigma',
             },
         },
         'train_time_sec': float(train_time),
