@@ -48,7 +48,7 @@ conda activate delta_env
 set -u
 
 DATA_BASE="${DATA_BASE:-./Expedia_data}"
-CKPT_DIR="${CKPT_DIR:-./policies_linear2}"
+CKPT_DIR="${CKPT_DIR:-./policies_linear3}"
 DEVICE="${DEVICE:-cpu}"
 SEED="${SEED:-2026}"
 
@@ -77,23 +77,25 @@ python -u d3rlpy_policy_opt.py \
   --integer-action-col total_promotions \
   --reward-cols gross_revenue_per_night,total_clicks \
   --reward-weight-mode rank_softmax \
-  --reward-temperature 10 \
-  --click-reward-temperature 14 \
-  --positive-weight-boost 20 \
-  --click-weight-boost 30 \
+  --reward-temperature 12 \
+  --click-reward-temperature 18 \
+  --positive-weight-boost 35 \
+  --click-weight-boost 50 \
   --weight-max 1000 \
   --enable-policy-contrast-shift 1 \
-  --contrast-top-quantile 0.90 \
-  --revenue-contrast-strength 0.85 \
-  --click-contrast-strength 1.25 \
-  --action-shift-clip-std 2.0 \
-  --revenue-price-shift-std 0.70 \
-  --revenue-promotion-shift-std -0.45 \
-  --revenue-spread-shift-std 0.25 \
-  --click-price-shift-std -0.85 \
-  --click-promotion-shift-std 1.35 \
-  --click-spread-shift-std -0.25 \
-  --linear-ridge 1e-3 \
+  --contrast-top-quantile 0.92 \
+  --revenue-contrast-strength 1.20 \
+  --click-contrast-strength 1.65 \
+  --action-shift-clip-std 2.6 \
+  --revenue-price-shift-std 1.05 \
+  --revenue-promotion-shift-std -0.85 \
+  --revenue-spread-shift-std 0.45 \
+  --click-price-shift-std -1.20 \
+  --click-promotion-shift-std 2.05 \
+  --click-spread-shift-std -0.45 \
+  --min-abs-mean-state-coef-std 0.025 \
+  --min-abs-logstd-state-coef-std 0.003 \
+  --linear-ridge 5e-4 \
   --min-policy-std 0.05 \
   --max-policy-std 25.0 \
   --policy-std-ridge 1e-3 \

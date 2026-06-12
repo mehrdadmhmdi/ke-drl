@@ -71,6 +71,11 @@ python -u plot_recovered_densities.py \
   --bandwidth-per-dim "${BW_PER_DIM}" \
   --steps 10000 \
   --lr 0.005 \
+  --ridge 1e-5 \
+  --init uniform \
+  --anchor uniform \
+  --l2-lambda 1e-3 \
+  --kl-lambda 1e-3 \
   --quad-points 31 \
   --device cpu
 

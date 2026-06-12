@@ -395,6 +395,9 @@ def optimize_probability_weights(
     steps: int,
     tol: float,
     init: str,
+    anchor: str,
+    l2_lambda: float,
+    kl_lambda: float,
     device: str,
     print_every: int,
 ) -> Tuple[np.ndarray, np.ndarray, Dict[str, float], List[dict]]:
@@ -406,10 +409,26 @@ def optimize_probability_weights(
     m = beta.numel()
     K = matern_kernel(Zdict.float(), Zdict.float(), nu=nu, length_scale=ell, sigma=sigma).to(dtype)
     K = 0.5 * (K + K.T)
-    K = K + float(ridge) * torch.eye(m, dtype=dtype, device=dev)
+    K_reg = K + float(ridge) * torch.eye(m, dtype=dtype, device=dev)
 
     # beta_tilde(w) = M w, M = (K + ridge I)^(-1) A
-    M = torch.linalg.solve(K, A)
+    M = torch.linalg.solve(K_reg, A)
+
+    def weights_from_mode(mode: str) -> torch.Tensor:
+        mode = str(mode)
+        if mode == "abs_beta":
+            w0 = torch.abs(beta) + 1e-8
+        elif mode == "positive_beta":
+            w0 = torch.clamp(beta, min=0.0) + 1e-8
+        elif mode == "uniform":
+            w0 = torch.ones(m, dtype=dtype, device=dev)
+        else:
+            raise ValueError(f"Unknown recovery weight mode: {mode}")
+        total = torch.sum(w0)
+        if not torch.isfinite(total) or float(total.detach().cpu()) <= 1e-30:
+            w0 = torch.ones(m, dtype=dtype, device=dev)
+            total = torch.sum(w0)
+        return w0 / total.clamp_min(1e-30)
 
     if init == "abs_beta":
         init_w = torch.abs(beta) + 1e-8
@@ -421,6 +440,11 @@ def optimize_probability_weights(
         theta = torch.log(init_w).clone().detach().requires_grad_(True)
     else:
         theta = torch.zeros(m, dtype=dtype, device=dev, requires_grad=True)
+
+    anchor_mode = init if str(anchor) == "init" else str(anchor)
+    anchor_w = weights_from_mode(anchor_mode).detach()
+    l2_lambda = float(l2_lambda)
+    kl_lambda = float(kl_lambda)
 
     opt = torch.optim.Adam([theta], lr=float(lr))
     history: List[dict] = []
@@ -437,7 +461,10 @@ def optimize_probability_weights(
         w = torch.softmax(theta, dim=0)
         beta_tilde = M @ w
         diff = beta_tilde - beta
-        obj = diff @ K @ diff
+        fit_obj = diff @ K @ diff
+        l2_penalty = l2_lambda * torch.sum((w - anchor_w) ** 2)
+        kl_penalty = kl_lambda * torch.sum(w * (torch.log(w + 1e-30) - torch.log(anchor_w + 1e-30)))
+        obj = fit_obj + l2_penalty + kl_penalty
         obj.backward()
         opt.step()
 
@@ -448,13 +475,16 @@ def optimize_probability_weights(
             l1_w_change = math.inf if prev_w is None else float(torch.sum(torch.abs(w_now - prev_w)).cpu().item())
             if (t == 0) or ((t + 1) % int(print_every) == 0) or (t + 1 == int(steps)):
                 print(
-                    f"iter={t+1:6d} obj={obj_val:.8e} rel_change={rel_change:.3e} "
+                    f"iter={t+1:6d} obj={obj_val:.8e} fit={float(fit_obj.detach().cpu().item()):.8e} rel_change={rel_change:.3e} "
                     f"w_l1_change={l1_w_change:.3e} w_min={float(w_now.min()):.3e} w_max={float(w_now.max()):.3e}",
                     flush=True,
                 )
             history.append({
                 "iter": int(t + 1),
                 "objective": obj_val,
+                "fit_objective_rkhs_sq": float(fit_obj.detach().cpu().item()),
+                "l2_penalty": float(l2_penalty.detach().cpu().item()),
+                "kl_penalty": float(kl_penalty.detach().cpu().item()),
                 "relative_objective_change": float(rel_change),
                 "w_l1_change": float(l1_w_change),
             })
@@ -467,7 +497,10 @@ def optimize_probability_weights(
         w = torch.softmax(theta, dim=0)
         beta_tilde = M @ w
         diff = beta_tilde - beta
-        obj = diff @ K @ diff
+        fit_obj = diff @ K @ diff
+        l2_penalty = l2_lambda * torch.sum((w - anchor_w) ** 2)
+        kl_penalty = kl_lambda * torch.sum(w * (torch.log(w + 1e-30) - torch.log(anchor_w + 1e-30)))
+        obj = fit_obj + l2_penalty + kl_penalty
         target_norm_sq = beta @ K @ beta
         induced_norm_sq = beta_tilde @ K @ beta_tilde
         values_target = K @ beta
@@ -482,12 +515,21 @@ def optimize_probability_weights(
         corr = float(np.corrcoef(val_t, val_i)[0, 1]) if np.std(val_t) > 1e-12 and np.std(val_i) > 1e-12 else float("nan")
         entropy = float(-(w * torch.log(w + 1e-30)).sum().cpu().item())
         diagnostics = {
-            "objective_rkhs_sq": float(obj.cpu().item()),
-            "objective_rkhs": float(torch.sqrt(torch.clamp(obj, min=0)).cpu().item()),
+            "density_recovery_anchor": str(anchor),
+            "density_recovery_anchor_resolved": str(anchor_mode),
+            "density_recovery_l2_lambda": float(l2_lambda),
+            "density_recovery_kl_lambda": float(kl_lambda),
+            "density_recovery_strictly_regularized": bool(l2_lambda > 0.0 or kl_lambda > 0.0),
+            "objective_total": float(obj.cpu().item()),
+            "objective_fit_rkhs_sq": float(fit_obj.cpu().item()),
+            "objective_l2_penalty": float(l2_penalty.cpu().item()),
+            "objective_kl_penalty": float(kl_penalty.cpu().item()),
+            "objective_rkhs_sq": float(fit_obj.cpu().item()),
+            "objective_rkhs": float(torch.sqrt(torch.clamp(fit_obj, min=0)).cpu().item()),
             "target_rkhs_norm_sq": float(target_norm_sq.cpu().item()),
             "target_rkhs_norm": float(torch.sqrt(torch.clamp(target_norm_sq, min=0)).cpu().item()),
             "induced_rkhs_norm_sq": float(induced_norm_sq.cpu().item()),
-            "relative_rkhs_error": float(torch.sqrt(torch.clamp(obj, min=0) / torch.clamp(target_norm_sq, min=1e-30)).cpu().item()),
+            "relative_rkhs_error": float(torch.sqrt(torch.clamp(fit_obj, min=0) / torch.clamp(target_norm_sq, min=1e-30)).cpu().item()),
             "beta_rmse": float(np.sqrt(np.mean((beta_tilde_np - beta_np) ** 2))),
             "beta_l2": float(np.linalg.norm(beta_tilde_np - beta_np)),
             "beta_max_abs": float(np.max(np.abs(beta_tilde_np - beta_np))),
@@ -499,6 +541,11 @@ def optimize_probability_weights(
             "w_entropy": entropy,
             "w_effective_n_exp_entropy": float(np.exp(entropy)),
             "w_effective_n_inverse_hhi": float(1.0 / np.sum(w_np**2)),
+            "anchor_w_min": float(as_numpy(anchor_w).min()),
+            "anchor_w_max": float(as_numpy(anchor_w).max()),
+            "anchor_w_entropy": float(-(anchor_w * torch.log(anchor_w + 1e-30)).sum().cpu().item()),
+            "w_anchor_l2": float(torch.linalg.norm(w - anchor_w).cpu().item()),
+            "w_anchor_kl": float(torch.sum(w * (torch.log(w + 1e-30) - torch.log(anchor_w + 1e-30))).cpu().item()),
             "beta_hat_sum": float(beta_np.sum()),
             "beta_hat_min": float(beta_np.min()),
             "beta_hat_max": float(beta_np.max()),
@@ -959,6 +1006,9 @@ def recovery_plot(policy_dir: Path, args, out_dir: Path, label: Optional[str] = 
         steps=args.steps,
         tol=args.tol,
         init=args.init,
+        anchor=args.anchor,
+        l2_lambda=args.l2_lambda,
+        kl_lambda=args.kl_lambda,
         device=args.device,
         print_every=args.print_every,
     )
@@ -1067,6 +1117,9 @@ def main() -> None:
     parser.add_argument("--lr", type=float, default=1e-2)
     parser.add_argument("--tol", type=float, default=1e-10)
     parser.add_argument("--init", type=str, default="positive_beta", choices=["uniform", "abs_beta", "positive_beta"])
+    parser.add_argument("--anchor", type=str, default="uniform", choices=["uniform", "abs_beta", "positive_beta", "init"])
+    parser.add_argument("--l2-lambda", type=float, default=0.0)
+    parser.add_argument("--kl-lambda", type=float, default=0.0)
     parser.add_argument("--device", type=str, default="cuda")
     parser.add_argument("--print-every", type=int, default=500)
 

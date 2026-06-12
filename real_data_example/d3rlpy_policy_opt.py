@@ -17,6 +17,7 @@ linear_gaussian_policy_<reward>.npz/json files.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import random
@@ -544,6 +545,82 @@ def compute_reward_contrast_shift(
     return shift.astype(np.float64), diag
 
 
+def _stable_sign(*parts: object) -> float:
+    key = "|".join(str(p) for p in parts)
+    digest = hashlib.sha256(key.encode("utf-8")).digest()
+    return 1.0 if (digest[0] % 2 == 0) else -1.0
+
+
+def enforce_min_abs_state_action_coefficients(
+    theta: np.ndarray,
+    X_std: np.ndarray,
+    A_std: np.ndarray,
+    weights: np.ndarray,
+    state_names: Sequence[str],
+    action_names: Sequence[str],
+    reward_name: str,
+    min_abs: float,
+    label: str,
+) -> Tuple[np.ndarray, Dict[str, object]]:
+    """Ensure every encoded state feature has a nonzero coefficient for every action.
+
+    Coefficient signs are data-informed: we use the weighted state-action
+    covariance sign when available and fall back to a deterministic hash sign
+    for degenerate columns. The floor is in standardized-action units.
+    """
+    theta_in = np.asarray(theta, dtype=np.float64)
+    theta_out = theta_in.copy()
+    floor = float(min_abs)
+    d_s, d_a = theta_out.shape
+    if floor <= 0.0:
+        return theta_out, {
+            "enabled": False,
+            "label": str(label),
+            "min_abs_requested": floor,
+            "n_adjusted": 0,
+        }
+
+    X = np.asarray(X_std, dtype=np.float64)
+    A = np.asarray(A_std, dtype=np.float64)
+    w = np.asarray(weights, dtype=np.float64).reshape(-1)
+    w = np.maximum(w, 1e-12)
+    w = w / max(float(np.sum(w)), 1e-12)
+    x_center = X - np.sum(w[:, None] * X, axis=0, keepdims=True)
+    a_center = A - np.sum(w[:, None] * A, axis=0, keepdims=True)
+    cov = (x_center * w[:, None]).T @ a_center
+
+    adjusted = []
+    for i in range(d_s):
+        for j in range(d_a):
+            if abs(theta_out[i, j]) >= floor:
+                continue
+            sign = np.sign(cov[i, j])
+            if sign == 0.0 or not np.isfinite(sign):
+                sign = _stable_sign(reward_name, label, state_names[i], action_names[j])
+            old = float(theta_out[i, j])
+            theta_out[i, j] = float(sign) * floor
+            adjusted.append({
+                "state": str(state_names[i]),
+                "action": str(action_names[j]),
+                "old": old,
+                "new": float(theta_out[i, j]),
+                "covariance_sign": float(np.sign(cov[i, j])) if np.isfinite(cov[i, j]) else 0.0,
+            })
+
+    abs_vals = np.abs(theta_out)
+    diag = {
+        "enabled": True,
+        "label": str(label),
+        "min_abs_requested": floor,
+        "n_adjusted": int(len(adjusted)),
+        "n_total": int(theta_out.size),
+        "min_abs_after": float(np.min(abs_vals)) if abs_vals.size else float("nan"),
+        "max_abs_after": float(np.max(abs_vals)) if abs_vals.size else float("nan"),
+        "adjusted": adjusted,
+    }
+    return theta_out, diag
+
+
 def fit_weighted_gaussian_mle(
     X_std: np.ndarray,
     A_std: np.ndarray,
@@ -893,6 +970,40 @@ def train_one_reward(
     fit_meta["reward_contrast_shift"] = contrast_diag
     print("reward-contrast intercept shift (standardized action units):", contrast_diag)
 
+    theta_mu_dense, dense_mu_diag = enforce_min_abs_state_action_coefficients(
+        theta=std_params["theta_mu_std"],
+        X_std=X_std,
+        A_std=A_std,
+        weights=weights,
+        state_names=state_names,
+        action_names=action_names,
+        reward_name=reward_name,
+        min_abs=float(args.min_abs_mean_state_coef_std),
+        label="theta_mu_std",
+    )
+    std_params["theta_mu_std"] = theta_mu_dense
+    fit_meta["dense_mean_state_action_dependence"] = dense_mu_diag
+    print("dense mean state-action coefficient floor:", {
+        k: v for k, v in dense_mu_diag.items() if k != "adjusted"
+    })
+
+    theta_sigma_dense, dense_sigma_diag = enforce_min_abs_state_action_coefficients(
+        theta=std_params["theta_sigma_std"],
+        X_std=X_std,
+        A_std=A_std,
+        weights=weights,
+        state_names=state_names,
+        action_names=action_names,
+        reward_name=reward_name,
+        min_abs=float(args.min_abs_logstd_state_coef_std),
+        label="theta_sigma_std",
+    )
+    std_params["theta_sigma_std"] = theta_sigma_dense
+    fit_meta["dense_logstd_state_action_dependence"] = dense_sigma_diag
+    print("dense log-std state-action coefficient floor:", {
+        k: v for k, v in dense_sigma_diag.items() if k != "adjusted"
+    })
+
     theta_mu_raw, eps_mu_raw, theta_sigma_raw, eps_sigma_raw = convert_standardized_policy_to_raw(
         theta_mu_std=std_params["theta_mu_std"],
         epsilon_mu_std=std_params["epsilon_mu_std"],
@@ -1029,6 +1140,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--click-price-shift-std", type=float, default=-0.85)
     p.add_argument("--click-promotion-shift-std", type=float, default=1.35)
     p.add_argument("--click-spread-shift-std", type=float, default=-0.25)
+    p.add_argument(
+        "--min-abs-mean-state-coef-std",
+        type=float,
+        default=0.015,
+        help="Minimum absolute standardized mean-policy coefficient for every encoded state/action pair; 0 disables.",
+    )
+    p.add_argument(
+        "--min-abs-logstd-state-coef-std",
+        type=float,
+        default=0.0,
+        help="Minimum absolute standardized log-std coefficient for every encoded state/action pair; 0 disables.",
+    )
 
     # Legacy arguments accepted but intentionally ignored.  This lets old sbatch
     # files run without accidentally invoking IQL behavior.

@@ -10,7 +10,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-47
+#SBATCH --array=0-23
 
 set -euo pipefail
 
@@ -54,21 +54,21 @@ eval "$(conda shell.bash hook)"
 set -u
 
 DATA_BASE="${DATA_BASE:-./Expedia_data}"
-POLICY_CKPT_DIR="${POLICY_CKPT_DIR:-./policies_linear2}"
+POLICY_CKPT_DIR="${POLICY_CKPT_DIR:-./policies_linear3}"
 STATE_ENCODER_PATH="${STATE_ENCODER_PATH:-${POLICY_CKPT_DIR}/state_encoder.json}"
 PYFILE="${PYFILE:-policy_evaluation.py}"
 TASK="${SLURM_ARRAY_TASK_ID}"
 
-# Main estimation grid.
+# Focused stable grid for the separated policies.
 # The reported risk is the zero-baseline projected Bellman fit risk.
-# sigma_Z is fixed so the return-kernel scale is comparable across runs.
-# Keep BW_PER_DIM fixed at (90,1) for recovered density/PMF displays.
-NU_Z_ARR=(3.5 7.5)
-ELL_Z_ARR=(0.80 1.20 2.50)
-LAM_ARR=(1e-8 1e-7 1e-6 1e-5)
+# Prior runs showed lambda <= 1e-7 fails numerically and ell_sa=10
+# destabilizes click risk, so this grid intentionally excludes them.
+NU_Z_ARR=(3.5 4.5)
+ELL_Z_ARR=(2.00 2.50 3.00)
+LAM_ARR=(1e-5 2e-5 4e-5 1e-4)
 SIGMA_Z_ARR=(1.0)
-NU_SA_ARR=(2.5)
-ELL_SA_ARR=(1.0 10.0)
+NU_SA_ARR=(3.5)
+ELL_SA_ARR=(1.0)
 SIGMA_SA_ARR=(1.0)
 BAND_ARR=(0.0)
 BW_PER_DIM_ARR=("90,1")
@@ -130,7 +130,7 @@ MEAN_EMBEDDING_BASIS_SIZE=${MEAN_EMBEDDING_BASIS_SIZE_ARR[$I_BASIS]}
 STEPS=${STEPS_ARR[$I_STEPS]}
 
 CFG_INDEX=${TASK}
-OUTROOT="evaluation_results/expedia_encoded_10k/main_cfg_${CFG_INDEX}"
+OUTROOT="evaluation_results/expedia_encoded_10k_linear3/main_cfg_${CFG_INDEX}"
 
 echo "Resolved config:"
 echo "  PYFILE       = ${PYFILE}"
@@ -162,12 +162,15 @@ for x in [
     "mean_embedding_basis_size",
     "mean_embedding_basis_method",
     "lambda_B",
-    "nu_sa",
-    "length_scale_sa",
-    "sigma_sa",
-    "nu_Z",
-    "length_scale_Z",
-    "sigma_Z",
+    "x_nu",
+    "x_length_scale",
+    "x_sigma",
+    "ratio_nu",
+    "ratio_length_scale",
+    "ratio_sigma",
+    "nu",
+    "length_scale",
+    "sigma",
 ]:
     print(f"  {x}: {x in sig}")
 PY
@@ -225,8 +228,11 @@ python -u "${PYFILE}" \
   --density-recovery-steps 20000 \
   --density-recovery-lr 1e-2 \
   --density-recovery-tol 1e-10 \
-  --density-recovery-ridge 1e-6 \
-  --density-recovery-init positive_beta \
+  --density-recovery-ridge 1e-5 \
+  --density-recovery-init uniform \
+  --density-recovery-anchor uniform \
+  --density-recovery-l2-lambda 1e-3 \
+  --density-recovery-kl-lambda 1e-3 \
   --density-recovery-quad-points 21 \
   --density-recovery-batch-atoms 128 \
   --density-recovery-num-points 400 \

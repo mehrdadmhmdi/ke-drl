@@ -308,6 +308,25 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--density-recovery-steps", type=int, default=20000)
     p.add_argument("--density-recovery-tol", type=float, default=1e-10)
     p.add_argument("--density-recovery-init", type=str, default="positive_beta", choices=["uniform", "abs_beta", "positive_beta"])
+    p.add_argument(
+        "--density-recovery-anchor",
+        type=str,
+        default="uniform",
+        choices=["uniform", "abs_beta", "positive_beta", "init"],
+        help="Strict recovery anchor w0 used by L2/KL penalties.",
+    )
+    p.add_argument(
+        "--density-recovery-l2-lambda",
+        type=float,
+        default=0.0,
+        help="Adds lambda * ||w-w0||_2^2 to stabilize the recovered probability weights.",
+    )
+    p.add_argument(
+        "--density-recovery-kl-lambda",
+        type=float,
+        default=0.0,
+        help="Adds lambda * KL(w || w0); with positive anchor this selects an interior, unique regularized representative.",
+    )
     p.add_argument("--density-recovery-print-every", type=int, default=500)
     p.add_argument("--density-recovery-quad-points", type=int, default=31)
     p.add_argument("--density-recovery-batch-atoms", type=int, default=64)
@@ -2034,6 +2053,9 @@ def _optimize_induced_probability_weights(
     steps: int,
     tol: float,
     init: str,
+    anchor: str,
+    l2_lambda: float,
+    kl_lambda: float,
     device: str,
     print_every: int,
 ) -> Tuple[torch.Tensor, torch.Tensor, Dict[str, float], List[dict]]:
@@ -2041,9 +2063,13 @@ def _optimize_induced_probability_weights(
     Find probability atom weights w by matching the induced embedding coefficients:
 
         beta_tilde(w) = (K + ridge I)^(-1) A w,
-        min_{w in simplex} (beta_tilde(w)-beta_hat)^T K (beta_tilde(w)-beta_hat).
+        min_{w in simplex} (beta_tilde(w)-beta_hat)^T K (beta_tilde(w)-beta_hat)
+                           + lambda_l2 ||w-w0||_2^2
+                           + lambda_kl KL(w || w0).
 
-    The simplex constraint is enforced by w = softmax(theta), so w_i >= 0 and sum_i w_i = 1.
+    The simplex constraint is enforced by w = softmax(theta), so w_i >= 0
+    and sum_i w_i = 1. Positive L2 or KL regularization selects a stable
+    representative from the otherwise ill-posed embedding inverse.
     """
     dev = torch.device(device)
     dtype = torch.float64
@@ -2065,6 +2091,22 @@ def _optimize_induced_probability_weights(
     K_reg = K + float(ridge) * torch.eye(m, dtype=dtype, device=dev)
     M = torch.linalg.solve(K_reg, A)
 
+    def weights_from_mode(mode: str) -> torch.Tensor:
+        mode = str(mode)
+        if mode == "abs_beta":
+            w0 = torch.abs(beta) + 1e-8
+        elif mode == "positive_beta":
+            w0 = torch.clamp(beta, min=0.0) + 1e-8
+        elif mode == "uniform":
+            w0 = torch.ones(m, dtype=dtype, device=dev)
+        else:
+            raise ValueError(f"Unknown density recovery weight mode: {mode}")
+        total = torch.sum(w0)
+        if not torch.isfinite(total) or float(total.detach().cpu()) <= 1e-30:
+            w0 = torch.ones(m, dtype=dtype, device=dev)
+            total = torch.sum(w0)
+        return w0 / total.clamp_min(1e-30)
+
     init = str(init)
     if init == "abs_beta":
         init_w = torch.abs(beta) + 1e-8
@@ -2076,6 +2118,12 @@ def _optimize_induced_probability_weights(
         theta = torch.log(init_w).clone().detach().requires_grad_(True)
     else:
         theta = torch.zeros(m, dtype=dtype, device=dev, requires_grad=True)
+        init_w = weights_from_mode("uniform")
+
+    anchor_mode = init if str(anchor) == "init" else str(anchor)
+    anchor_w = weights_from_mode(anchor_mode).detach()
+    l2_lambda = float(l2_lambda)
+    kl_lambda = float(kl_lambda)
 
     opt = torch.optim.Adam([theta], lr=float(lr))
     history: List[dict] = []
@@ -2095,7 +2143,10 @@ def _optimize_induced_probability_weights(
         w = torch.softmax(theta, dim=0)
         beta_tilde = M @ w
         diff = beta_tilde - beta
-        obj = diff @ K @ diff
+        fit_obj = diff @ K @ diff
+        l2_penalty = l2_lambda * torch.sum((w - anchor_w) ** 2)
+        kl_penalty = kl_lambda * torch.sum(w * (torch.log(w + 1e-30) - torch.log(anchor_w + 1e-30)))
+        obj = fit_obj + l2_penalty + kl_penalty
         obj.backward()
         opt.step()
 
@@ -2107,6 +2158,9 @@ def _optimize_induced_probability_weights(
             rec = {
                 "iter": int(t + 1),
                 "objective": obj_val,
+                "fit_objective_rkhs_sq": float(fit_obj.detach().cpu().item()),
+                "l2_penalty": float(l2_penalty.detach().cpu().item()),
+                "kl_penalty": float(kl_penalty.detach().cpu().item()),
                 "relative_objective_change": float(rel_change),
                 "w_l1_change": float(l1_w_change),
             }
@@ -2114,6 +2168,7 @@ def _optimize_induced_probability_weights(
             if (t == 0) or ((t + 1) % print_every == 0) or (t + 1 == int(steps)):
                 print(
                     f"density-recovery iter={t+1:6d} obj={obj_val:.8e} "
+                    f"fit={rec['fit_objective_rkhs_sq']:.8e} "
                     f"rel_change={rel_change:.3e} w_l1_change={l1_w_change:.3e} "
                     f"w_min={float(w_now.min()):.3e} w_max={float(w_now.max()):.3e}",
                     flush=True,
@@ -2128,7 +2183,10 @@ def _optimize_induced_probability_weights(
         w = torch.softmax(theta, dim=0)
         beta_tilde = M @ w
         diff = beta_tilde - beta
-        obj = diff @ K @ diff
+        fit_obj = diff @ K @ diff
+        l2_penalty = l2_lambda * torch.sum((w - anchor_w) ** 2)
+        kl_penalty = kl_lambda * torch.sum(w * (torch.log(w + 1e-30) - torch.log(anchor_w + 1e-30)))
+        obj = fit_obj + l2_penalty + kl_penalty
         target_norm_sq = beta @ K @ beta
         induced_norm_sq = beta_tilde @ K @ beta_tilde
         values_target = K @ beta
@@ -2151,12 +2209,21 @@ def _optimize_induced_probability_weights(
             "density_recovery_tol": float(tol),
             "density_recovery_ridge": float(ridge),
             "density_recovery_init": str(init),
-            "objective_rkhs_sq": float(obj.cpu().item()),
-            "objective_rkhs": float(torch.sqrt(torch.clamp(obj, min=0)).cpu().item()),
+            "density_recovery_anchor": str(anchor),
+            "density_recovery_anchor_resolved": str(anchor_mode),
+            "density_recovery_l2_lambda": float(l2_lambda),
+            "density_recovery_kl_lambda": float(kl_lambda),
+            "density_recovery_strictly_regularized": bool(l2_lambda > 0.0 or kl_lambda > 0.0),
+            "objective_total": float(obj.cpu().item()),
+            "objective_fit_rkhs_sq": float(fit_obj.cpu().item()),
+            "objective_l2_penalty": float(l2_penalty.cpu().item()),
+            "objective_kl_penalty": float(kl_penalty.cpu().item()),
+            "objective_rkhs_sq": float(fit_obj.cpu().item()),
+            "objective_rkhs": float(torch.sqrt(torch.clamp(fit_obj, min=0)).cpu().item()),
             "target_rkhs_norm_sq": float(target_norm_sq.cpu().item()),
             "target_rkhs_norm": float(torch.sqrt(torch.clamp(target_norm_sq, min=0)).cpu().item()),
             "induced_rkhs_norm_sq": float(induced_norm_sq.cpu().item()),
-            "relative_rkhs_error": float(torch.sqrt(torch.clamp(obj, min=0) / torch.clamp(target_norm_sq, min=1e-30)).cpu().item()),
+            "relative_rkhs_error": float(torch.sqrt(torch.clamp(fit_obj, min=0) / torch.clamp(target_norm_sq, min=1e-30)).cpu().item()),
             "beta_rmse": float(np.sqrt(np.mean((beta_tilde_np - beta_np) ** 2))),
             "beta_l2": float(np.linalg.norm(beta_tilde_np - beta_np)),
             "beta_max_abs": float(np.max(np.abs(beta_tilde_np - beta_np))),
@@ -2168,6 +2235,11 @@ def _optimize_induced_probability_weights(
             "w_entropy": entropy,
             "w_effective_n_exp_entropy": float(np.exp(entropy)),
             "w_effective_n_inverse_hhi": float(1.0 / np.sum(w_np ** 2)),
+            "anchor_w_min": float(anchor_w.detach().cpu().numpy().min()),
+            "anchor_w_max": float(anchor_w.detach().cpu().numpy().max()),
+            "anchor_w_entropy": float(-(anchor_w * torch.log(anchor_w + 1e-30)).sum().cpu().item()),
+            "w_anchor_l2": float(torch.linalg.norm(w - anchor_w).cpu().item()),
+            "w_anchor_kl": float(torch.sum(w * (torch.log(w + 1e-30) - torch.log(anchor_w + 1e-30))).cpu().item()),
             "beta_hat_sum": float(beta_np.sum()),
             "beta_hat_min": float(beta_np.min()),
             "beta_hat_max": float(beta_np.max()),
@@ -2232,6 +2304,9 @@ def recover_marginal_densities_per_dim_induced(
         steps=int(args.density_recovery_steps),
         tol=float(args.density_recovery_tol),
         init=str(args.density_recovery_init),
+        anchor=str(args.density_recovery_anchor),
+        l2_lambda=float(args.density_recovery_l2_lambda),
+        kl_lambda=float(args.density_recovery_kl_lambda),
         device=rec_device,
         print_every=int(args.density_recovery_print_every),
     )
