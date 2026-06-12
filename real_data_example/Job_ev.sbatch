@@ -10,7 +10,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-23
+#SBATCH --array=0-95
 
 set -euo pipefail
 
@@ -61,8 +61,9 @@ TASK="${SLURM_ARRAY_TASK_ID}"
 
 # Focused stable grid for the separated policies.
 # The reported risk is the zero-baseline projected Bellman fit risk.
-# Prior runs showed lambda <= 1e-7 fails numerically and ell_sa=10
-# destabilizes click risk, so this grid intentionally excludes them.
+# The 6.12.2026 run showed that large lambda values destabilize click risk;
+# keep lambda in the low-risk band and use the density bandwidth grid below
+# to test whether the recovered revenue marginal is a stable policy effect.
 NU_Z_ARR=(3.5 4.5)
 ELL_Z_ARR=(2.00 2.50 3.00)
 LAM_ARR=(1e-5 2e-5 4e-5 1e-4)
@@ -71,7 +72,7 @@ NU_SA_ARR=(3.5)
 ELL_SA_ARR=(1.0)
 SIGMA_SA_ARR=(1.0)
 BAND_ARR=(0.0)
-BW_PER_DIM_ARR=("90,1")
+BW_PER_DIM_ARR=("30,1" "50,1" "70,1" "90,1")
 LAMREC_ARR=(0.0)
 GRID_ARR=(1200)
 MEAN_EMBEDDING_BASIS_SIZE_ARR=(6000)
