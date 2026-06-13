@@ -341,6 +341,17 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--mean-embedding-contour-levels", type=int, default=30)
 
     # Policy diagnostics.
+    p.add_argument(
+        "--target-point-mode",
+        type=str,
+        default="central_sa",
+        help=(
+            "Conditional state-action point used for mean-embedding evaluation. "
+            "central_sa is the empirical point closest to the normalized state-action mean; "
+            "state_pc_q25/state_pc_q50/state_pc_q75 choose train states at first-PC quantiles; "
+            "idx:N chooses a fixed training row."
+        ),
+    )
     p.add_argument("--policy-specific-initial-action", type=int, default=1, help="0/1; use the policy greedy action at s_star instead of the logged a_star.")
     p.add_argument("--support-sample-n", type=int, default=1024)
     p.add_argument("--clip-sampled-actions", type=int, default=0, help="0/1")
@@ -433,6 +444,70 @@ def _safe_corr(x: np.ndarray, y: np.ndarray) -> float:
     if np.std(x) < 1e-12 or np.std(y) < 1e-12:
         return float("nan")
     return float(np.corrcoef(x, y)[0, 1])
+
+
+def _select_target_point_index(
+    s0_tr: torch.Tensor,
+    a0_tr: torch.Tensor,
+    mode: str,
+) -> Tuple[torch.Tensor, Dict[str, object]]:
+    """Select one empirical train row for conditional mean-embedding plots."""
+    mode_raw = str(mode or "central_sa").strip()
+    mode_l = mode_raw.lower()
+    n = int(s0_tr.shape[0])
+    if n <= 0:
+        raise ValueError("Cannot select a target point from an empty training set.")
+
+    if mode_l.startswith("idx:"):
+        idx_raw = int(mode_l.split(":", 1)[1])
+        idx = max(0, min(n - 1, idx_raw))
+        return torch.tensor([idx], device=s0_tr.device, dtype=torch.long), {
+            "mode": mode_raw,
+            "selected_train_index": idx,
+            "requested_train_index": idx_raw,
+            "criterion": "fixed_train_row_index",
+        }
+
+    if mode_l in {"central_sa", "center_sa", "state_action_mean", "sa_mean", "medoid_sa"}:
+        sa_tr = torch.cat([s0_tr, a0_tr], dim=1)
+        mu_sa = sa_tr.mean(0)
+        sd_sa = sa_tr.std(0, unbiased=False).clamp_min(1e-6)
+        dist = ((sa_tr - mu_sa) / sd_sa).pow(2).sum(1)
+        idx = int(torch.argmin(dist).item())
+        return torch.tensor([idx], device=s0_tr.device, dtype=torch.long), {
+            "mode": mode_raw,
+            "selected_train_index": idx,
+            "criterion": "closest_to_normalized_state_action_mean",
+            "normalized_state_action_distance_sq": float(dist[idx].detach().cpu().item()),
+        }
+
+    prefix = "state_pc_q"
+    if mode_l.startswith(prefix):
+        q_pct = float(mode_l[len(prefix):])
+        if not (0.0 <= q_pct <= 100.0):
+            raise ValueError(f"Invalid target-point quantile in {mode_raw!r}; expected 0..100.")
+        q = q_pct / 100.0
+        S = (s0_tr - s0_tr.mean(0)) / s0_tr.std(0, unbiased=False).clamp_min(1e-6)
+        S_cpu = torch.nan_to_num(S).detach().to("cpu")
+        if S_cpu.ndim != 2 or S_cpu.shape[1] < 1:
+            raise ValueError("state_pc_qXX target-point modes require at least one state feature.")
+        _, _, vh = torch.linalg.svd(S_cpu, full_matrices=False)
+        score = S_cpu @ vh[0]
+        target_score = torch.quantile(score, q)
+        idx = int(torch.argmin(torch.abs(score - target_score)).item())
+        return torch.tensor([idx], device=s0_tr.device, dtype=torch.long), {
+            "mode": mode_raw,
+            "selected_train_index": idx,
+            "criterion": "closest_to_first_state_pc_quantile",
+            "state_pc_quantile": float(q),
+            "state_pc_score": float(score[idx].item()),
+            "state_pc_target_score": float(target_score.item()),
+        }
+
+    raise ValueError(
+        f"Unknown --target-point-mode={mode_raw!r}. "
+        "Use central_sa, state_pc_q25/state_pc_q50/state_pc_q75, or idx:N."
+    )
 
 
 def tic(msg: str) -> float:
@@ -2974,6 +3049,26 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
             "zlim": (max(zmin - pad_z, 0.0), zmax + pad_z),
         }
 
+    def _surface_values_for_3d(X: np.ndarray, Y: np.ndarray, z: np.ndarray) -> np.ndarray:
+        """Display-only clipping for the 3D surface panel."""
+        z_plot = _finite_surface_values(z).astype(float, copy=True)
+        finite = z_plot[np.isfinite(z_plot)]
+        if finite.size > 0:
+            zmax = float(np.max(finite))
+            if np.isfinite(zmax) and zmax > 0.0:
+                floor_tol = max(1e-12, 1e-6 * zmax)
+                z_plot[z_plot <= floor_tol] = np.nan
+
+        if len(reward_cols) > 1 and _name_suggests_discrete(reward_cols[1]):
+            z_plot[(X < 0.0) | (X > 6.0)] = np.nan
+        if len(reward_cols) > 0 and _name_suggests_discrete(reward_cols[0]):
+            z_plot[(Y < 0.0) | (Y > 6.0)] = np.nan
+        return z_plot
+
+    def _plot_surface_if_finite(ax, X: np.ndarray, Y: np.ndarray, z: np.ndarray, **kwargs) -> None:
+        if np.isfinite(z).any():
+            ax.plot_surface(X, Y, z, **kwargs)
+
     def _draw_contour(ax, surface_tuple, color: str, linestyle: str, label: str) -> None:
         X, Y, z = _surface_grid(surface_tuple)
 
@@ -3116,28 +3211,28 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         # -------------------------
         XA, YA, zA = _surface_grid(mean_A)
         XB, YB, zB = _surface_grid(mean_B)
-        zA_plot = _finite_surface_values(zA)
-        zB_plot = _finite_surface_values(zB)
+        zA_surface_plot = _surface_values_for_3d(XA, YA, zA)
+        zB_surface_plot = _surface_values_for_3d(XB, YB, zB)
 
         from mpl_toolkits.mplot3d import Axes3D  # noqa: F401
         fig = plt.figure(figsize=(8.8, 8.8), constrained_layout=False)
         ax = fig.add_subplot(111, projection="3d")
         ax.set_proj_type("ortho")
-        ax.plot_surface(XA, YA, zA_plot, color=color_A, alpha=0.45, linewidth=0, antialiased=True)
-        ax.plot_surface(XB, YB, zB_plot, color=color_B, alpha=0.45, linewidth=0, antialiased=True)
+        _plot_surface_if_finite(ax, XA, YA, zA_surface_plot, color=color_A, alpha=0.45, linewidth=0, antialiased=True)
+        _plot_surface_if_finite(ax, XB, YB, zB_surface_plot, color=color_B, alpha=0.45, linewidth=0, antialiased=True)
         ax.set_xlabel(pretty_rewards[1], labelpad=14)
         ax.set_ylabel(pretty_rewards[0], labelpad=16)
-        ax.set_zlabel("Mean embedding value", labelpad=16)
+        ax.set_zlabel("Mean embedding value", labelpad=20)
         ax.set_box_aspect((1.20, 1.00, 0.60))
         ax.view_init(elev=24, azim=-55)
-        _set_discrete_ticks_if_needed(ax, mean_A)
-        dlims = _surface_data_limits((XA, YA, zA_plot), (XB, YB, zB_plot))
+        dlims = _surface_data_limits((XA, YA, zA_surface_plot), (XB, YB, zB_surface_plot))
         if dlims is not None:
             ax.set_xlim(*dlims["xlim"])
             ax.set_ylim(*dlims["ylim"])
             ax.set_zlim(*dlims["zlim"])
+        _set_discrete_ticks_if_needed(ax, mean_A)
         ax.legend(handles=surface_handles, loc="upper right")
-        fig.subplots_adjust(left=0.03, right=0.96, bottom=0.08, top=0.92)
+        fig.subplots_adjust(left=0.03, right=0.90, bottom=0.08, top=0.92)
         p = out_dir / "overlay_3d_mean_embedding_surface.png"
         fig.savefig(p, bbox_inches="tight", pad_inches=0.30, dpi=300)
         plt.close(fig)
@@ -3147,13 +3242,13 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         # Combined panel: mean embedding top row + recovered marginals bottom row.
         # No density surface and no difference heatmap.
         # -------------------------
-        fig = plt.figure(figsize=(12.0, 12.0), constrained_layout=False)
+        fig = plt.figure(figsize=(12.2, 12.0), constrained_layout=False)
         gs = fig.add_gridspec(
             2, 2,
             width_ratios=[1.0, 1.0],
             height_ratios=[1.0, 1.0],
-            left=0.07, right=0.96, bottom=0.07, top=0.90,
-            wspace=0.25, hspace=0.34,
+            left=0.07, right=0.92, bottom=0.07, top=0.90,
+            wspace=0.22, hspace=0.34,
         )
 
         ax1 = fig.add_subplot(gs[0, 0])
@@ -3166,25 +3261,27 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         ax1.legend(handles=contour_handles, frameon=True)
 
         ax2 = fig.add_subplot(gs[0, 1], projection="3d")
-        ax2.plot_surface(XA, YA, zA_plot, color=color_A, alpha=0.45, linewidth=0, antialiased=True)
-        ax2.plot_surface(XB, YB, zB_plot, color=color_B, alpha=0.45, linewidth=0, antialiased=True)
+        _plot_surface_if_finite(ax2, XA, YA, zA_surface_plot, color=color_A, alpha=0.45, linewidth=0, antialiased=True)
+        _plot_surface_if_finite(ax2, XB, YB, zB_surface_plot, color=color_B, alpha=0.45, linewidth=0, antialiased=True)
         ax2.set_proj_type("ortho")
         ax2.set_xlabel(pretty_rewards[1], labelpad=10)
         ax2.set_ylabel(pretty_rewards[0], labelpad=12)
-        ax2.set_zlabel("Mean embedding value", labelpad=10)
+        ax2.set_zlabel("Mean embedding value", labelpad=18)
         ax2.set_box_aspect((1.12, 1.0, 0.65))
         ax2.view_init(elev=26, azim=-50)
         ax2.tick_params(axis="x", pad=2, labelsize=9)
         ax2.tick_params(axis="y", pad=2, labelsize=9)
-        ax2.tick_params(axis="z", pad=4, labelsize=9)
-        _set_discrete_ticks_if_needed(ax2, mean_A)
-        dlims = _surface_data_limits((XA, YA, zA_plot), (XB, YB, zB_plot))
+        ax2.tick_params(axis="z", pad=6, labelsize=9)
+        dlims = _surface_data_limits((XA, YA, zA_surface_plot), (XB, YB, zB_surface_plot))
         if dlims is not None:
             ax2.set_xlim(*dlims["xlim"])
             ax2.set_ylim(*dlims["ylim"])
             ax2.set_zlim(*dlims["zlim"])
+        _set_discrete_ticks_if_needed(ax2, mean_A)
         ax2.set_title("Mean-embedding Surface", pad=8)
         ax2.legend(handles=surface_handles, loc="upper left", bbox_to_anchor=(0.02, 0.98))
+        pos = ax2.get_position()
+        ax2.set_position([pos.x0 - 0.025, pos.y0, pos.width * 0.98, pos.height])
 
         ax3 = fig.add_subplot(gs[1, 0])
         if 0 in one_d:
@@ -3234,7 +3331,7 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
 
         fig.suptitle(f"Mean Embedding and Recovered Marginal Comparison: {pretty_A} vs {pretty_B}", y=0.965)
         p = out_dir / "overlay_all_mean_embedding_marginal_comparison.png"
-        fig.savefig(p, pad_inches=0.25, dpi=300)
+        fig.savefig(p, bbox_inches="tight", pad_inches=0.30, dpi=300)
         plt.close(fig)
         paths["overlay_all_mean_embedding_marginal_comparison"] = str(p)
     else:
@@ -3797,6 +3894,7 @@ def run_one_policy(
     r_test: torch.Tensor,
     s_star: torch.Tensor,
     a_star: torch.Tensor,
+    target_point_info: Dict[str, object],
     s_mu: torch.Tensor,
     s_sd: torch.Tensor,
     a_mu: torch.Tensor,
@@ -4303,6 +4401,9 @@ def run_one_policy(
         'test_policy_action_std_raw_mean': _np(std_test_raw.mean(0)).tolist(),
         'test_data_action_mean_raw': _np(a0_test_raw.mean(0)).tolist(),
         'initial_action_mode': initial_action_mode,
+        'target_point': target_point_info,
+        's_star_raw': _np(_denorm(s_star, s_mu, s_sd)).reshape(-1).tolist(),
+        'a_star_logged_raw': _np(_denorm(a_star, a_mu, a_sd)).reshape(-1).tolist(),
         'a_star_raw_used_for_embedding': _np(a_star_raw_policy).reshape(-1).tolist(),
         'off_support_greedy_train': off_support_greedy_train,
         'off_support_greedy_test': off_support_greedy_test,
@@ -4870,13 +4971,29 @@ def main() -> None:
     a0_val = a0_test
     r_val = r_test
 
-    sa_tr = torch.cat([s0_tr, a0_tr], dim=1)
-    mu_sa = sa_tr.mean(0)
-    sd_sa = sa_tr.std(0, unbiased=False).clamp_min(1e-6)
-    z = ((sa_tr - mu_sa) / sd_sa).pow(2).sum(1)
-    idx_star = torch.argmin(z).view(1)
+    idx_star, target_point_info = _select_target_point_index(
+        s0_tr=s0_tr,
+        a0_tr=a0_tr,
+        mode=str(getattr(args, "target_point_mode", "central_sa")),
+    )
     s_star = s0_tr[idx_star].clone()
     a_star = a0_tr[idx_star].clone()
+    idx_star_int = int(idx_star.item())
+    target_point_info = dict(target_point_info)
+    target_point_info.update({
+        "raw_state_cols": raw_state_cols,
+        "encoded_state_cols": state_cols,
+        "action_cols": action_cols,
+        "selected_raw_state_unencoded": _np(s0_tr_raw_unencoded[idx_star_int]).reshape(-1).tolist(),
+        "selected_state_raw_encoded": _np(_denorm(s_star, s_mu, s_sd)).reshape(-1).tolist(),
+        "selected_logged_action_raw": _np(_denorm(a_star, a_mu, a_sd)).reshape(-1).tolist(),
+    })
+
+    print("\nTarget point for conditional mean embedding:")
+    print(f"  mode          : {target_point_info.get('mode')}")
+    print(f"  train row     : {target_point_info.get('selected_train_index')}")
+    print(f"  criterion     : {target_point_info.get('criterion')}")
+    print(f"  logged action : {_array_str(np.asarray(target_point_info['selected_logged_action_raw']))}")
 
     if args.policy_objective == 'both':
         policies_to_run = list(reward_cols)
@@ -4928,6 +5045,7 @@ def main() -> None:
             r_test=r_test,
             s_star=s_star,
             a_star=a_star,
+            target_point_info=target_point_info,
             s_mu=s_mu,
             s_sd=s_sd,
             a_mu=a_mu,
@@ -4951,6 +5069,7 @@ def main() -> None:
         'action_cols': action_cols,
         'reward_cols': reward_cols,
         'discrete_reward_cols': _parse_csv_list(args.discrete_reward_cols) or [],
+        'target_point': target_point_info,
         'state_encoder': state_encoder_meta,
         'state_encoding_diagnostics': state_encoding_diagnostics,
         'normalization': {

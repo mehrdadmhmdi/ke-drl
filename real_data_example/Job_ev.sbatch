@@ -10,7 +10,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mail-type=ALL
 #SBATCH --mail-user=mehrdad3@illinois.edu
-#SBATCH --array=0-95
+#SBATCH --array=0-287
 
 set -euo pipefail
 
@@ -77,6 +77,7 @@ LAMREC_ARR=(0.0)
 GRID_ARR=(1200)
 MEAN_EMBEDDING_BASIS_SIZE_ARR=(6000)
 STEPS_ARR=(40000)
+TARGET_POINT_ARR=("state_pc_q25" "state_pc_q50" "state_pc_q75")
 
 N_NU_Z=${#NU_Z_ARR[@]}
 N_ELL_Z=${#ELL_Z_ARR[@]}
@@ -91,8 +92,9 @@ N_LAMREC=${#LAMREC_ARR[@]}
 N_GRID=${#GRID_ARR[@]}
 N_BASIS=${#MEAN_EMBEDDING_BASIS_SIZE_ARR[@]}
 N_STEPS=${#STEPS_ARR[@]}
+N_TARGET_POINT=${#TARGET_POINT_ARR[@]}
 
-TOTAL_CFG=$(( N_NU_Z * N_ELL_Z * N_LAM * N_SIGMA_Z * N_NU_SA * N_ELL_SA * N_SIGMA_SA * N_BAND * N_BW_PER_DIM * N_LAMREC * N_GRID * N_BASIS * N_STEPS ))
+TOTAL_CFG=$(( N_TARGET_POINT * N_NU_Z * N_ELL_Z * N_LAM * N_SIGMA_Z * N_NU_SA * N_ELL_SA * N_SIGMA_SA * N_BAND * N_BW_PER_DIM * N_LAMREC * N_GRID * N_BASIS * N_STEPS ))
 
 echo "Total configs in this grid: ${TOTAL_CFG}"
 
@@ -102,6 +104,7 @@ if (( TASK < 0 || TASK >= TOTAL_CFG )); then
 fi
 
 IDX=$TASK
+I_TARGET_POINT=$(( IDX % N_TARGET_POINT )); IDX=$(( IDX / N_TARGET_POINT ))
 I_STEPS=$(( IDX % N_STEPS )); IDX=$(( IDX / N_STEPS ))
 I_BASIS=$(( IDX % N_BASIS )); IDX=$(( IDX / N_BASIS ))
 I_GRID=$(( IDX % N_GRID )); IDX=$(( IDX / N_GRID ))
@@ -129,9 +132,10 @@ LAMREC=${LAMREC_ARR[$I_LAMREC]}
 GRID=${GRID_ARR[$I_GRID]}
 MEAN_EMBEDDING_BASIS_SIZE=${MEAN_EMBEDDING_BASIS_SIZE_ARR[$I_BASIS]}
 STEPS=${STEPS_ARR[$I_STEPS]}
+TARGET_POINT=${TARGET_POINT_ARR[$I_TARGET_POINT]}
 
-CFG_INDEX=${TASK}
-OUTROOT="evaluation_results/expedia_encoded_10k_linear3/main_cfg_${CFG_INDEX}"
+CFG_INDEX=$(( TASK / N_TARGET_POINT ))
+OUTROOT="evaluation_results/expedia_encoded_10k_linear3/main_cfg_${CFG_INDEX}_${TARGET_POINT}"
 
 echo "Resolved config:"
 echo "  PYFILE       = ${PYFILE}"
@@ -152,6 +156,7 @@ echo "  LAMREC       = ${LAMREC}"
 echo "  GRID         = ${GRID}"
 echo "  BASIS L      = ${MEAN_EMBEDDING_BASIS_SIZE}"
 echo "  STEPS        = ${STEPS}"
+echo "  TARGET_POINT = ${TARGET_POINT}"
 echo "  OUTROOT      = ${OUTROOT}"
 
 echo "Checking ke_drl estimate_embedding signature:"
@@ -220,6 +225,7 @@ python -u "${PYFILE}" \
   --support-sample-n 500 \
   --clip-sampled-actions 1 \
   --std-cap-for-diagnostics 0.25 \
+  --target-point-mode "${TARGET_POINT}" \
   --policy-specific-initial-action 1 \
   --discrete-reward-cols total_clicks \
   --export-subsets 1 \
