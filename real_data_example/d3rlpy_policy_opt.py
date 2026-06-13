@@ -292,7 +292,7 @@ def mean_action(policy: LinearGaussianPolicy, s: np.ndarray, clipped: bool = Fal
     s = np.asarray(s, dtype=np.float64)
     mu = s @ policy.theta_mu + policy.epsilon_mu
     if clipped:
-        return clip_and_round(policy, mu)
+        return clip_to_support(policy, mu)
     return mu
 
 
@@ -302,9 +302,13 @@ def std_action(policy: LinearGaussianPolicy, s: np.ndarray) -> np.ndarray:
     return np.exp(np.clip(log_std, -50.0, 50.0))
 
 
-def clip_and_round(policy: LinearGaussianPolicy, a: np.ndarray) -> np.ndarray:
+def clip_to_support(policy: LinearGaussianPolicy, a: np.ndarray) -> np.ndarray:
     a = np.asarray(a, dtype=np.float64).copy()
-    a = np.clip(a, policy.action_lows, policy.action_highs)
+    return np.clip(a, policy.action_lows, policy.action_highs)
+
+
+def round_integer_action(policy: LinearGaussianPolicy, a: np.ndarray) -> np.ndarray:
+    a = np.asarray(a, dtype=np.float64).copy()
     if policy.integer_idx is not None:
         j = int(policy.integer_idx)
         a[..., j] = np.round(a[..., j])
@@ -315,6 +319,10 @@ def clip_and_round(policy: LinearGaussianPolicy, a: np.ndarray) -> np.ndarray:
     return a
 
 
+def clip_and_round(policy: LinearGaussianPolicy, a: np.ndarray) -> np.ndarray:
+    return round_integer_action(policy, clip_to_support(policy, a))
+
+
 def greedy_action(policy: LinearGaussianPolicy, s: np.ndarray) -> np.ndarray:
     return clip_and_round(policy, mean_action(policy, s, clipped=False))
 
@@ -322,7 +330,7 @@ def greedy_action(policy: LinearGaussianPolicy, s: np.ndarray) -> np.ndarray:
 def sample_action(policy: LinearGaussianPolicy, s: np.ndarray, rng: Optional[np.random.Generator] = None) -> np.ndarray:
     if rng is None:
         rng = np.random.default_rng()
-    mu = mean_action(policy, s, clipped=False)
+    mu = mean_action(policy, s, clipped=True)
     sd = std_action(policy, s)
     a = mu + rng.standard_normal(mu.shape) * sd
     return clip_and_round(policy, a)
@@ -1046,7 +1054,8 @@ def train_one_reward(
     rng = np.random.default_rng(int(args.seed) + 991 * (reward_idx + 1))
     greedy_actions = greedy_action(policy, eval_obs)
     sampled_actions = sample_action(policy, eval_obs, rng=rng)
-    mu_eval = mean_action(policy, eval_obs, clipped=False)
+    mu_eval_unclipped = mean_action(policy, eval_obs, clipped=False)
+    mu_eval = mean_action(policy, eval_obs, clipped=True)
     sd_eval = std_action(policy, eval_obs)
 
     summary = {
@@ -1079,6 +1088,9 @@ def train_one_reward(
         "eval_greedy_action_mean": np.mean(greedy_actions, axis=0).tolist(),
         "eval_sampled_action_mean": np.mean(sampled_actions, axis=0).tolist(),
         "eval_mu_mean": np.mean(mu_eval, axis=0).tolist(),
+        "eval_mu_min": np.min(mu_eval, axis=0).tolist(),
+        "eval_mu_unclipped_mean": np.mean(mu_eval_unclipped, axis=0).tolist(),
+        "eval_mu_unclipped_min": np.min(mu_eval_unclipped, axis=0).tolist(),
         "eval_sd_mean": np.mean(sd_eval, axis=0).tolist(),
         "action_shift_summary": summarize_action_shifts(action_names, eval_logged_actions, greedy_actions, sampled_actions),
         "reward_is_click_like": bool(reward_suggests_click_like(reward_name)),

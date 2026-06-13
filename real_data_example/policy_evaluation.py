@@ -3501,9 +3501,14 @@ def load_gaussian_policy(path_pt: Path, path_json: Path, device: torch.device):
     return model, meta, spec
 
 
-def _linear_policy_clamp_and_round(policy: LinearGaussianPolicy, x: torch.Tensor) -> torch.Tensor:
+def _linear_policy_clamp_to_support(policy: LinearGaussianPolicy, x: torch.Tensor) -> torch.Tensor:
     y = torch.max(torch.min(x, torch.as_tensor(policy.action_highs, dtype=x.dtype, device=x.device)),
                   torch.as_tensor(policy.action_lows, dtype=x.dtype, device=x.device))
+    return y
+
+
+def _linear_policy_round_integer_dim(policy: LinearGaussianPolicy, x: torch.Tensor) -> torch.Tensor:
+    y = x
     if policy.integer_idx is not None:
         j = int(policy.integer_idx)
         y = y.clone()
@@ -3513,6 +3518,10 @@ def _linear_policy_clamp_and_round(policy: LinearGaussianPolicy, x: torch.Tensor
         if policy.integer_high is not None:
             y[:, j] = torch.clamp(y[:, j], max=float(policy.integer_high))
     return y
+
+
+def _linear_policy_clamp_and_round(policy: LinearGaussianPolicy, x: torch.Tensor) -> torch.Tensor:
+    return _linear_policy_round_integer_dim(policy, _linear_policy_clamp_to_support(policy, x))
 
 
 def gaussian_policy_stats_raw(model, states_raw: torch.Tensor) -> Dict[str, torch.Tensor]:
@@ -3525,8 +3534,8 @@ def gaussian_policy_stats_raw(model, states_raw: torch.Tensor) -> Dict[str, torc
             mu_raw_unclipped = states_raw @ theta_mu + eps_mu
             log_std_raw = states_raw @ theta_sigma + eps_sigma
             std_raw = torch.exp(log_std_raw)
-            mu_raw = _linear_policy_clamp_and_round(model, mu_raw_unclipped)
-            greedy_raw = mu_raw.clone()
+            mu_raw = _linear_policy_clamp_to_support(model, mu_raw_unclipped)
+            greedy_raw = _linear_policy_round_integer_dim(model, mu_raw)
         return {
             'mu_raw': mu_raw,
             'mu_raw_unclipped': mu_raw_unclipped,
@@ -3553,7 +3562,8 @@ def sample_gaussian_actions_raw(model, states_raw: torch.Tensor, n_samples: int)
             eps_mu = torch.as_tensor(model.epsilon_mu, dtype=s_rep.dtype, device=s_rep.device)
             theta_sigma = torch.as_tensor(model.theta_sigma, dtype=s_rep.dtype, device=s_rep.device)
             eps_sigma = torch.as_tensor(model.epsilon_sigma, dtype=s_rep.dtype, device=s_rep.device)
-            mu_raw = s_rep @ theta_mu + eps_mu
+            mu_raw_unclipped = s_rep @ theta_mu + eps_mu
+            mu_raw = _linear_policy_clamp_to_support(model, mu_raw_unclipped)
             std_raw = torch.exp(s_rep @ theta_sigma + eps_sigma)
             a = mu_raw + std_raw * torch.randn_like(std_raw)
             return _linear_policy_clamp_and_round(model, a)
@@ -3571,11 +3581,10 @@ def distill_gaussian_policy_to_linear_surrogate(
     a_sd: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, float, float, torch.Tensor, torch.Tensor]:
     stats = gaussian_policy_stats_raw(model, s_raw)
-    # For KE-DRL's target-policy sampler, use the actual Gaussian mean before
-    # the greedy diagnostic clipping/rounding.  Clipping/rounding remains only a
-    # diagnostic/visual action summary unless the downstream sampler explicitly
-    # supports truncated/rounded Gaussian policies.
-    mu_raw = stats.get('mu_raw_unclipped', stats['mu_raw'])
+    # For KE-DRL's target-policy sampler, distill the support-constrained mean.
+    # The raw affine score may be negative for nonnegative actions, but the
+    # policy mean itself is the clipped mean used below.
+    mu_raw = stats['mu_raw']
     std_raw = stats['std_raw'].clamp_min(1e-6)
 
     mu_norm = (mu_raw - a_mu) / (a_sd + 1e-12)
@@ -3872,6 +3881,8 @@ def run_one_policy(
 
     mu_tr_raw = stats_tr['mu_raw']
     mu_test_raw = stats_test['mu_raw']
+    mu_tr_raw_unclipped = stats_tr.get('mu_raw_unclipped', mu_tr_raw)
+    mu_test_raw_unclipped = stats_test.get('mu_raw_unclipped', mu_test_raw)
     std_tr_raw = stats_tr['std_raw']
     std_test_raw = stats_test['std_raw']
     greedy_tr_raw = stats_tr['greedy_raw']
@@ -4286,6 +4297,9 @@ def run_one_policy(
         'train_policy_action_mean_raw': _np(greedy_tr_raw.mean(0)).tolist(),
         'test_policy_action_mean_raw': _np(greedy_test_raw.mean(0)).tolist(),
         'test_policy_gaussian_mean_raw': _np(mu_test_raw.mean(0)).tolist(),
+        'test_policy_gaussian_mean_unclipped_raw': _np(mu_test_raw_unclipped.mean(0)).tolist(),
+        'test_policy_gaussian_mean_min_raw': _np(mu_test_raw.min(0).values).tolist(),
+        'test_policy_gaussian_mean_unclipped_min_raw': _np(mu_test_raw_unclipped.min(0).values).tolist(),
         'test_policy_action_std_raw_mean': _np(std_test_raw.mean(0)).tolist(),
         'test_data_action_mean_raw': _np(a0_test_raw.mean(0)).tolist(),
         'initial_action_mode': initial_action_mode,
@@ -4333,6 +4347,9 @@ def run_one_policy(
                 'train_policy_action_mean_raw': greedy_tr_raw.mean(0).detach().cpu(),
                 'test_policy_action_mean_raw': greedy_test_raw.mean(0).detach().cpu(),
                 'test_policy_gaussian_mean_raw': mu_test_raw.mean(0).detach().cpu(),
+                'test_policy_gaussian_mean_unclipped_raw': mu_test_raw_unclipped.mean(0).detach().cpu(),
+                'test_policy_gaussian_mean_min_raw': mu_test_raw.min(0).values.detach().cpu(),
+                'test_policy_gaussian_mean_unclipped_min_raw': mu_test_raw_unclipped.min(0).values.detach().cpu(),
                 'test_policy_action_std_raw_mean': std_test_raw.mean(0).detach().cpu(),
                 'test_data_action_mean_raw': a0_test_raw.mean(0).detach().cpu(),
             },
