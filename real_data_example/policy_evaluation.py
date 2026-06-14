@@ -3266,7 +3266,16 @@ def _plot_two_policy_reward_overlays(payload_A: dict, payload_B: dict, reward_co
         ax2.set_proj_type("ortho")
         ax2.set_xlabel(pretty_rewards[1], labelpad=10)
         ax2.set_ylabel(pretty_rewards[0], labelpad=12)
-        ax2.set_zlabel("Mean embedding value", labelpad=18)
+        ax2.set_zlabel("")
+        ax2.text2D(
+            0.95,
+            0.52,
+            "Mean embedding value",
+            transform=ax2.transAxes,
+            rotation=90,
+            va="center",
+            ha="center",
+        )
         ax2.set_box_aspect((1.12, 1.0, 0.65))
         ax2.view_init(elev=26, azim=-50)
         ax2.tick_params(axis="x", pad=2, labelsize=9)
