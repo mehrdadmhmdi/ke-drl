@@ -12,14 +12,18 @@
 
 set -euo pipefail
 
+DEFAULT_SIM_DIR="/work/nvme/bfez/mehrdad3/DistRL/simulation_small_N_large_T"
+DEFAULT_RESULT_ROOT="${DEFAULT_SIM_DIR}/results/6.5.2026_full_rerun"
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
 if [ -f "${SUBMIT_DIR}/main_mc_repeat_eval.py" ]; then
   BASE="$(cd "${SUBMIT_DIR}" && pwd)"
 elif [ -f "${SUBMIT_DIR}/simulation/main_mc_repeat_eval.py" ]; then
   BASE="$(cd "${SUBMIT_DIR}/simulation" && pwd)"
+elif [ -f "${DEFAULT_SIM_DIR}/main_mc_repeat_eval.py" ]; then
+  BASE="${DEFAULT_SIM_DIR}"
 else
   echo "Could not locate simulation/main_mc_repeat_eval.py from SLURM_SUBMIT_DIR=${SUBMIT_DIR}" >&2
-  echo "Submit from kedrl_git/simulation or kedrl_git." >&2
+  echo "Submit from ${DEFAULT_SIM_DIR}, kedrl_git/simulation, or kedrl_git." >&2
   exit 2
 fi
 cd "${BASE}"
@@ -34,10 +38,11 @@ case "$SIM2_POLICY_PAIR" in
     ;;
 esac
 
-RUN="${SIM2_RUN:-${BASE}/results/${SIM2_POLICY_PAIR}}"
+RESULT_ROOT="${SIM2_RESULT_ROOT:-${DEFAULT_RESULT_ROOT}}"
+RUN="${SIM2_RUN:-${RESULT_ROOT}/${SIM2_POLICY_PAIR}}"
 if [ ! -d "${RUN}/data" ] || [ ! -d "${RUN}/mu" ]; then
   echo "Missing fitted simulation outputs under ${RUN}." >&2
-  echo "Run prepare and fit first, or set SIM2_RUN to the fitted result folder." >&2
+  echo "Run prepare and fit first, or set SIM2_RUN to the fitted pair folder." >&2
   exit 1
 fi
 mkdir -p "${RUN}/logs" "${RUN}/metrics" "${RUN}/metrics/mc_repeats"
@@ -59,6 +64,7 @@ echo "Job ID:           ${SLURM_JOB_ID}"
 echo "Array idx:        ${SLURM_ARRAY_TASK_ID:-}"
 echo "Policy pair:      ${SIM2_POLICY_PAIR}"
 echo "Simulation base:  ${BASE}"
+echo "Result root:      ${RESULT_ROOT}"
 echo "Run folder:       ${RUN}"
 echo "CPUs per task:    ${SLURM_CPUS_PER_TASK:-NA}"
 echo "CPUs on node:     ${SLURM_CPUS_ON_NODE:-NA}"

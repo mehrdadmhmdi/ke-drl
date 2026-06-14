@@ -77,10 +77,13 @@ After the fit stage has written `results/<PAIR>/mu` and `results/<PAIR>/data`,
 run the CPU post-fit repeated-MC comparison:
 
 ```bash
+SIM_DIR=/work/nvme/bfez/mehrdad3/DistRL/simulation_small_N_large_T
+SIM2_RESULT_ROOT=$SIM_DIR/results/6.5.2026_full_rerun
+
 for PAIR in UG UL GU GL LU LG; do
   sbatch --chdir="$SIM_DIR" \
     --job-name="${PAIR}_mc100" \
-    --export=ALL,SIM2_POLICY_PAIR=$PAIR,SIM2_MC_REPEATS=100 \
+    --export=ALL,SIM2_POLICY_PAIR=$PAIR,SIM2_RESULT_ROOT=$SIM2_RESULT_ROOT,SIM2_MC_REPEATS=100 \
     "$SIM_DIR/Job_mc_repeat_eval.sbatch"
 done
 ```
