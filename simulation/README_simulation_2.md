@@ -70,3 +70,33 @@ OFFLINE_DATA_WORKERS=8
 Each pair writes only under `results/<PAIR>/`. For example, `UL` writes
 `results/UL/mu`, `results/UL/metrics`, `results/UL/plots`, and
 `results/UL/shared/data`.
+
+## Repeated Monte Carlo truth check
+
+After the fit stage has written `results/<PAIR>/mu` and `results/<PAIR>/data`,
+run the CPU post-fit repeated-MC comparison:
+
+```bash
+for PAIR in UG UL GU GL LU LG; do
+  sbatch --chdir="$SIM_DIR" \
+    --job-name="${PAIR}_mc100" \
+    --export=ALL,SIM2_POLICY_PAIR=$PAIR,SIM2_MC_REPEATS=100 \
+    "$SIM_DIR/Job_mc_repeat_eval.sbatch"
+done
+```
+
+For each fitted embedding curve, `main_mc_repeat_eval.py` generates 100
+independent Monte Carlo truth samples at the same benchmark point and writes:
+
+```text
+results/<PAIR>/metrics/mc_repeat_aggregate_metrics.csv
+results/<PAIR>/metrics/mc_repeat_per_benchmark_aggregate_metrics.csv
+results/<PAIR>/metrics/mc_repeats/mc_repeat_metrics.csv
+results/<PAIR>/metrics/mc_repeats/mc_repeat_run_summary.csv
+results/<PAIR>/metrics/mc_repeats/mc_repeat_pointwise_diff_summary.csv
+```
+
+The run summary includes scalar mean/sd columns such as `RMSE_mean`,
+`RMSE_sd`, `Bias_mean`, `Bias_sd`, `diff_mean_all`, and `diff_sd_all`.
+The pointwise file gives `diff_mean` and `diff_sd` for
+`mu_hat - mu_true` at each evaluation-grid location.
