@@ -81,9 +81,10 @@ SIM_DIR=/work/nvme/bfez/mehrdad3/DistRL/simulation_small_N_large_T
 SIM2_RESULT_ROOT=$SIM_DIR/results/6.5.2026_full_rerun
 
 for PAIR in UG UL GU GL LU LG; do
+  SIM2_RUN=$SIM2_RESULT_ROOT/$PAIR
   sbatch --chdir="$SIM_DIR" \
     --job-name="${PAIR}_mc100" \
-    --export=ALL,SIM2_POLICY_PAIR=$PAIR,SIM2_RESULT_ROOT=$SIM2_RESULT_ROOT,SIM2_MC_REPEATS=100 \
+    --export=ALL,SIM2_POLICY_PAIR=$PAIR,SIM2_RUN=$SIM2_RUN,SIM2_MC_REPEATS=100 \
     "$SIM_DIR/Job_mc_repeat_eval.sbatch"
 done
 ```

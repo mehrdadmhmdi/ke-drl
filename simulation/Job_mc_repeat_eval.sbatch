@@ -41,6 +41,15 @@ esac
 RESULT_ROOT="${SIM2_RESULT_ROOT:-${DEFAULT_RESULT_ROOT}}"
 RUN="${SIM2_RUN:-${RESULT_ROOT}/${SIM2_POLICY_PAIR}}"
 if [ ! -d "${RUN}/data" ] || [ ! -d "${RUN}/mu" ]; then
+  FALLBACK_RUN="${BASE}/results/6.5.2026_full_rerun/${SIM2_POLICY_PAIR}"
+  if [ -z "${SIM2_RUN:-}" ] && [ -d "${FALLBACK_RUN}/data" ] && [ -d "${FALLBACK_RUN}/mu" ]; then
+    echo "Default run folder was incomplete: ${RUN}"
+    echo "Using full-rerun fallback folder: ${FALLBACK_RUN}"
+    RUN="${FALLBACK_RUN}"
+    RESULT_ROOT="${BASE}/results/6.5.2026_full_rerun"
+  fi
+fi
+if [ ! -d "${RUN}/data" ] || [ ! -d "${RUN}/mu" ]; then
   echo "Missing fitted simulation outputs under ${RUN}." >&2
   echo "Run prepare and fit first, or set SIM2_RUN to the fitted pair folder." >&2
   exit 1
