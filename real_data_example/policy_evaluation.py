@@ -303,11 +303,19 @@ def _parse_args() -> argparse.Namespace:
     # beta as a probability vector; find probability weights whose induced
     # embedding best matches beta.
     # Importance-ratio (eta) stabilisation for the off-policy mean embedding.
+    p.add_argument(
+        "--rulsif-alpha",
+        "--ratio-alpha-mix",
+        dest="ratio_alpha_mix",
+        type=float,
+        default=0.1,
+        help="RuLSIF alpha-relative density-ratio mixing in [0,1). 0 reproduces old uLSIF; 0.1 bounds the relative ratio.",
+    )
     p.add_argument("--normalize-eta", type=int, default=1, help="1=self-normalise eta so mean(eta)~=1 (recommended).")
     p.add_argument("--eta-clip-max", type=float, default=20.0, help="Upper clip on importance ratio eta; raises ESS. <=0 disables.")
     p.add_argument("--ratio-lambda-reg", type=float, default=1e-2, help="Ridge for the uLSIF/RuLSIF density-ratio fit (larger=smoother eta).")
     p.add_argument("--density-recovery-device", type=str, default="same", help="same/cpu/cuda; device for post-fit density recovery.")
-    p.add_argument("--density-recovery-ridge", type=float, default=1e-4, help="Ridge in beta_tilde=(K+ridge I)^(-1)Aw.")
+    p.add_argument("--density-recovery-ridge", type=float, default=1e-5, help="Ridge in beta_tilde=(K+ridge I)^(-1)Aw; internally floored by kernel spectrum.")
     p.add_argument("--density-recovery-lr", type=float, default=1e-2)
     p.add_argument("--density-recovery-steps", type=int, default=20000)
     p.add_argument("--density-recovery-tol", type=float, default=1e-10)
@@ -315,14 +323,14 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--density-recovery-anchor",
         type=str,
-        default="uniform",
+        default="positive_beta",
         choices=["uniform", "abs_beta", "positive_beta", "init"],
         help="Strict recovery anchor w0 used by L2/KL penalties.",
     )
     p.add_argument(
         "--density-recovery-l2-lambda",
         type=float,
-        default=0.0,
+        default=1e-2,
         help="Adds lambda * ||w-w0||_2^2 to stabilize the recovered probability weights.",
     )
     p.add_argument(
@@ -332,9 +340,9 @@ def _parse_args() -> argparse.Namespace:
         help="Adds lambda * KL(w || w0); with positive anchor this selects an interior, unique regularized representative.",
     )
     p.add_argument("--density-recovery-print-every", type=int, default=500)
-    p.add_argument("--density-recovery-quad-points", type=int, default=31)
-    p.add_argument("--density-recovery-batch-atoms", type=int, default=64)
-    p.add_argument("--density-recovery-num-points", type=int, default=500)
+    p.add_argument("--density-recovery-quad-points", type=int, default=21)
+    p.add_argument("--density-recovery-batch-atoms", type=int, default=128)
+    p.add_argument("--density-recovery-num-points", type=int, default=400)
 
     # Continuous 2D mean-embedding contour plot.  This is separate from density
     # recovery and always treats the two plotted reward coordinates as a
@@ -2169,7 +2177,7 @@ def _optimize_induced_probability_weights(
     K = 0.5 * (K + K.T)
     # Spectrum-scaled ridge: a fixed absolute ridge means different conditioning
     # at each length scale. Tie it to the largest eigenvalue so the inverse stays
-    # stable (see DIAGNOSIS_AND_PATCHES.md, Patch 3).
+    # stable across nearby recovery specifications.
     lam_max = float(torch.linalg.eigvalsh(K)[-1])
     ridge_eff = max(float(ridge), 1e-6 * lam_max)
     K_reg = K + ridge_eff * torch.eye(m, dtype=dtype, device=dev)
@@ -4179,7 +4187,8 @@ def run_one_policy(
         ratio_sigma=sigma_sa,
         gamma_val=gamma_val,
         lambda_reg=lambda_reg,
-        # --- eta (importance ratio) stabilisation: see DIAGNOSIS_AND_PATCHES.md ---
+        # --- eta (importance ratio) stabilisation for the off-policy embedding ---
+        ratio_alpha_mix=float(getattr(args, "ratio_alpha_mix", 0.1)),
         normalize_eta=bool(int(getattr(args, "normalize_eta", 1))),
         eta_clip_min=0.0,
         eta_clip_max=(None if float(getattr(args, "eta_clip_max", 20.0)) <= 0
@@ -4227,6 +4236,15 @@ def run_one_policy(
         f"m={B_hat.shape[1]}",
         flush=True,
     )
+
+    eta_diagnostics = pre.get("eta_diagnostics", {}) if isinstance(pre, dict) else {}
+    if isinstance(eta_diagnostics, dict):
+        save_json(out_dir / "eta_diagnostics.json", eta_diagnostics)
+    if isinstance(pre.get("eta_plus_raw", None), torch.Tensor):
+        _save_array_csv(out_dir / "eta_plus_raw.csv", pre["eta_plus_raw"].detach().cpu(), ["eta_plus_raw"])
+    if isinstance(pre.get("eta_plus", None), torch.Tensor):
+        _save_array_csv(out_dir / "eta_plus_used.csv", pre["eta_plus"].detach().cpu(), ["eta_plus_used"])
+
     train_time = time.time() - t_train_start
 
     # IMPORTANT:
@@ -4387,6 +4405,12 @@ def run_one_policy(
             'method': method,
             'num_steps': int(args.num_steps),
             'num_grid_points': int(m_Z),
+            'ratio_alpha_mix': float(getattr(args, "ratio_alpha_mix", 0.1)),
+            'normalize_eta': bool(int(getattr(args, "normalize_eta", 1))),
+            'eta_clip_min': 0.0,
+            'eta_clip_max': (None if float(getattr(args, "eta_clip_max", 20.0)) <= 0
+                             else float(getattr(args, "eta_clip_max", 20.0))),
+            'ratio_lambda_reg': float(getattr(args, "ratio_lambda_reg", 1e-2)),
             'mean_embedding_basis_size_requested': int(getattr(args, "mean_embedding_basis_size", 0) or 0),
             'mean_embedding_basis_size_effective': int(mean_embedding_basis_info['effective_basis_size']),
             'mean_embedding_basis_method': str(mean_embedding_basis_info['basis_method']),
@@ -4416,6 +4440,7 @@ def run_one_policy(
         'surrogate_distill_mu_mse': float(mu_mse),
         'surrogate_distill_logstd_mse': float(ls_mse),
         'policy_output_summary': policy_output_summary,
+        'eta_diagnostics': eta_diagnostics,
         'train_policy_action_mean_raw': _np(greedy_tr_raw.mean(0)).tolist(),
         'test_policy_action_mean_raw': _np(greedy_test_raw.mean(0)).tolist(),
         'test_policy_gaussian_mean_raw': _np(mu_test_raw.mean(0)).tolist(),
@@ -4447,6 +4472,9 @@ def run_one_policy(
             'B_hat': B_hat.detach().cpu(),
             'B_hat_shape': tuple(B_hat.shape),
             'mean_embedding_basis_info': mean_embedding_basis_info,
+            'eta_diagnostics': eta_diagnostics,
+            'eta_plus_raw': pre["eta_plus_raw"].detach().cpu() if isinstance(pre.get("eta_plus_raw", None), torch.Tensor) else None,
+            'eta_plus_used': pre["eta_plus"].detach().cpu() if isinstance(pre.get("eta_plus", None), torch.Tensor) else None,
             'mean_embedding_state_action_basis': sa_basis.detach().cpu(),
             'mean_embedding_state_action_basis_indices': sa_basis_idx.detach().cpu(),
             'K_mean_embedding_basis': K_sa_basis.detach().cpu(),

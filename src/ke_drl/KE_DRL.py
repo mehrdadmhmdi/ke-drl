@@ -32,6 +32,32 @@ def _as_2d(name: str, x: torch.Tensor) -> torch.Tensor:
     return x
 
 
+def _eta_stats(eta: torch.Tensor) -> dict[str, float]:
+    x = eta.detach().reshape(-1)
+    finite = torch.isfinite(x)
+    if not bool(finite.any()):
+        return {
+            "mean": float("nan"),
+            "min": float("nan"),
+            "max": float("nan"),
+            "neg_frac": float("nan"),
+            "ess": 0.0,
+        }
+    x = x[finite]
+    w = torch.clamp(x, min=0.0)
+    sw = w.sum()
+    ess = 0.0
+    if float(sw.detach().cpu()) > 0.0:
+        ess = float(((sw * sw) / (w.pow(2).sum() + 1e-12)).detach().cpu().item())
+    return {
+        "mean": float(x.mean().detach().cpu().item()),
+        "min": float(x.min().detach().cpu().item()),
+        "max": float(x.max().detach().cpu().item()),
+        "neg_frac": float((x < 0).double().mean().detach().cpu().item()),
+        "ess": ess,
+    }
+
+
 def KE_DRL(
     *,
     # --- core data ---
@@ -59,6 +85,7 @@ def KE_DRL(
     ratio_nu: Optional[float] = None,
     ratio_length_scale: Optional[float] = None,
     ratio_sigma: Optional[float] = None,
+    ratio_alpha_mix: Optional[float] = None,
     ratio_n_basis: Optional[int] = None,
     ratio_basis_source: str = "denominator",
     ratio_basis_seed: Optional[int] = None,
@@ -205,6 +232,7 @@ def KE_DRL(
     ulsif = ULSIFEstimator(
         kernel_func=matern_kernel,
         lambda_reg=ratio_reg,
+        alpha_mix=ratio_alpha_mix,
         **ratio_params,
     )
     alpha = ulsif.fit(
@@ -227,20 +255,47 @@ def KE_DRL(
         eta_mean = eta_plus.mean()
         if torch.isfinite(eta_mean) and eta_mean > torch.finfo(dtype).eps:
             eta_plus = eta_plus / eta_mean
+    raw_eta_stats = _eta_stats(eta_plus_raw)
+    used_eta_stats = _eta_stats(eta_plus)
+    eta_diagnostics = {
+        "ratio_lambda_reg": float(ratio_reg),
+        "ratio_alpha_mix": float(getattr(ulsif, "alpha_mix", 0.0)),
+        "ratio_n_basis": None if ratio_n_basis is None else int(ratio_n_basis),
+        "ratio_basis_source": str(ratio_basis_source),
+        "eta_clip_min": None if eta_clip_min is None else float(eta_clip_min),
+        "eta_clip_max": None if eta_clip_max is None else float(eta_clip_max),
+        "normalize_eta": bool(normalize_eta),
+        "raw_mean": raw_eta_stats["mean"],
+        "raw_min": raw_eta_stats["min"],
+        "raw_max": raw_eta_stats["max"],
+        "raw_neg_frac": raw_eta_stats["neg_frac"],
+        "raw_ess": raw_eta_stats["ess"],
+        "used_mean": used_eta_stats["mean"],
+        "used_min": used_eta_stats["min"],
+        "used_max": used_eta_stats["max"],
+        "used_neg_frac": used_eta_stats["neg_frac"],
+        "used_ess": used_eta_stats["ess"],
+        "n": int(s1.shape[0]),
+    }
     if verbose:
-        try:
-            ess_train = ulsif.compute_ess(s1, a1)
-            print(f"ESS for eta_plus: {ess_train:.1f} / {s1.shape[0]}")
-        except Exception:
-            print("ESS unavailable.")
-        with torch.no_grad():
-            raw = eta_plus_raw.reshape(-1)
-            stable = eta_plus.reshape(-1)
-            print(
-                "eta_plus diagnostics: "
-                f"raw_mean={raw.mean().item():.3g}, raw_min={raw.min().item():.3g}, raw_max={raw.max().item():.3g}; "
-                f"used_mean={stable.mean().item():.3g}, used_min={stable.min().item():.3g}, used_max={stable.max().item():.3g}"
-            )
+        print(
+            "ESS for eta_plus: "
+            f"raw={eta_diagnostics['raw_ess']:.1f}, "
+            f"used={eta_diagnostics['used_ess']:.1f} / {s1.shape[0]}"
+        )
+        print(
+            "eta_plus diagnostics: "
+            f"alpha_mix={eta_diagnostics['ratio_alpha_mix']:.3g}, "
+            f"clip=[{eta_diagnostics['eta_clip_min']}, {eta_diagnostics['eta_clip_max']}], "
+            f"normalize={eta_diagnostics['normalize_eta']}; "
+            f"raw_mean={eta_diagnostics['raw_mean']:.3g}, "
+            f"raw_min={eta_diagnostics['raw_min']:.3g}, "
+            f"raw_max={eta_diagnostics['raw_max']:.3g}, "
+            f"raw_neg%={100.0 * eta_diagnostics['raw_neg_frac']:.2f}; "
+            f"used_mean={eta_diagnostics['used_mean']:.3g}, "
+            f"used_min={eta_diagnostics['used_min']:.3g}, "
+            f"used_max={eta_diagnostics['used_max']:.3g}"
+        )
 
     stage_t = time.time()
     Z = ZGrid.Z_kmeans(r, n_clusters=int(num_grid_points), constant_factor=float(hull_expand_factor))
@@ -458,6 +513,7 @@ def KE_DRL(
         "G": G_stack,
         "eta_plus": eta_plus,
         "eta_plus_raw": eta_plus_raw,
+        "eta_diagnostics": eta_diagnostics,
         "alpha": torch.as_tensor(alpha, dtype=dtype, device=dev),
         "optimizer_diagnostics": optimizer.last_diagnostics,
         "x_kernel_params": x_params,

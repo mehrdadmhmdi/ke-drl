@@ -31,15 +31,20 @@ class ULSIFEstimator:
         nu: float = 1.5,
         length_scale: float = 1.0,
         sigma: float = 1.0,
-        alpha_mix: float = 0.0,
+        alpha_mix: Optional[float] = None,
     ):
         import os as _os
         self.kernel_func = kernel_func
         self.lambda_reg = float(lambda_reg)
         self.kernel_kwargs = {"nu": float(nu), "length_scale": float(length_scale), "sigma": float(sigma)}
-        # RuLSIF alpha-relative mixing in [0,1). 0 == plain uLSIF. The env var
-        # KEDRL_RULSIF_ALPHA lets a cluster sbatch enable it without code edits.
-        self.alpha_mix = float(_os.environ.get("KEDRL_RULSIF_ALPHA", alpha_mix))
+        # RuLSIF alpha-relative mixing in [0,1). 0 == plain uLSIF.
+        # If no explicit value is passed, keep the cluster env-var fallback for
+        # backward compatibility with older sbatch files.
+        if alpha_mix is None:
+            alpha_mix = float(_os.environ.get("KEDRL_RULSIF_ALPHA", "0.0"))
+        self.alpha_mix = float(alpha_mix)
+        if not (0.0 <= self.alpha_mix < 1.0):
+            raise ValueError("alpha_mix must be in [0, 1).")
         self.alpha: Optional[torch.Tensor] = None      # (n_basis, 1)
         self._X_basis: Optional[torch.Tensor] = None   # (n_basis, d)
 

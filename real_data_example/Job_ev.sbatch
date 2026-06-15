@@ -13,17 +13,14 @@
 #SBATCH --array=0-287
 
 # =====================================================================
-# Mean-embedding + density-recovery evaluation (PATCHED).
+# Mean-embedding + density-recovery evaluation.
 # Prerequisite: run Job_d3rlpy.sbatch first so ./policies_linear3 exists.
 #   sbatch Job_d3rlpy.sbatch
 #   sbatch --dependency=afterok:<d3rlpy_jobid> Job_ev.sbatch
 #
-# Changes vs the previous version (see DIAGNOSIS_AND_PATCHES.md):
-#   * eta (importance ratio) stabilised: self-normalised + tail-clipped +
-#     stronger ratio ridge, and RuLSIF via KEDRL_RULSIF_ALPHA (bounded ratio).
-#   * density recovery anchored to positive_beta (not uniform), KL off,
-#     stronger L2, fewer atoms (GRID 1200 -> 300) for a well-posed inverse.
-#   * output root renamed (..._fixed) so previous results are preserved.
+# The evaluator itself owns the stabilized ratio and density-recovery settings:
+# bounded RuLSIF, self-normalized/clipped eta, positive-beta anchored recovery,
+# spectrum-scaled ridge, and a smaller atom grid for better conditioning.
 # =====================================================================
 
 set -euo pipefail
@@ -54,6 +51,7 @@ export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:T
 # 0.1 bounds the ratio by 1/0.1=10 -> removes the negative/heavy-tail blow-ups
 # and raises ESS. Set to 0.0 to reproduce the old behavior.
 export KEDRL_RULSIF_ALPHA="${KEDRL_RULSIF_ALPHA:-0.1}"
+RULSIF_ALPHA="${RULSIF_ALPHA:-${KEDRL_RULSIF_ALPHA}}"
 
 echo "Job ID:    ${SLURM_JOB_ID}"
 echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
@@ -61,6 +59,7 @@ echo "CPUs/node: ${SLURM_CPUS_ON_NODE:-NA}"
 echo "Mem/node:  ${SLURM_MEM_PER_NODE:-NA}"
 echo "Node:      $(hostname)"
 echo "KEDRL_RULSIF_ALPHA=${KEDRL_RULSIF_ALPHA}"
+echo "RULSIF_ALPHA=${RULSIF_ALPHA}"
 echo "Start:     $(date)"
 
 set +u
@@ -191,6 +190,7 @@ for x in [
     "normalize_eta",
     "eta_clip_max",
     "ratio_lambda_reg",
+    "ratio_alpha_mix",
     "nu",
     "length_scale",
     "sigma",
@@ -249,6 +249,7 @@ python -u "${PYFILE}" \
   --simplex-calibrate-B 0 \
   --simplex-calib-ridge 1e-3 \
   --simplex-calib-max-rows 0 \
+  --rulsif-alpha "${RULSIF_ALPHA}" \
   --normalize-eta 1 \
   --eta-clip-max 20 \
   --ratio-lambda-reg 1e-2 \
