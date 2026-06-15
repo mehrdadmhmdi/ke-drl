@@ -15,7 +15,6 @@ import pandas as pd
 import torch
 import yaml
 
-from sim_eval import mean_embedding_hat, mean_embedding_true, metrics_from_mu
 from sim_utils import (
     kedrl_import_info,
     monte_carlo_Z,
@@ -24,6 +23,8 @@ from sim_utils import (
     resolve_torch_dtype,
     seed_from_array,
 )
+
+from ke_drl.matern_kernel import matern_kernel
 
 
 print("# ================================================================ #")
@@ -81,6 +82,82 @@ def torch_load(path: Path) -> Any:
         return torch.load(path, map_location="cpu", weights_only=False)
     except TypeError:
         return torch.load(path, map_location="cpu")
+
+
+def mean_embedding_true(
+    Z_grid: torch.Tensor,
+    Z_true: torch.Tensor,
+    *,
+    nu: float,
+    length_scale: float,
+    sigma: float,
+    batch_size: int = 2000,
+) -> torch.Tensor:
+    """Compute m^{-1} sum_j k_Z(z, Z_j) without importing sim_eval."""
+    Z_grid = torch.as_tensor(Z_grid)
+    Z_true = torch.as_tensor(Z_true, dtype=Z_grid.dtype, device=Z_grid.device)
+    out = torch.zeros(Z_grid.shape[0], dtype=Z_grid.dtype, device=Z_grid.device)
+    for start in range(0, Z_true.shape[0], batch_size):
+        chunk = Z_true[start : start + batch_size]
+        out += matern_kernel(Z_grid, chunk, nu=nu, length_scale=length_scale, sigma=sigma).sum(dim=1)
+    return out / float(Z_true.shape[0])
+
+
+def mean_embedding_hat(
+    beta: torch.Tensor,
+    Z_grid: torch.Tensor,
+    *,
+    nu: float,
+    length_scale: float,
+    sigma: float,
+    eval_grid: torch.Tensor | None = None,
+) -> torch.Tensor:
+    if eval_grid is None:
+        eval_grid = Z_grid
+    eval_grid = torch.as_tensor(eval_grid, dtype=Z_grid.dtype, device=Z_grid.device)
+    Kzz = matern_kernel(eval_grid, Z_grid, nu=nu, length_scale=length_scale, sigma=sigma)
+    return (Kzz @ beta.reshape(-1)).contiguous()
+
+
+def common_eval_grid(Z_true: torch.Tensor, n_points: int) -> torch.Tensor:
+    """Deterministic benchmark grid matching sim_eval.common_eval_grid."""
+    Z_true = torch.as_tensor(Z_true)
+    n = min(int(n_points), Z_true.shape[0])
+    order = torch.argsort(Z_true[:, 0])
+    idx = torch.linspace(0, Z_true.shape[0] - 1, n, device=Z_true.device).round().long()
+    return Z_true[order[idx]].contiguous()
+
+
+def _deming(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    x = np.asarray(x, dtype=float).reshape(-1)
+    y = np.asarray(y, dtype=float).reshape(-1)
+    xm, ym = x.mean(), y.mean()
+    x0, y0 = x - xm, y - ym
+    sxx = float(np.mean(x0 * x0))
+    syy = float(np.mean(y0 * y0))
+    sxy = float(np.mean(x0 * y0))
+    if abs(sxy) < 1e-15:
+        return float("nan"), float("nan")
+    slope = (syy - sxx + float(np.sqrt((syy - sxx) ** 2 + 4.0 * sxy**2))) / (2.0 * sxy)
+    intercept = ym - slope * xm
+    return float(slope), float(intercept)
+
+
+def metrics_from_mu(mu_hat: np.ndarray, mu_true: np.ndarray) -> dict[str, float]:
+    mu_hat = np.asarray(mu_hat, dtype=float).reshape(-1)
+    mu_true = np.asarray(mu_true, dtype=float).reshape(-1)
+    diff = mu_hat - mu_true
+    slope, intercept = _deming(mu_true, mu_hat)
+    corr = float(np.corrcoef(mu_true, mu_hat)[0, 1]) if mu_true.size > 1 else float("nan")
+    return {
+        "RMSE": float(np.sqrt(np.mean(diff * diff))),
+        "MAE": float(np.mean(np.abs(diff))),
+        "SupNorm": float(np.max(np.abs(diff))),
+        "Bias": float(np.mean(diff)),
+        "Corr": corr,
+        "deming_slope": slope,
+        "deming_intercept": intercept,
+    }
 
 
 def tensor_digest(x: torch.Tensor) -> str:
@@ -167,16 +244,43 @@ def discover_offline_ids(data_dir: Path, mu_dir: Path) -> list[int]:
     return sorted(ids)
 
 
-def load_eval_grid(data_dir: Path, run_id: str, offline_id: int, benchmark_id: int) -> torch.Tensor:
+def load_truth_z_list(data_dir: Path, params: dict[str, Any], dtype: torch.dtype) -> list[torch.Tensor] | None:
+    bench_cfg = dict(params.get("benchmark") or {})
+    z_path = data_dir / str(bench_cfg.get("output", "Z_true.pt"))
+    if not z_path.exists():
+        return None
+    blob = torch_load(z_path)
+    z_list = blob.get("Z_true")
+    if not z_list:
+        return None
+    return [torch.as_tensor(z, dtype=dtype) for z in z_list]
+
+
+def load_eval_grid(
+    data_dir: Path,
+    run_id: str,
+    offline_id: int,
+    benchmark_id: int,
+    *,
+    truth_z_list: list[torch.Tensor] | None,
+    num_grid_points: int,
+    reward_dim: int,
+) -> torch.Tensor:
     candidates = [data_dir / f"Zeval_{run_id}.pt"]
     if benchmark_id == 0:
         candidates.append(data_dir / f"Zeval_{offline_id}.pt")
     for path in candidates:
         if path.exists():
             return torch.as_tensor(torch_load(path))
+    if truth_z_list is not None and benchmark_id < len(truth_z_list):
+        z_true = truth_z_list[benchmark_id][:, :reward_dim]
+        return common_eval_grid(z_true, num_grid_points)
+    z_name = "Z_true.pt"
     raise FileNotFoundError(
-        "Missing evaluation grid for repeated MC comparison. Tried: "
+        "Missing evaluation grid for repeated MC comparison. Tried "
         + ", ".join(str(path) for path in candidates)
+        + f"; also could not reconstruct benchmark {benchmark_id} from {data_dir / z_name}. "
+        "Provide the fit data folder with Zeval_*.pt files or a shared data folder containing Z_true.pt."
     )
 
 
@@ -234,6 +338,9 @@ def build_run_specs(
     n_benchmark: int,
     kernel_cfg: dict[str, Any],
     dtype: torch.dtype,
+    truth_z_list: list[torch.Tensor] | None,
+    num_grid_points: int,
+    reward_dim: int,
 ) -> list[RunSpec]:
     specs: list[RunSpec] = []
     nu = float(kernel_cfg.get("nu", 5.5))
@@ -244,7 +351,15 @@ def build_run_specs(
             if benchmark_id < 0 or benchmark_id >= n_benchmark:
                 raise ValueError(f"benchmark_id={benchmark_id} outside 0,...,{n_benchmark - 1}.")
             rid = run_id_for(offline_id, benchmark_id, n_benchmark)
-            eval_grid = load_eval_grid(data_dir, rid, offline_id, benchmark_id).to(dtype=dtype)
+            eval_grid = load_eval_grid(
+                data_dir,
+                rid,
+                offline_id,
+                benchmark_id,
+                truth_z_list=truth_z_list,
+                num_grid_points=num_grid_points,
+                reward_dim=reward_dim,
+            ).to(dtype=dtype)
             mu_hat = load_mu_hat(
                 data_dir=data_dir,
                 mu_dir=mu_dir,
@@ -499,6 +614,54 @@ def aggregate_summary(summary_df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFr
     return aggregate_df, by_benchmark_df
 
 
+def plot_boxplots_by_target(repeat_df: pd.DataFrame, outdir: Path) -> list[Path]:
+    """Write repeated-MC metric boxplots grouped by benchmark target point."""
+    if repeat_df.empty or "benchmark_id" not in repeat_df.columns:
+        return []
+    try:
+        import matplotlib
+
+        matplotlib.use("Agg", force=True)
+        import matplotlib.pyplot as plt
+    except ModuleNotFoundError as exc:
+        print(f"Skipping repeated-MC boxplots because matplotlib is unavailable: {exc}", flush=True)
+        return []
+
+    outdir.mkdir(parents=True, exist_ok=True)
+    metric_specs = [
+        ("RMSE", "RMSE"),
+        ("MAE", "MAE"),
+        ("Bias", "Bias"),
+        ("diff_mean", "Mean difference"),
+    ]
+    target_ids = sorted(int(x) for x in repeat_df["benchmark_id"].dropna().unique())
+    if not target_ids:
+        return []
+
+    fig, axes = plt.subplots(2, 2, figsize=(11.0, 7.2), constrained_layout=True)
+    for ax, (metric, ylabel) in zip(axes.reshape(-1), metric_specs):
+        data = []
+        labels = []
+        for target_id in target_ids:
+            values = repeat_df.loc[repeat_df["benchmark_id"] == target_id, metric].to_numpy(dtype=float)
+            values = values[np.isfinite(values)]
+            if values.size:
+                data.append(values)
+                labels.append(str(target_id))
+        if data:
+            ax.boxplot(data, labels=labels, showmeans=True, meanline=True, patch_artist=True)
+            ax.axhline(0.0, color="0.65", lw=0.8, zorder=0)
+        ax.set_title(ylabel)
+        ax.set_xlabel("Target point")
+        ax.set_ylabel(ylabel)
+        ax.grid(axis="y", alpha=0.25)
+    fig.suptitle("Repeated Monte Carlo comparison by target point", fontsize=13)
+    panel_path = outdir / "mc_repeat_boxplots_by_target.png"
+    fig.savefig(panel_path, dpi=300)
+    plt.close(fig)
+    return [panel_path]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Generate repeated Monte Carlo truth samples and compare fitted embeddings against each repeat."
@@ -508,6 +671,7 @@ def main() -> None:
     parser.add_argument("--mu-dir", default="mu")
     parser.add_argument("--metrics-dir", default="metrics")
     parser.add_argument("--output-dir", default=None)
+    parser.add_argument("--plots-dir", default=os.environ.get("SIM2_MC_PLOTS_DIR"))
     parser.add_argument("--offline-ids", default=os.environ.get("SIM2_MC_OFFLINE_IDS"))
     parser.add_argument("--benchmark-ids", default=os.environ.get("SIM2_MC_BENCHMARK_IDS"))
     parser.add_argument("--mc-repeats", type=int, default=int(os.environ.get("SIM2_MC_REPEATS", "100")))
@@ -539,8 +703,10 @@ def main() -> None:
     mu_dir = Path(args.mu_dir)
     metrics_dir = Path(args.metrics_dir)
     out_dir = Path(args.output_dir) if args.output_dir else metrics_dir / "mc_repeats"
+    plots_dir = Path(args.plots_dir) if args.plots_dir else out_dir / "plots"
     out_dir.mkdir(parents=True, exist_ok=True)
     metrics_dir.mkdir(parents=True, exist_ok=True)
+    plots_dir.mkdir(parents=True, exist_ok=True)
 
     dtype = resolve_torch_dtype(params.get("dtype", "float64"))
     compute_device = resolve_compute_device(params.get("compute"), purpose="repeated Monte Carlo truth")
@@ -553,6 +719,7 @@ def main() -> None:
 
     s_star, a_star, point_sources = load_benchmark_points(data_dir=data_dir, params=params, dtype=dtype)
     n_benchmark = int(s_star.shape[0])
+    truth_z_list = load_truth_z_list(data_dir=data_dir, params=params, dtype=dtype)
     offline_ids = parse_int_list(args.offline_ids) or discover_offline_ids(data_dir, mu_dir)
     benchmark_ids = parse_int_list(args.benchmark_ids) or list(range(n_benchmark))
     kernel_cfg = dict(params.get("kernel") or {})
@@ -565,6 +732,9 @@ def main() -> None:
         n_benchmark=n_benchmark,
         kernel_cfg=kernel_cfg,
         dtype=dtype,
+        truth_z_list=truth_z_list,
+        num_grid_points=as_int(params["num_grid_points"]),
+        reward_dim=as_int(params["reward_dim"]),
     )
 
     unique_grids = sorted({(spec.benchmark_id, spec.grid_key) for spec in specs})
@@ -620,12 +790,14 @@ def main() -> None:
     pointwise_df.to_csv(pointwise_path, index=False)
     aggregate_df.to_csv(aggregate_path, index=False)
     by_benchmark_df.to_csv(by_benchmark_path, index=False)
+    plot_paths = plot_boxplots_by_target(repeat_df, plots_dir)
 
     manifest = {
         "params": str(Path(args.params).resolve()),
         "data_dir": str(data_dir.resolve()),
         "mu_dir": str(mu_dir.resolve()),
         "output_dir": str(out_dir.resolve()),
+        "plots_dir": str(plots_dir.resolve()),
         "mc_repeats": args.mc_repeats,
         "repeat_start": args.repeat_start,
         "seed_offset": args.seed_offset,
@@ -644,6 +816,7 @@ def main() -> None:
             "pointwise_diff_summary": str(pointwise_path),
             "aggregate_metrics": str(aggregate_path),
             "per_benchmark_aggregate_metrics": str(by_benchmark_path),
+            "boxplots": [str(path) for path in plot_paths],
         },
     }
     with open(out_dir / "mc_repeat_manifest.json", "w", encoding="utf-8") as f:
@@ -651,7 +824,15 @@ def main() -> None:
 
     elapsed = time.time() - start
     print("Repeated MC outputs:")
-    for path in [repeat_path, summary_path, pointwise_path, aggregate_path, by_benchmark_path, out_dir / "mc_repeat_manifest.json"]:
+    for path in [
+        repeat_path,
+        summary_path,
+        pointwise_path,
+        aggregate_path,
+        by_benchmark_path,
+        *plot_paths,
+        out_dir / "mc_repeat_manifest.json",
+    ]:
         print(f"  {path.resolve()}")
     print(f"Repeated MC comparison finished in {elapsed:.1f}s")
     print("=" * 70)

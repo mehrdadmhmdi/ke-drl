@@ -79,12 +79,13 @@ run the CPU post-fit repeated-MC comparison:
 ```bash
 SIM_DIR=/work/nvme/bfez/mehrdad3/DistRL/simulation_small_N_large_T
 SIM2_RESULT_ROOT=$SIM_DIR/results/6.5.2026_full_rerun
+SIM2_DATA_DIR=$SIM2_RESULT_ROOT/shared/data
 
 for PAIR in UG UL GU GL LU LG; do
   SIM2_RUN=$SIM2_RESULT_ROOT/$PAIR
   sbatch --chdir="$SIM_DIR" \
     --job-name="${PAIR}_mc100" \
-    --export=ALL,SIM2_POLICY_PAIR=$PAIR,SIM2_RUN=$SIM2_RUN,SIM2_MC_REPEATS=100 \
+    --export=ALL,SIM2_POLICY_PAIR=$PAIR,SIM2_RUN=$SIM2_RUN,SIM2_DATA_DIR=$SIM2_DATA_DIR,SIM2_MC_REPEATS=100 \
     "$SIM_DIR/Job_mc_repeat_eval.sbatch"
 done
 ```
@@ -98,9 +99,12 @@ results/<PAIR>/metrics/mc_repeat_per_benchmark_aggregate_metrics.csv
 results/<PAIR>/metrics/mc_repeats/mc_repeat_metrics.csv
 results/<PAIR>/metrics/mc_repeats/mc_repeat_run_summary.csv
 results/<PAIR>/metrics/mc_repeats/mc_repeat_pointwise_diff_summary.csv
+results/<PAIR>/plots/mc_repeats/mc_repeat_boxplots_by_target.png
 ```
 
 The run summary includes scalar mean/sd columns such as `RMSE_mean`,
 `RMSE_sd`, `Bias_mean`, `Bias_sd`, `diff_mean_all`, and `diff_sd_all`.
 The pointwise file gives `diff_mean` and `diff_sd` for
 `mu_hat - mu_true` at each evaluation-grid location.
+The boxplot figure shows the repeated-MC distribution of RMSE, MAE, Bias,
+and mean difference separately for each benchmark target point.

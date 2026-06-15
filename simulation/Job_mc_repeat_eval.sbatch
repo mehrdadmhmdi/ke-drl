@@ -40,21 +40,50 @@ esac
 
 RESULT_ROOT="${SIM2_RESULT_ROOT:-${DEFAULT_RESULT_ROOT}}"
 RUN="${SIM2_RUN:-${RESULT_ROOT}/${SIM2_POLICY_PAIR}}"
-if [ ! -d "${RUN}/data" ] || [ ! -d "${RUN}/mu" ]; then
+if [ ! -d "${RUN}/mu" ]; then
   FALLBACK_RUN="${BASE}/results/6.5.2026_full_rerun/${SIM2_POLICY_PAIR}"
-  if [ -z "${SIM2_RUN:-}" ] && [ -d "${FALLBACK_RUN}/data" ] && [ -d "${FALLBACK_RUN}/mu" ]; then
+  if [ -z "${SIM2_RUN:-}" ] && [ -d "${FALLBACK_RUN}/mu" ]; then
     echo "Default run folder was incomplete: ${RUN}"
     echo "Using full-rerun fallback folder: ${FALLBACK_RUN}"
     RUN="${FALLBACK_RUN}"
     RESULT_ROOT="${BASE}/results/6.5.2026_full_rerun"
   fi
 fi
-if [ ! -d "${RUN}/data" ] || [ ! -d "${RUN}/mu" ]; then
-  echo "Missing fitted simulation outputs under ${RUN}." >&2
-  echo "Run prepare and fit first, or set SIM2_RUN to the fitted pair folder." >&2
+if [ ! -d "${RUN}/mu" ]; then
+  echo "Missing fitted mu outputs under ${RUN}/mu." >&2
+  echo "Set SIM2_RUN to the fitted pair folder containing mu/." >&2
   exit 1
 fi
-mkdir -p "${RUN}/logs" "${RUN}/metrics" "${RUN}/metrics/mc_repeats"
+
+DATA_DIR="${SIM2_DATA_DIR:-${RUN}/data}"
+if [ ! -d "${DATA_DIR}" ]; then
+  for candidate in \
+    "${RUN}/shared/data" \
+    "${RESULT_ROOT}/shared/data" \
+    "${BASE}/results/${SIM2_POLICY_PAIR}/shared/data" \
+    "${BASE}/results/${SIM2_POLICY_PAIR}/data"
+  do
+    if [ -d "${candidate}" ]; then
+      echo "Using fallback data folder: ${candidate}"
+      DATA_DIR="${candidate}"
+      break
+    fi
+  done
+fi
+if [ ! -d "${DATA_DIR}" ]; then
+  echo "Missing data artifacts for repeated MC evaluation." >&2
+  echo "The pair folder has fitted mu/, but repeated MC also needs benchmark/evaluation-grid data." >&2
+  echo "Set SIM2_DATA_DIR to a folder containing Z_true.pt and benchmark_point.csv, or Zeval_*.pt files." >&2
+  echo "Looked for: ${RUN}/data, ${RUN}/shared/data, ${RESULT_ROOT}/shared/data" >&2
+  exit 1
+fi
+if [ ! -f "${DATA_DIR}/Z_true.pt" ] && ! compgen -G "${DATA_DIR}/Zeval_*.pt" > /dev/null; then
+  echo "Data folder exists but lacks Z_true.pt and Zeval_*.pt files: ${DATA_DIR}" >&2
+  echo "Repeated MC needs Z_true.pt to reconstruct grids, or Zeval_*.pt from the fit stage." >&2
+  exit 1
+fi
+
+mkdir -p "${RUN}/logs" "${RUN}/metrics" "${RUN}/metrics/mc_repeats" "${RUN}/plots/mc_repeats"
 
 REPO_ROOT="$(cd "${BASE}/.." && pwd)"
 export PYTHONPATH="${REPO_ROOT}/src:${RUN}:${BASE}:${PYTHONPATH:-}"
@@ -75,6 +104,7 @@ echo "Policy pair:      ${SIM2_POLICY_PAIR}"
 echo "Simulation base:  ${BASE}"
 echo "Result root:      ${RESULT_ROOT}"
 echo "Run folder:       ${RUN}"
+echo "Data folder:      ${DATA_DIR}"
 echo "CPUs per task:    ${SLURM_CPUS_PER_TASK:-NA}"
 echo "CPUs on node:     ${SLURM_CPUS_ON_NODE:-NA}"
 echo "Mem per node(MB): ${SLURM_MEM_PER_NODE:-NA}"
@@ -128,10 +158,11 @@ fi
 
 python -u main_mc_repeat_eval.py \
   --params params.yaml \
-  --data-dir data \
+  --data-dir "${DATA_DIR}" \
   --mu-dir mu \
   --metrics-dir metrics \
   --output-dir metrics/mc_repeats \
+  --plots-dir plots/mc_repeats \
   --mc-repeats "${SIM2_MC_REPEATS:-100}" \
   --repeat-start "${SIM2_MC_REPEAT_START:-0}" \
   --seed-offset "${SIM2_MC_SEED_OFFSET:-300000}" \
@@ -145,3 +176,4 @@ ls -lh metrics/mc_repeat_aggregate_metrics.csv
 ls -lh metrics/mc_repeat_per_benchmark_aggregate_metrics.csv
 ls -lh metrics/mc_repeats/mc_repeat_run_summary.csv
 ls -lh metrics/mc_repeats/mc_repeat_pointwise_diff_summary.csv
+ls -lh plots/mc_repeats/mc_repeat_boxplots_by_target.png
