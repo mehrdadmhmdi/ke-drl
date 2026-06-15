@@ -4,28 +4,28 @@ Downstream density-recovery diagnostic (NumPy only; no torch/scipy needed).
 
 Re-recovers the total_clicks distribution from the ALREADY-SAVED mean-embedding
 coefficients beta (density_atom_weights_table.csv) for each policy, comparing:
-  saved     : the density_weight column from the current pipeline
-              (induced matching, anchor=uniform)
-  rkhs_proj : argmin_{w in simplex} (w-beta)^T K (w-beta)   [well-posed, no uniform pull]
+  saved     : the density_weight column from the pipeline run
+  rkhs_proj : argmin_{w in simplex} (w-beta)^T K (w-beta)   [well-posed]
   pos_beta  : w proportional to max(beta, 0)
 
-If E[clicks]_clk - E[clicks]_rev does not become reliably > 0 under a well-posed
-recovery, the click signal is not robustly in beta => the blocker is upstream
-(importance ratio / embedding), not the recovery.
+It also reports corr(beta_rev, beta_clk). After the eta fix, expect:
+  - beta-corr clearly positive (the two policies' embeddings share structure)
+  - frac_correct(sep>0) well above 0.5 and stable across recovery methods.
 
-Usage:
-    LIMIT=8 python3 downstream_recovery_diagnostic.py
-    RESULTS=/path/to/results LIMIT=0 python3 downstream_recovery_diagnostic.py   # all pairs
+Pairs the two policies by their SHARED config directory, so it handles both the
+old `main_cfg_N/` tree and the new `main_cfg_N_<target_point>/` tree.
+
+Usage (scan everything under the current folder, i.e. the live run + archives):
+    python3 downstream_recovery_diagnostic.py
+Scan a specific tree / limit how many configs:
+    RESULTS=evaluation_results/expedia_encoded_10k_linear3_fixed LIMIT=12 \
+        python3 downstream_recovery_diagnostic.py
 """
 import csv, glob, math, os, re
 import numpy as np
 
-RESULTS = os.environ.get(
-    "RESULTS",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "results"),
-)
-# subdir under results/ to scan (date-stamped run folder)
-RUN = os.environ.get("RUN", "6.11.2026")
+# Root to scan recursively for density_atom_weights_table.csv files.
+RESULTS = os.environ.get("RESULTS", ".")
 
 
 def _matern_coeffs(p):
@@ -108,9 +108,13 @@ def _load(path):
     return {h: i for i, h in enumerate(H)}, np.array(rows, float), H
 
 
-def _kparse(dn):
-    return (float(re.search(r'nuZ([0-9.]+)', dn).group(1)),
-            float(re.search(r'ellZ([0-9.]+)', dn).group(1)))
+def _kparse(dirname):
+    """Kernel params from the per-policy folder name; fall back to 3.5 / 2.5."""
+    mnu = re.search(r'nuZ([0-9.]+)', dirname)
+    mell = re.search(r'ellZ([0-9.]+)', dirname)
+    nu = float(mnu.group(1)) if mnu else 3.5
+    ell = float(mell.group(1)) if mell else 2.5
+    return nu, ell
 
 
 def pmf_clicks(w, clk, kmax=8):
@@ -130,15 +134,17 @@ def effn(w):
 
 
 def find_pairs():
-    pat = os.path.join(RESULTS, RUN, "evaluation_results/**/density_atom_weights_table.csv")
+    """Group rev/clk policies by their SHARED parent config directory."""
+    pat = os.path.join(RESULTS, "**", "density_atom_weights_table.csv")
     g = {}
     for f in glob.glob(pat, recursive=True):
-        tag = "clk" if "total_clicks" in f else ("rev" if "gross_revenue" in f else None)
+        policy_dir = os.path.basename(os.path.dirname(f))
+        tag = ("clk" if "total_clicks" in policy_dir
+               else ("rev" if "gross_revenue" in policy_dir else None))
         if tag is None:
             continue
-        cfg = re.search(r'main_cfg_(\d+)', f).group(1)
-        root = f.split("/evaluation_results/")[1].split("/")[0]
-        g.setdefault((root, cfg), {})[tag] = f
+        cfg_dir = os.path.dirname(os.path.dirname(f))  # the main_cfg_..._<target> dir
+        g.setdefault(cfg_dir, {})[tag] = f
     return {k: v for k, v in g.items() if "rev" in v and "clk" in v}
 
 
@@ -160,35 +166,41 @@ def recover(path):
     }, clk, beta
 
 
+def _label(cfg_dir):
+    base = os.path.basename(cfg_dir)
+    return base[-26:] if len(base) > 26 else base
+
+
 def main():
     P = find_pairs()
     lim = int(os.environ.get("LIMIT", "0"))
-    items = sorted(P.items(), key=lambda x: (x[0][0], int(x[0][1])))
+    items = sorted(P.items(), key=lambda x: x[0])
     if lim > 0:
         items = items[:lim]
-    print("Found %d rev/clk pairs (running %d)\n" % (len(P), len(items)), flush=True)
-    print("%-14s %-10s %9s %9s %7s %8s %8s" %
-          ("cfg", "variant", "E[clk]rev", "E[clk]clk", "sep", "effNrev", "effNclk"))
+    print("RESULTS=%s" % os.path.abspath(RESULTS))
+    print("Found %d rev/clk config pairs (running %d)\n" % (len(P), len(items)), flush=True)
+    print("%-28s %-10s %9s %9s %7s %8s %8s" %
+          ("config", "variant", "E[clk]rev", "E[clk]clk", "sep", "effNrev", "effNclk"))
     variants = ["saved", "rkhs_proj", "pos_beta"]
     agg = {v: [] for v in variants}
     betacorr = []
-    for (root, cfg), d in items:
+    for cfg_dir, d in items:
         rev, crev, brev = recover(d["rev"])
         clk, cclk, bclk = recover(d["clk"])
         if brev.shape == bclk.shape and np.std(brev) > 0 and np.std(bclk) > 0:
             betacorr.append(float(np.corrcoef(brev, bclk)[0, 1]))
-        lab = root[:6] + "/cfg" + cfg
+        lab = _label(cfg_dir)
         for v in variants:
             Er, _ = pmf_clicks(rev[v], crev)
             Ec, _ = pmf_clicks(clk[v], cclk)
             sep = Ec - Er
             agg[v].append(sep)
-            print("%-14s %-10s %9.3f %9.3f %+7.3f %8.1f %8.1f" %
+            print("%-28s %-10s %9.3f %9.3f %+7.3f %8.1f %8.1f" %
                   (lab, v, Er, Ec, sep, effn(rev[v]), effn(clk[v])), flush=True)
         print(flush=True)
-    print("=" * 64)
+    print("=" * 72)
     print("sep = E[clk]_clk - E[clk]_rev   (want > 0 : click policy => more clicks)")
-    print("=" * 64)
+    print("=" * 72)
     for v in variants:
         s = np.array(agg[v])
         if s.size:

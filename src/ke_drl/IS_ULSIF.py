@@ -31,10 +31,15 @@ class ULSIFEstimator:
         nu: float = 1.5,
         length_scale: float = 1.0,
         sigma: float = 1.0,
+        alpha_mix: float = 0.0,
     ):
+        import os as _os
         self.kernel_func = kernel_func
         self.lambda_reg = float(lambda_reg)
         self.kernel_kwargs = {"nu": float(nu), "length_scale": float(length_scale), "sigma": float(sigma)}
+        # RuLSIF alpha-relative mixing in [0,1). 0 == plain uLSIF. The env var
+        # KEDRL_RULSIF_ALPHA lets a cluster sbatch enable it without code edits.
+        self.alpha_mix = float(_os.environ.get("KEDRL_RULSIF_ALPHA", alpha_mix))
         self.alpha: Optional[torch.Tensor] = None      # (n_basis, 1)
         self._X_basis: Optional[torch.Tensor] = None   # (n_basis, d)
 
@@ -127,7 +132,16 @@ class ULSIFEstimator:
         K_basis_de = self.kernel_func(X_basis, X_beta, **self.kernel_kwargs)          # (b, n_de)
         K_basis_nu = self.kernel_func(X_basis, X_pi, **self.kernel_kwargs)            # (b, n_nu)
 
-        H = (K_basis_de @ K_basis_de.transpose(0, 1)) / float(n_de)                   # (b, b)
+        # RuLSIF: estimate the alpha-relative ratio
+        #   r_alpha = p_pi / (alpha p_pi + (1-alpha) p_beta),  bounded above by 1/alpha.
+        # alpha_mix == 0 recovers plain uLSIF (the original, unbounded estimator).
+        am = float(getattr(self, "alpha_mix", 0.0))
+        H_de = (K_basis_de @ K_basis_de.transpose(0, 1)) / float(n_de)                # (b, b)
+        if am > 0.0:
+            H_nu = (K_basis_nu @ K_basis_nu.transpose(0, 1)) / float(n_nu)            # (b, b)
+            H = am * H_nu + (1.0 - am) * H_de
+        else:
+            H = H_de
         h = K_basis_nu.mean(dim=1)                                                    # (b,)
 
         I_b = torch.eye(b, device=device, dtype=dtype)
@@ -145,8 +159,8 @@ class ULSIFEstimator:
             eta_hat = (K_basis_de.transpose(0, 1) @ self.alpha).squeeze(1)
             neg = (eta_hat < 0).float().mean().item()
             print(
-                "[uLSIF] basis={}/{} ({}); eta_hat min={:.3e} max={:.3e} neg%={:.2f}".format(
-                    b, source_pool.shape[0], basis_source_l,
+                "[uLSIF alpha_mix={:.2f}] basis={}/{} ({}); eta_hat min={:.3e} max={:.3e} neg%={:.2f}".format(
+                    am, b, source_pool.shape[0], basis_source_l,
                     eta_hat.min().item(), eta_hat.max().item(), 100.0 * neg,
                 )
             )

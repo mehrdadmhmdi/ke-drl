@@ -12,6 +12,20 @@
 #SBATCH --mail-user=mehrdad3@illinois.edu
 #SBATCH --array=0-287
 
+# =====================================================================
+# Mean-embedding + density-recovery evaluation (PATCHED).
+# Prerequisite: run Job_d3rlpy.sbatch first so ./policies_linear3 exists.
+#   sbatch Job_d3rlpy.sbatch
+#   sbatch --dependency=afterok:<d3rlpy_jobid> Job_ev.sbatch
+#
+# Changes vs the previous version (see DIAGNOSIS_AND_PATCHES.md):
+#   * eta (importance ratio) stabilised: self-normalised + tail-clipped +
+#     stronger ratio ridge, and RuLSIF via KEDRL_RULSIF_ALPHA (bounded ratio).
+#   * density recovery anchored to positive_beta (not uniform), KL off,
+#     stronger L2, fewer atoms (GRID 1200 -> 300) for a well-posed inverse.
+#   * output root renamed (..._fixed) so previous results are preserved.
+# =====================================================================
+
 set -euo pipefail
 
 SUBMIT_DIR="${SLURM_SUBMIT_DIR:-$(pwd)}"
@@ -36,11 +50,17 @@ export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 export NUMEXPR_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
+# RuLSIF alpha-relative mixing for the density-ratio fit (0=plain uLSIF).
+# 0.1 bounds the ratio by 1/0.1=10 -> removes the negative/heavy-tail blow-ups
+# and raises ESS. Set to 0.0 to reproduce the old behavior.
+export KEDRL_RULSIF_ALPHA="${KEDRL_RULSIF_ALPHA:-0.1}"
+
 echo "Job ID:    ${SLURM_JOB_ID}"
 echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
 echo "CPUs/node: ${SLURM_CPUS_ON_NODE:-NA}"
 echo "Mem/node:  ${SLURM_MEM_PER_NODE:-NA}"
 echo "Node:      $(hostname)"
+echo "KEDRL_RULSIF_ALPHA=${KEDRL_RULSIF_ALPHA}"
 echo "Start:     $(date)"
 
 set +u
@@ -59,11 +79,13 @@ STATE_ENCODER_PATH="${STATE_ENCODER_PATH:-${POLICY_CKPT_DIR}/state_encoder.json}
 PYFILE="${PYFILE:-policy_evaluation.py}"
 TASK="${SLURM_ARRAY_TASK_ID}"
 
+if [ ! -f "${STATE_ENCODER_PATH}" ]; then
+  echo "ERROR: ${STATE_ENCODER_PATH} not found. Run Job_d3rlpy.sbatch first." >&2
+  exit 3
+fi
+
 # Focused stable grid for the separated policies.
 # The reported risk is the zero-baseline projected Bellman fit risk.
-# The 6.12.2026 run showed that large lambda values destabilize click risk;
-# keep lambda in the low-risk band and use the density bandwidth grid below
-# to test whether the recovered revenue marginal is a stable policy effect.
 NU_Z_ARR=(3.5 4.5)
 ELL_Z_ARR=(2.00 2.50 3.00)
 LAM_ARR=(1e-5 2e-5 4e-5 1e-4)
@@ -74,7 +96,7 @@ SIGMA_SA_ARR=(1.0)
 BAND_ARR=(0.0)
 BW_PER_DIM_ARR=("30,1" "50,1" "70,1" "90,1")
 LAMREC_ARR=(0.0)
-GRID_ARR=(1200)
+GRID_ARR=(300)                       # was 1200; fewer atoms -> better-conditioned recovery
 MEAN_EMBEDDING_BASIS_SIZE_ARR=(6000)
 STEPS_ARR=(40000)
 TARGET_POINT_ARR=("state_pc_q25" "state_pc_q50" "state_pc_q75")
@@ -135,7 +157,7 @@ STEPS=${STEPS_ARR[$I_STEPS]}
 TARGET_POINT=${TARGET_POINT_ARR[$I_TARGET_POINT]}
 
 CFG_INDEX=$(( TASK / N_TARGET_POINT ))
-OUTROOT="evaluation_results/expedia_encoded_10k_linear3/main_cfg_${CFG_INDEX}_${TARGET_POINT}"
+OUTROOT="evaluation_results/expedia_encoded_10k_linear3_fixed/main_cfg_${CFG_INDEX}_${TARGET_POINT}"
 
 echo "Resolved config:"
 echo "  PYFILE       = ${PYFILE}"
@@ -166,14 +188,9 @@ from ke_drl.api import estimate_embedding
 sig = str(inspect.signature(estimate_embedding))
 for x in [
     "mean_embedding_basis_size",
-    "mean_embedding_basis_method",
-    "lambda_B",
-    "x_nu",
-    "x_length_scale",
-    "x_sigma",
-    "ratio_nu",
-    "ratio_length_scale",
-    "ratio_sigma",
+    "normalize_eta",
+    "eta_clip_max",
+    "ratio_lambda_reg",
     "nu",
     "length_scale",
     "sigma",
@@ -232,14 +249,17 @@ python -u "${PYFILE}" \
   --simplex-calibrate-B 0 \
   --simplex-calib-ridge 1e-3 \
   --simplex-calib-max-rows 0 \
+  --normalize-eta 1 \
+  --eta-clip-max 20 \
+  --ratio-lambda-reg 1e-2 \
   --density-recovery-steps 20000 \
   --density-recovery-lr 1e-2 \
   --density-recovery-tol 1e-10 \
   --density-recovery-ridge 1e-5 \
-  --density-recovery-init uniform \
-  --density-recovery-anchor uniform \
-  --density-recovery-l2-lambda 1e-3 \
-  --density-recovery-kl-lambda 1e-3 \
+  --density-recovery-init positive_beta \
+  --density-recovery-anchor positive_beta \
+  --density-recovery-l2-lambda 1e-2 \
+  --density-recovery-kl-lambda 0.0 \
   --density-recovery-quad-points 21 \
   --density-recovery-batch-atoms 128 \
   --density-recovery-num-points 400 \

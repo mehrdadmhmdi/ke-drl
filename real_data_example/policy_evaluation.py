@@ -302,6 +302,10 @@ def _parse_args() -> argparse.Namespace:
     # the same recovery logic used in plot_recovered_densities.py: do NOT treat
     # beta as a probability vector; find probability weights whose induced
     # embedding best matches beta.
+    # Importance-ratio (eta) stabilisation for the off-policy mean embedding.
+    p.add_argument("--normalize-eta", type=int, default=1, help="1=self-normalise eta so mean(eta)~=1 (recommended).")
+    p.add_argument("--eta-clip-max", type=float, default=20.0, help="Upper clip on importance ratio eta; raises ESS. <=0 disables.")
+    p.add_argument("--ratio-lambda-reg", type=float, default=1e-2, help="Ridge for the uLSIF/RuLSIF density-ratio fit (larger=smoother eta).")
     p.add_argument("--density-recovery-device", type=str, default="same", help="same/cpu/cuda; device for post-fit density recovery.")
     p.add_argument("--density-recovery-ridge", type=float, default=1e-4, help="Ridge in beta_tilde=(K+ridge I)^(-1)Aw.")
     p.add_argument("--density-recovery-lr", type=float, default=1e-2)
@@ -2163,7 +2167,12 @@ def _optimize_induced_probability_weights(
         sigma=float(sigma),
     ).to(dtype)
     K = 0.5 * (K + K.T)
-    K_reg = K + float(ridge) * torch.eye(m, dtype=dtype, device=dev)
+    # Spectrum-scaled ridge: a fixed absolute ridge means different conditioning
+    # at each length scale. Tie it to the largest eigenvalue so the inverse stays
+    # stable (see DIAGNOSIS_AND_PATCHES.md, Patch 3).
+    lam_max = float(torch.linalg.eigvalsh(K)[-1])
+    ridge_eff = max(float(ridge), 1e-6 * lam_max)
+    K_reg = K + ridge_eff * torch.eye(m, dtype=dtype, device=dev)
     M = torch.linalg.solve(K_reg, A)
 
     def weights_from_mode(mode: str) -> torch.Tensor:
@@ -4170,6 +4179,12 @@ def run_one_policy(
         ratio_sigma=sigma_sa,
         gamma_val=gamma_val,
         lambda_reg=lambda_reg,
+        # --- eta (importance ratio) stabilisation: see DIAGNOSIS_AND_PATCHES.md ---
+        normalize_eta=bool(int(getattr(args, "normalize_eta", 1))),
+        eta_clip_min=0.0,
+        eta_clip_max=(None if float(getattr(args, "eta_clip_max", 20.0)) <= 0
+                      else float(getattr(args, "eta_clip_max", 20.0))),
+        ratio_lambda_reg=float(getattr(args, "ratio_lambda_reg", 1e-2)),
         lambda_B=float(getattr(args, "lambda_B", 0.0)),
         num_grid_points=m_Z,
         hull_expand_factor=hull_expand_factor,
