@@ -27,6 +27,8 @@ from sim_utils import (
 from ke_drl.matern_kernel import matern_kernel
 
 
+PLOT_DPI = 600
+
 print("# ================================================================ #")
 print("#   Repeated Monte Carlo truth comparison for fitted embeddings     #")
 print("# ================================================================ #")
@@ -75,6 +77,100 @@ def sample_sd(x: np.ndarray, axis: int | None = None) -> np.ndarray | float:
         del shape[axis]
         return np.zeros(shape, dtype=float)
     return np.nanstd(arr, axis=axis, ddof=1)
+
+
+def finite_flatten(*arrays: np.ndarray | list[float] | tuple[float, ...]) -> np.ndarray:
+    vals = []
+    for arr in arrays:
+        if arr is None:
+            continue
+        x = np.asarray(arr, dtype=float).reshape(-1)
+        x = x[np.isfinite(x)]
+        if x.size:
+            vals.append(x)
+    return np.concatenate(vals) if vals else np.asarray([], dtype=float)
+
+
+def robust_limits(
+    *arrays: np.ndarray | list[float] | tuple[float, ...],
+    q_low: float = 1.0,
+    q_high: float = 99.0,
+    pad: float = 0.08,
+    min_span: float = 1e-3,
+    include_zero: bool = False,
+) -> tuple[float, float]:
+    vals = finite_flatten(*arrays)
+    if vals.size == 0:
+        return -1.0, 1.0
+    if vals.size >= 5:
+        lo, hi = np.nanpercentile(vals, [q_low, q_high])
+    else:
+        lo, hi = float(np.nanmin(vals)), float(np.nanmax(vals))
+    lo, hi = float(lo), float(hi)
+    if include_zero:
+        lo = min(lo, 0.0)
+        hi = max(hi, 0.0)
+    if not np.isfinite(lo) or not np.isfinite(hi):
+        return -1.0, 1.0
+    if hi < lo:
+        lo, hi = hi, lo
+    if hi - lo < min_span:
+        mid = 0.5 * (lo + hi)
+        lo, hi = mid - 0.5 * min_span, mid + 0.5 * min_span
+    span = hi - lo
+    return lo - pad * span, hi + pad * span
+
+
+def benchmark_palette(n: int) -> list[str]:
+    base = [
+        "#FF5F05",
+        "#13294B",
+        "#0072B2",
+        "#D55E00",
+        "#009E73",
+        "#CC79A7",
+        "#E69F00",
+        "#56B4E9",
+        "#F0E442",
+        "#000000",
+        "#882255",
+        "#44AA99",
+        "#AA4499",
+        "#117733",
+    ]
+    if n <= len(base):
+        return base[:n]
+    return [base[i % len(base)] for i in range(n)]
+
+
+def display_test_target_id(bid: int | float | str) -> str:
+    try:
+        val = float(bid)
+    except (TypeError, ValueError):
+        return str(bid)
+    if np.isfinite(val) and val.is_integer():
+        return str(int(val) + 1)
+    return str(bid)
+
+
+def configure_times_fonts(plt) -> None:
+    plt.rcParams.update(
+        {
+            "font.family": "serif",
+            "font.serif": [
+                "Times New Roman",
+                "Times",
+                "Nimbus Roman",
+                "Nimbus Roman No9 L",
+                "Liberation Serif",
+                "DejaVu Serif",
+            ],
+            "mathtext.fontset": "stix",
+            "axes.unicode_minus": False,
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+        }
+    )
 
 
 def torch_load(path: Path) -> Any:
@@ -623,41 +719,94 @@ def plot_boxplots_by_target(repeat_df: pd.DataFrame, outdir: Path) -> list[Path]
 
         matplotlib.use("Agg", force=True)
         import matplotlib.pyplot as plt
+        from matplotlib.lines import Line2D
     except ModuleNotFoundError as exc:
         print(f"Skipping repeated-MC boxplots because matplotlib is unavailable: {exc}", flush=True)
         return []
 
+    configure_times_fonts(plt)
     outdir.mkdir(parents=True, exist_ok=True)
     metric_specs = [
-        ("RMSE", "RMSE"),
-        ("MAE", "MAE"),
-        ("Bias", "Bias"),
-        ("diff_mean", "Mean difference"),
+        ("RMSE", "RMSE across Z grid", "(a) RMSE By Test Target Point"),
+        ("MAE", "MAE across Z grid", "(b) MAE By Test Target Point"),
+        ("Bias", r"Bias across Z grid ($\hat{\mu}-\mu$)", "(c) Bias By Test Target Point"),
+        ("diff_mean", r"Mean difference across Z grid ($\hat{\mu}-\mu$)", "(d) Mean Difference By Test Target Point"),
     ]
     target_ids = sorted(int(x) for x in repeat_df["benchmark_id"].dropna().unique())
     if not target_ids:
         return []
+    colors = benchmark_palette(len(target_ids))
 
-    fig, axes = plt.subplots(2, 2, figsize=(11.0, 7.2), constrained_layout=True)
-    for ax, (metric, ylabel) in zip(axes.reshape(-1), metric_specs):
-        data = []
-        labels = []
-        for target_id in target_ids:
+    fig, axes = plt.subplots(2, 2, figsize=(13.5, 9.0))
+    for ax, (metric, ylabel, title) in zip(axes.reshape(-1), metric_specs):
+        data, labels, used_colors = [], [], []
+        for color, target_id in zip(colors, target_ids):
             values = repeat_df.loc[repeat_df["benchmark_id"] == target_id, metric].to_numpy(dtype=float)
             values = values[np.isfinite(values)]
             if values.size:
                 data.append(values)
-                labels.append(str(target_id))
+                labels.append(display_test_target_id(target_id))
+                used_colors.append(color)
         if data:
-            ax.boxplot(data, labels=labels, showmeans=True, meanline=True, patch_artist=True)
-            ax.axhline(0.0, color="0.65", lw=0.8, zorder=0)
-        ax.set_title(ylabel)
-        ax.set_xlabel("Target point")
+            bp = ax.boxplot(
+                data,
+                labels=labels,
+                showmeans=True,
+                patch_artist=True,
+                meanprops={
+                    "marker": "^",
+                    "markerfacecolor": "#2ca02c",
+                    "markeredgecolor": "#2ca02c",
+                    "markersize": 5,
+                },
+                medianprops={"color": "#ff7f0e", "linewidth": 1.2},
+                whiskerprops={"color": "0.35", "linewidth": 1.0},
+                capprops={"color": "0.35", "linewidth": 1.0},
+                flierprops={
+                    "marker": "o",
+                    "markerfacecolor": "0.35",
+                    "markeredgecolor": "none",
+                    "markersize": 2.5,
+                    "alpha": 0.35,
+                },
+            )
+            for patch, color in zip(bp["boxes"], used_colors):
+                patch.set_facecolor(color)
+                patch.set_edgecolor(color)
+                patch.set_alpha(0.25)
+            include_zero = metric in {"Bias", "diff_mean", "RMSE", "MAE"}
+            ylo, yhi = robust_limits(*data, q_low=0, q_high=97.5, include_zero=include_zero)
+            if metric in {"Bias", "diff_mean"}:
+                span = max(abs(ylo), abs(yhi), 1e-4)
+                ylo, yhi = -span, span
+                ax.axhline(0.0, color="0.35", lw=1.0, ls="--", alpha=0.75)
+            else:
+                ax.axhline(0.0, color="0.65", lw=0.8, alpha=0.65)
+            ax.set_ylim(ylo, yhi)
+            if any(float(np.nanmax(vals)) > yhi for vals in data if vals.size):
+                ax.text(0.96, 0.92, "y-axis clipped at 97.5%", transform=ax.transAxes, ha="right", fontsize=8)
+        ax.set_title(title)
+        ax.set_xlabel("Test Target Point")
         ax.set_ylabel(ylabel)
         ax.grid(axis="y", alpha=0.25)
-    fig.suptitle("Repeated Monte Carlo comparison by target point", fontsize=13)
+    handles = [
+        Line2D(
+            [0],
+            [0],
+            marker="^",
+            color="none",
+            markerfacecolor="#2ca02c",
+            markeredgecolor="#2ca02c",
+            markersize=5,
+            label="mean",
+        ),
+        Line2D([0], [0], color="#ff7f0e", lw=1.2, label="median"),
+    ]
+    axes.reshape(-1)[0].legend(handles=handles, fontsize=6.5, ncol=2, frameon=True, loc="best")
+    fig.suptitle("Repeated Monte Carlo Comparison By Test Target Point", fontsize=13)
+    fig.tight_layout(rect=(0.0, 0.0, 1.0, 0.96))
     panel_path = outdir / "mc_repeat_boxplots_by_target.png"
-    fig.savefig(panel_path, dpi=300)
+    fig.savefig(panel_path, dpi=PLOT_DPI)
     plt.close(fig)
     return [panel_path]
 
