@@ -255,11 +255,18 @@ def KE_DRL(
         eta_mean = eta_plus.mean()
         if torch.isfinite(eta_mean) and eta_mean > torch.finfo(dtype).eps:
             eta_plus = eta_plus / eta_mean
+    alpha_bound = None
+    alpha_mix_value = float(getattr(ulsif, "alpha_mix", 0.0))
+    if alpha_mix_value > 0.0:
+        alpha_bound = 1.0 / alpha_mix_value
+        final_cap = alpha_bound if eta_clip_max is None else min(float(eta_clip_max), alpha_bound)
+        eta_plus = eta_plus.clamp_max(float(final_cap))
     raw_eta_stats = _eta_stats(eta_plus_raw)
     used_eta_stats = _eta_stats(eta_plus)
     eta_diagnostics = {
         "ratio_lambda_reg": float(ratio_reg),
-        "ratio_alpha_mix": float(getattr(ulsif, "alpha_mix", 0.0)),
+        "ratio_alpha_mix": float(alpha_mix_value),
+        "ratio_alpha_bound": None if alpha_bound is None else float(alpha_bound),
         "ratio_n_basis": None if ratio_n_basis is None else int(ratio_n_basis),
         "ratio_basis_source": str(ratio_basis_source),
         "eta_clip_min": None if eta_clip_min is None else float(eta_clip_min),
@@ -286,6 +293,7 @@ def KE_DRL(
         print(
             "eta_plus diagnostics: "
             f"alpha_mix={eta_diagnostics['ratio_alpha_mix']:.3g}, "
+            f"alpha_bound={eta_diagnostics['ratio_alpha_bound']}, "
             f"clip=[{eta_diagnostics['eta_clip_min']}, {eta_diagnostics['eta_clip_max']}], "
             f"normalize={eta_diagnostics['normalize_eta']}; "
             f"raw_mean={eta_diagnostics['raw_mean']:.3g}, "

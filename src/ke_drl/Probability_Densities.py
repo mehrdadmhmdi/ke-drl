@@ -148,6 +148,63 @@ class Probability_Densities:
             return torch.zeros_like(x)
         return 0.0
 
+    def _project_to_action_support(self, sample: Tensor, params: Dict[str, Any]) -> Tensor:
+        """Match the clipped/rounded policy action support used by real-data actors."""
+        y = sample
+        lows = params.get("action_lows", None)
+        highs = params.get("action_highs", None)
+        if lows is not None:
+            y = torch.maximum(y, self._to_tensor(lows, like=y))
+        if highs is not None:
+            y = torch.minimum(y, self._to_tensor(highs, like=y))
+
+        integer_idx = params.get("integer_idx", None)
+        if integer_idx is None:
+            return y
+        try:
+            j = int(integer_idx)
+        except (TypeError, ValueError):
+            return y
+        if j < 0:
+            return y
+
+        y = y.clone()
+        if y.ndim == 1:
+            if j != 0:
+                return y
+            coord = y
+        elif j < y.shape[-1]:
+            coord = y[..., j]
+        else:
+            return y
+
+        scale = params.get("integer_raw_scale", None)
+        offset = params.get("integer_raw_offset", None)
+        if scale is not None and offset is not None:
+            scale_t = self._to_tensor(scale, like=coord).clamp_min(torch.finfo(coord.dtype).eps)
+            offset_t = self._to_tensor(offset, like=coord)
+            raw_coord = coord * scale_t + offset_t
+            raw_coord = torch.round(raw_coord)
+            ilow = params.get("integer_low", None)
+            ihigh = params.get("integer_high", None)
+            if ilow is not None:
+                raw_coord = torch.clamp(raw_coord, min=float(ilow))
+            if ihigh is not None:
+                raw_coord = torch.clamp(raw_coord, max=float(ihigh))
+            rounded = (raw_coord - offset_t) / scale_t
+        else:
+            rounded = torch.round(coord)
+
+        if y.ndim == 1:
+            y = rounded
+        else:
+            y[..., j] = rounded
+        if lows is not None:
+            y = torch.maximum(y, self._to_tensor(lows, like=y))
+        if highs is not None:
+            y = torch.minimum(y, self._to_tensor(highs, like=y))
+        return y
+
     def _resolve_apply_sigmoid(self, dist_info: Dict[str, Any], apply_sigmoid: Optional[bool]) -> bool:
         return dist_info["apply_sigmoid"] if apply_sigmoid is None else bool(apply_sigmoid)
 
@@ -301,7 +358,8 @@ class Probability_Densities:
                     s, P("theta_std"), epsilon["std"], log_scale_min, log_scale_max, min_value=1e-8
                 )
                 sample = torch.distributions.Normal(mean, std).sample()
-                return torch.sigmoid(sample) if use_sigmoid else sample
+                sample = torch.sigmoid(sample) if use_sigmoid else sample
+                return self._project_to_action_support(sample, params)
 
             if pdf_choice == "uniform":
                 lower = self._lin(s, P("theta_lower")) + self._to_tensor(epsilon["lower"], like=s)
@@ -311,7 +369,7 @@ class Probability_Densities:
                     lower = torch.sigmoid(lower)
                     upper = torch.sigmoid(upper)
                 u = torch.rand_like(lower)
-                return lower + (upper - lower) * u
+                return self._project_to_action_support(lower + (upper - lower) * u, params)
 
             if pdf_choice == "logistic":
                 loc = self._lin(s, P("theta_loc")) + self._to_tensor(epsilon["loc"], like=s)
@@ -321,7 +379,8 @@ class Probability_Densities:
                 )
                 u = torch.clamp(torch.rand_like(loc), 1e-6, 1.0 - 1e-6)
                 logistic_sample = loc + scale * torch.log(u / (1.0 - u))
-                return torch.sigmoid(logistic_sample) if use_sigmoid else logistic_sample
+                sample = torch.sigmoid(logistic_sample) if use_sigmoid else logistic_sample
+                return self._project_to_action_support(sample, params)
 
             return None
 

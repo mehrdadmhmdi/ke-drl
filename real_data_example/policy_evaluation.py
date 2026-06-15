@@ -364,6 +364,29 @@ def _parse_args() -> argparse.Namespace:
             "idx:N chooses a fixed training row."
         ),
     )
+    p.add_argument(
+        "--embedding-target-set-size",
+        type=int,
+        default=256,
+        help=(
+            "Number of training states used as X_star target points for fitting "
+            "the global mean-embedding operator. Use 1 to reproduce the old "
+            "single-plot-point fit."
+        ),
+    )
+    p.add_argument(
+        "--embedding-target-set-mode",
+        type=str,
+        default="random",
+        choices=["single", "plot_point", "random", "first", "state_kmeans++", "state_kmeanspp", "sa_kmeans++", "sa_kmeanspp"],
+        help="How to select the multi-row X_star fitting set; the plot target is always included.",
+    )
+    p.add_argument(
+        "--embedding-target-batch-size",
+        type=int,
+        default=64,
+        help="Target-point mini-batch size for fitting B. Use <=0 to use all selected target points each step.",
+    )
     p.add_argument("--policy-specific-initial-action", type=int, default=1, help="0/1; use the policy greedy action at s_star instead of the logged a_star.")
     p.add_argument("--support-sample-n", type=int, default=1024)
     p.add_argument("--clip-sampled-actions", type=int, default=0, help="0/1")
@@ -520,6 +543,82 @@ def _select_target_point_index(
         f"Unknown --target-point-mode={mode_raw!r}. "
         "Use central_sa, state_pc_q25/state_pc_q50/state_pc_q75, or idx:N."
     )
+
+
+def _select_embedding_target_indices(
+    s0_tr: torch.Tensor,
+    a0_tr: torch.Tensor,
+    plot_idx: torch.Tensor,
+    size: int,
+    mode: str,
+    seed: int,
+) -> Tuple[torch.Tensor, Dict[str, object]]:
+    """Select the multi-point X_star set used to fit the global embedding."""
+    n = int(s0_tr.shape[0])
+    if n <= 0:
+        raise ValueError("Cannot select embedding targets from an empty training set.")
+    L = min(max(1, int(size)), n)
+    mode_raw = str(mode or "random")
+    mode_l = mode_raw.strip().lower()
+    anchor = int(plot_idx.reshape(-1)[0].detach().cpu().item())
+    anchor = max(0, min(n - 1, anchor))
+
+    if L == 1 or mode_l in {"single", "plot_point"}:
+        idx = torch.tensor([anchor], dtype=torch.long, device=s0_tr.device)
+        return idx, {
+            "mode": mode_raw,
+            "requested_size": int(size),
+            "effective_size": 1,
+            "plot_target_included": True,
+            "plot_target_train_index": int(anchor),
+            "criterion": "single_plot_target",
+        }
+
+    if mode_l == "first":
+        candidates = list(range(n))
+    elif mode_l in {"state_kmeans++", "state_kmeanspp"}:
+        candidates = _kmeanspp_basis_indices(s0_tr, L=L, seed=seed).detach().cpu().tolist()
+    elif mode_l in {"sa_kmeans++", "sa_kmeanspp"}:
+        sa_tr = torch.cat([s0_tr, a0_tr], dim=1)
+        candidates = _kmeanspp_basis_indices(sa_tr, L=L, seed=seed).detach().cpu().tolist()
+    elif mode_l == "random":
+        gen = torch.Generator(device="cpu")
+        gen.manual_seed(int(seed))
+        candidates = torch.randperm(n, generator=gen).tolist()
+    else:
+        raise ValueError(
+            f"Unknown --embedding-target-set-mode={mode_raw!r}. "
+            "Use random, first, state_kmeans++, sa_kmeans++, or single."
+        )
+
+    chosen: List[int] = []
+    seen = set()
+    for val in [anchor] + [int(x) for x in candidates]:
+        if val < 0 or val >= n or val in seen:
+            continue
+        chosen.append(val)
+        seen.add(val)
+        if len(chosen) >= L:
+            break
+    if len(chosen) < L:
+        for val in range(n):
+            if val in seen:
+                continue
+            chosen.append(val)
+            seen.add(val)
+            if len(chosen) >= L:
+                break
+
+    idx = torch.as_tensor(chosen, dtype=torch.long, device=s0_tr.device)
+    return idx, {
+        "mode": mode_raw,
+        "requested_size": int(size),
+        "effective_size": int(idx.numel()),
+        "plot_target_included": bool(anchor in seen),
+        "plot_target_train_index": int(anchor),
+        "criterion": "multi_target_global_embedding_fit",
+        "selected_train_indices_preview": [int(x) for x in chosen[: min(20, len(chosen))]],
+    }
 
 
 def tic(msg: str) -> float:
@@ -3920,6 +4019,9 @@ def run_one_policy(
     r_test: torch.Tensor,
     s_star: torch.Tensor,
     a_star: torch.Tensor,
+    s_star_fit: torch.Tensor,
+    a_star_fit: torch.Tensor,
+    embedding_target_info: Dict[str, object],
     target_point_info: Dict[str, object],
     s_mu: torch.Tensor,
     s_sd: torch.Tensor,
@@ -4100,18 +4202,27 @@ def run_one_policy(
     target_p_choice = 'gaussian'
     action_lows_norm = (torch.as_tensor(spec.lows, dtype=a_mu.dtype, device=a_mu.device) - a_mu) / (a_sd + 1e-12)
     action_highs_norm = (torch.as_tensor(spec.highs, dtype=a_mu.dtype, device=a_mu.device) - a_mu) / (a_sd + 1e-12)
+    integer_raw_scale = None
+    integer_raw_offset = None
+    if spec.integer_idx is not None:
+        j_int = int(spec.integer_idx)
+        integer_raw_scale = a_sd[j_int].detach()
+        integer_raw_offset = a_mu[j_int].detach()
     target_p_params = {
         'gaussian': {
             'theta_mean': theta_mean_vec,
             'theta_std': theta_std_vec,
             'epsilon_mean': epsilon_mean,
             'epsilon_std': epsilon_std,
-            # Optional support metadata. Current ke_drl versions that do not use
-            # these keys will ignore them; newer versions can use them to sample
-            # the same clipped Gaussian support used in diagnostics.
+            # Support metadata used by ke_drl.Probability_Densities so uLSIF
+            # samples the same clipped/rounded action distribution as the actor.
             'action_lows': action_lows_norm,
             'action_highs': action_highs_norm,
             'integer_idx': None if spec.integer_idx is None else int(spec.integer_idx),
+            'integer_low': None if spec.integer_low is None else int(spec.integer_low),
+            'integer_high': None if spec.integer_high is None else int(spec.integer_high),
+            'integer_raw_scale': integer_raw_scale,
+            'integer_raw_offset': integer_raw_offset,
             'integer_action_name': spec.integer_name,
         }
     }
@@ -4148,15 +4259,27 @@ def run_one_policy(
             s_star_raw = _denorm(s_star, s_mu, s_sd)
             a_star_raw_policy = gaussian_policy_stats_raw(model, s_star_raw)["greedy_raw"]
             a_star_eval = _zscore(a_star_raw_policy, a_mu, a_sd)
+
+            s_star_fit_raw = _denorm(s_star_fit, s_mu, s_sd)
+            a_star_fit_raw_policy = gaussian_policy_stats_raw(model, s_star_fit_raw)["greedy_raw"]
+            a_star_fit_eval = _zscore(a_star_fit_raw_policy, a_mu, a_sd)
         initial_action_mode = "policy_greedy_at_s_star"
     else:
         a_star_raw_policy = _denorm(a_star, a_mu, a_sd)
         a_star_eval = a_star
+        a_star_fit_raw_policy = _denorm(a_star_fit, a_mu, a_sd)
+        a_star_fit_eval = a_star_fit
         initial_action_mode = "fixed_logged_a_star"
 
     print(
         f"Initial action mode [{policy_name}]: {initial_action_mode} | "
         f"a_star_raw={_array_str(_np(a_star_raw_policy).reshape(-1))}",
+        flush=True,
+    )
+    print(
+        f"Embedding target set [{policy_name}]: "
+        f"size={int(s_star_fit.shape[0])} | mode={embedding_target_info.get('mode')} | "
+        f"plot_train_index={embedding_target_info.get('plot_target_train_index')}",
         flush=True,
     )
 
@@ -4167,8 +4290,8 @@ def run_one_policy(
         s1=s1_tr,
         a0=a0_tr,
         a1=a1_tr,
-        s_star=s_star,
-        a_star=a_star_eval,
+        s_star=s_star_fit,
+        a_star=a_star_fit_eval,
         r=r_tr,
         discrete_dims=discrete_reward_dims,
         target_p_choice=target_p_choice,
@@ -4194,6 +4317,8 @@ def run_one_policy(
         eta_clip_max=(None if float(getattr(args, "eta_clip_max", 20.0)) <= 0
                       else float(getattr(args, "eta_clip_max", 20.0))),
         ratio_lambda_reg=float(getattr(args, "ratio_lambda_reg", 1e-2)),
+        target_batch_size=(None if int(getattr(args, "embedding_target_batch_size", 64) or 0) <= 0
+                           else int(getattr(args, "embedding_target_batch_size", 64))),
         lambda_B=float(getattr(args, "lambda_B", 0.0)),
         num_grid_points=m_Z,
         hull_expand_factor=hull_expand_factor,
@@ -4411,6 +4536,9 @@ def run_one_policy(
             'eta_clip_max': (None if float(getattr(args, "eta_clip_max", 20.0)) <= 0
                              else float(getattr(args, "eta_clip_max", 20.0))),
             'ratio_lambda_reg': float(getattr(args, "ratio_lambda_reg", 1e-2)),
+            'embedding_target_set': embedding_target_info,
+            'embedding_target_batch_size': (None if int(getattr(args, "embedding_target_batch_size", 64) or 0) <= 0
+                                            else int(getattr(args, "embedding_target_batch_size", 64))),
             'mean_embedding_basis_size_requested': int(getattr(args, "mean_embedding_basis_size", 0) or 0),
             'mean_embedding_basis_size_effective': int(mean_embedding_basis_info['effective_basis_size']),
             'mean_embedding_basis_method': str(mean_embedding_basis_info['basis_method']),
@@ -4451,9 +4579,11 @@ def run_one_policy(
         'test_data_action_mean_raw': _np(a0_test_raw.mean(0)).tolist(),
         'initial_action_mode': initial_action_mode,
         'target_point': target_point_info,
+        'embedding_target_set': embedding_target_info,
         's_star_raw': _np(_denorm(s_star, s_mu, s_sd)).reshape(-1).tolist(),
         'a_star_logged_raw': _np(_denorm(a_star, a_mu, a_sd)).reshape(-1).tolist(),
         'a_star_raw_used_for_embedding': _np(a_star_raw_policy).reshape(-1).tolist(),
+        'embedding_target_action_mean_raw': _np(a_star_fit_raw_policy.mean(0)).tolist(),
         'off_support_greedy_train': off_support_greedy_train,
         'off_support_greedy_test': off_support_greedy_test,
         'off_support_sampled_test': off_support_sampled_test,
@@ -4482,6 +4612,9 @@ def run_one_policy(
             'Z_grid_normalized_optimized': Z_grid.detach().cpu(),
             's_star': s_star.detach().cpu(),
             'a_star': a_star.detach().cpu(),
+            's_star_fit': s_star_fit.detach().cpu(),
+            'a_star_fit': a_star_fit_eval.detach().cpu(),
+            'embedding_target_info': embedding_target_info,
             'normalization': {
                 's_mu': s_mu.detach().cpu(),
                 's_sd': s_sd.detach().cpu(),
@@ -5031,6 +5164,16 @@ def main() -> None:
     s_star = s0_tr[idx_star].clone()
     a_star = a0_tr[idx_star].clone()
     idx_star_int = int(idx_star.item())
+    idx_star_fit, embedding_target_info = _select_embedding_target_indices(
+        s0_tr=s0_tr,
+        a0_tr=a0_tr,
+        plot_idx=idx_star,
+        size=int(getattr(args, "embedding_target_set_size", 256)),
+        mode=str(getattr(args, "embedding_target_set_mode", "random")),
+        seed=int(args.seed) + 991,
+    )
+    s_star_fit = s0_tr[idx_star_fit].clone()
+    a_star_fit = a0_tr[idx_star_fit].clone()
     target_point_info = dict(target_point_info)
     target_point_info.update({
         "raw_state_cols": raw_state_cols,
@@ -5046,6 +5189,11 @@ def main() -> None:
     print(f"  train row     : {target_point_info.get('selected_train_index')}")
     print(f"  criterion     : {target_point_info.get('criterion')}")
     print(f"  logged action : {_array_str(np.asarray(target_point_info['selected_logged_action_raw']))}")
+    print("\nTarget set for global mean-embedding fit:")
+    print(f"  mode          : {embedding_target_info.get('mode')}")
+    print(f"  requested size: {embedding_target_info.get('requested_size')}")
+    print(f"  effective size: {embedding_target_info.get('effective_size')}")
+    print(f"  plot included : {embedding_target_info.get('plot_target_included')}")
 
     if args.policy_objective == 'both':
         policies_to_run = list(reward_cols)
@@ -5097,6 +5245,9 @@ def main() -> None:
             r_test=r_test,
             s_star=s_star,
             a_star=a_star,
+            s_star_fit=s_star_fit,
+            a_star_fit=a_star_fit,
+            embedding_target_info=embedding_target_info,
             target_point_info=target_point_info,
             s_mu=s_mu,
             s_sd=s_sd,
@@ -5122,6 +5273,7 @@ def main() -> None:
         'reward_cols': reward_cols,
         'discrete_reward_cols': _parse_csv_list(args.discrete_reward_cols) or [],
         'target_point': target_point_info,
+        'embedding_target_set': embedding_target_info,
         'state_encoder': state_encoder_meta,
         'state_encoding_diagnostics': state_encoding_diagnostics,
         'normalization': {

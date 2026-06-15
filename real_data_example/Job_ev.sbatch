@@ -97,6 +97,8 @@ BW_PER_DIM_ARR=("30,1" "50,1" "70,1" "90,1")
 LAMREC_ARR=(0.0)
 GRID_ARR=(300)                       # was 1200; fewer atoms -> better-conditioned recovery
 MEAN_EMBEDDING_BASIS_SIZE_ARR=(6000)
+EMBEDDING_TARGET_SET_SIZE="${EMBEDDING_TARGET_SET_SIZE:-256}"
+EMBEDDING_TARGET_BATCH_SIZE="${EMBEDDING_TARGET_BATCH_SIZE:-64}"
 STEPS_ARR=(40000)
 TARGET_POINT_ARR=("state_pc_q25" "state_pc_q50" "state_pc_q75")
 
@@ -176,6 +178,8 @@ echo "  BW_PER_DIM   = ${BW_PER_DIM}"
 echo "  LAMREC       = ${LAMREC}"
 echo "  GRID         = ${GRID}"
 echo "  BASIS L      = ${MEAN_EMBEDDING_BASIS_SIZE}"
+echo "  FIT TARGETS  = ${EMBEDDING_TARGET_SET_SIZE}"
+echo "  TARGET BATCH = ${EMBEDDING_TARGET_BATCH_SIZE}"
 echo "  STEPS        = ${STEPS}"
 echo "  TARGET_POINT = ${TARGET_POINT}"
 echo "  OUTROOT      = ${OUTROOT}"
@@ -243,6 +247,9 @@ python -u "${PYFILE}" \
   --clip-sampled-actions 1 \
   --std-cap-for-diagnostics 0.25 \
   --target-point-mode "${TARGET_POINT}" \
+  --embedding-target-set-size "${EMBEDDING_TARGET_SET_SIZE}" \
+  --embedding-target-set-mode random \
+  --embedding-target-batch-size "${EMBEDDING_TARGET_BATCH_SIZE}" \
   --policy-specific-initial-action 1 \
   --discrete-reward-cols total_clicks \
   --export-subsets 1 \
