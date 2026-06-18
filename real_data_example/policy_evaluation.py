@@ -915,6 +915,21 @@ def _save_array_csv(path: Path, arr, col_names: Optional[Sequence[str]] = None) 
     np.savetxt(path, x, delimiter=",", header=header, comments="")
 
 
+def _beta_for_plot_target(beta: torch.Tensor, n_atoms: int) -> torch.Tensor:
+    """Return the single conditional beta vector used for recovered-density plots."""
+    b = torch.as_tensor(beta).detach()
+    if b.ndim == 1:
+        if int(b.numel()) != int(n_atoms):
+            raise ValueError(f"Expected beta length {n_atoms}, got {b.numel()}.")
+        return b
+    if b.ndim == 2 and int(b.shape[1]) == int(n_atoms):
+        # The target selector always puts the requested plotting point first.
+        return b[0].contiguous()
+    if b.ndim == 2 and int(b.shape[0]) == int(n_atoms) and int(b.shape[1]) == 1:
+        return b[:, 0].contiguous()
+    raise ValueError(f"Cannot select plotting beta from shape {tuple(b.shape)} with n_atoms={n_atoms}.")
+
+
 def _save_atom_weight_table(
     path: Path,
     *,
@@ -4714,9 +4729,14 @@ def run_one_policy(
             K_sa=pre['K_sa'],
             config=plot_cfg,
         )
+        beta_plot = _beta_for_plot_target(beta, n_atoms=int(Zg.shape[0]))
+        _save_array_csv(
+            out_dir / "mean_embedding_coefficients_beta_all_targets.csv",
+            beta.detach().cpu(),
+        )
         _save_array_csv(
             out_dir / "mean_embedding_coefficients_beta.csv",
-            beta.detach().cpu(),
+            beta_plot.detach().cpu(),
             ["beta_mean_embedding"],
         )
         Zg_norm_optimized = Zg.detach().cpu().clone()
@@ -4736,13 +4756,13 @@ def run_one_policy(
         _save_array_csv(out_dir / "density_atoms_Z_grid_raw_est.csv", Zg_raw_est, reward_cols)
         _save_array_csv(out_dir / "density_atoms_Z_grid_raw_supported.csv", Zg_raw, reward_cols)
         _save_array_csv(out_dir / "density_atoms_Z_grid_normalized_supported.csv", Zg_norm_for_density, reward_cols)
-        _save_array_csv(out_dir / "mean_embedding_coefficients_beta.csv", beta.detach().cpu(), ["beta_mean_embedding"])
+        _save_array_csv(out_dir / "mean_embedding_coefficients_beta.csv", beta_plot.detach().cpu(), ["beta_mean_embedding"])
 
         # Recovered density/PMF uses induced-embedding matching, not direct simplex
         # projection of beta.  This mirrors plot_recovered_densities.py and is
         # controlled by --density-recovery-* CLI/sbatch parameters.
         marginal_payload = recover_marginal_densities_per_dim_induced(
-            beta_full=beta,
+            beta_full=beta_plot,
             Z_grid_raw=Zg_raw,
             Z_grid_norm_dict=Zg_norm_optimized,
             r_mu=r_mu.detach().cpu(),
@@ -4766,7 +4786,7 @@ def run_one_policy(
             _save_array_csv(out_dir / "density_weights_rkhs_projected.csv", density_weights, ["density_weight"])
             _save_atom_weight_table(
                 out_dir / "density_atom_weights_table.csv",
-                beta=beta.detach().cpu(),
+                beta=beta_plot.detach().cpu(),
                 density_weights=density_weights,
                 Z_norm=Zg_norm_for_density,
                 Z_raw=Zg_raw,
@@ -4799,7 +4819,7 @@ def run_one_policy(
         # RKHS mean embedding on a continuous 2D raw-scale canvas.
         _set_safe_matplotlib_fonts()
         continuous_mean_embedding_2d = plot_mean_embedding_2d_continuous_contour(
-            beta_full=beta,
+            beta_full=beta_plot,
             Z_grid_norm=Zg_norm_optimized,
             Z_grid_raw_for_limits=Zg_raw,
             r_mu=r_mu.detach().cpu(),
@@ -4826,8 +4846,8 @@ def run_one_policy(
             _set_safe_matplotlib_fonts()
             try:
                 cache_raw, _ = mean_embedding_all(
-                    beta_full=beta,
-                    Z_grid=Zg_norm_optimized.to(beta.device),
+                    beta_full=beta_plot,
+                    Z_grid=Zg_norm_optimized.to(beta_plot.device),
                     config=plot_cfg,
                     do_joint_dims=joint_dims,
                     n1=120,
@@ -4878,7 +4898,8 @@ def run_one_policy(
             'Zg_raw_est': _to_cpu_serializable(Zg_raw_est),
             'Zg_raw': _to_cpu_serializable(Zg_raw),
             'Zg_norm_for_density': _to_cpu_serializable(Zg_norm_for_density),
-            'beta': _to_cpu_serializable(beta),
+            'beta': _to_cpu_serializable(beta_plot),
+            'beta_all_targets': _to_cpu_serializable(beta),
             'density_weights': _to_cpu_serializable(density_weights),
             'density_weight_projection': _to_cpu_serializable(marginal_payload.get('projection', {})),
             'marginal_payload': _to_cpu_serializable(marginal_payload),
