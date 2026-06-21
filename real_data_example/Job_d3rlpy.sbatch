@@ -48,7 +48,7 @@ conda activate delta_env
 set -u
 
 DATA_BASE="${DATA_BASE:-./Expedia_data}"
-CKPT_DIR="${CKPT_DIR:-./policies_linear3}"
+CKPT_DIR="${CKPT_DIR:-./policies_linear_overlap}"
 DEVICE="${DEVICE:-cpu}"
 SEED="${SEED:-2026}"
 
@@ -70,6 +70,11 @@ python -u d3rlpy_policy_opt.py \
   --policy-steps-per-epoch 2000 \
   --policy-batch 512 \
   --gaussian-lr 2e-3 \
+  --overlap-anchor-lambda 3.0 \
+  --overlap-std-anchor-lambda 1.0 \
+  --policy-improvement-mix 0.35 \
+  --action-support-lower-quantile 0.02 \
+  --action-support-upper-quantile 0.98 \
   --state-cols mean_hist_price,std_hist_price,prop_location_score1,srch_room_count,srch_length_of_stay,prop_review_score,comp_inv \
   --categorical-state-cols srch_room_count,srch_length_of_stay,comp_inv \
   --one-hot-categoricals 1 \
@@ -77,27 +82,28 @@ python -u d3rlpy_policy_opt.py \
   --integer-action-col total_promotions \
   --reward-cols gross_revenue_per_night,total_clicks \
   --reward-weight-mode rank_softmax \
-  --reward-temperature 12 \
-  --click-reward-temperature 18 \
-  --positive-weight-boost 35 \
-  --click-weight-boost 50 \
-  --weight-max 1000 \
+  --reward-temperature 5 \
+  --click-reward-temperature 7 \
+  --positive-weight-boost 8 \
+  --click-weight-boost 10 \
+  --weight-max 50 \
+  --reward-weight-uniform-mix 0.70 \
   --enable-policy-contrast-shift 1 \
   --contrast-top-quantile 0.92 \
-  --revenue-contrast-strength 1.20 \
-  --click-contrast-strength 1.65 \
-  --action-shift-clip-std 2.6 \
-  --revenue-price-shift-std 1.05 \
-  --revenue-promotion-shift-std -0.85 \
-  --revenue-spread-shift-std 0.45 \
-  --click-price-shift-std -1.20 \
-  --click-promotion-shift-std 2.05 \
-  --click-spread-shift-std -0.45 \
-  --min-abs-mean-state-coef-std 0.025 \
-  --min-abs-logstd-state-coef-std 0.003 \
-  --linear-ridge 5e-4 \
-  --min-policy-std 0.05 \
-  --max-policy-std 25.0 \
+  --revenue-contrast-strength 0.35 \
+  --click-contrast-strength 0.45 \
+  --action-shift-clip-std 0.75 \
+  --revenue-price-shift-std 0.25 \
+  --revenue-promotion-shift-std -0.15 \
+  --revenue-spread-shift-std 0.10 \
+  --click-price-shift-std -0.30 \
+  --click-promotion-shift-std 0.45 \
+  --click-spread-shift-std -0.10 \
+  --min-abs-mean-state-coef-std 0.0 \
+  --min-abs-logstd-state-coef-std 0.0 \
+  --linear-ridge 5e-3 \
+  --min-policy-std 0.10 \
+  --max-policy-std 20.0 \
   --policy-std-ridge 1e-3 \
   --device "${DEVICE}" \
   --seed "${SEED}" \

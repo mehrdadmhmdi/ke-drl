@@ -12,6 +12,11 @@ by reward-weighted Gaussian negative log likelihood on the logged state-action
 pairs.  The saved artifacts are converted back to raw-scale state/action
 coefficients so policy_evaluation.py can load them as the usual
 linear_gaussian_policy_<reward>.npz/json files.
+
+The fit is intentionally conservative by default: reward weighting can move the
+target policy toward high-reward logged actions, but overlap controls keep the
+result close to the logged action support so the downstream direct ratio
+estimator is not asked to extrapolate.
 """
 
 from __future__ import annotations
@@ -449,9 +454,15 @@ def make_reward_weights(reward_values: np.ndarray, reward_name: str, args) -> Tu
         w = np.minimum(w, float(args.weight_max))
     w = w / max(float(np.mean(w)), 1e-12)
 
+    uniform_mix = min(max(float(getattr(args, "reward_weight_uniform_mix", 0.0)), 0.0), 1.0)
+    if uniform_mix > 0.0:
+        w = (1.0 - uniform_mix) * w + uniform_mix
+        w = w / max(float(np.mean(w)), 1e-12)
+
     diag = {
         "mode": mode,
         "reward_name": str(reward_name),
+        "uniform_mix": float(uniform_mix),
         "mean": float(w.mean()),
         "std": float(w.std()),
         "min": float(w.min()),
@@ -644,12 +655,18 @@ def fit_weighted_gaussian_mle(
     device = torch.device(resolve_device(args.device))
     dtype = torch.float32
 
+    unit_w = np.ones(n, dtype=np.float64)
+    theta_mu_logged, eps_mu_logged = weighted_ridge_mean_init(X, Y, unit_w, ridge=float(args.linear_ridge))
+    logged_resid = Y - (X @ theta_mu_logged + eps_mu_logged)
+    logged_std = np.sqrt(np.mean(logged_resid ** 2, axis=0))
+
     theta_mu0, eps_mu0 = weighted_ridge_mean_init(X, Y, w, ridge=float(args.linear_ridge))
     resid = Y - (X @ theta_mu0 + eps_mu0)
     global_std = np.sqrt(np.average(resid ** 2, axis=0, weights=w))
     min_std_norm = np.asarray(float(args.min_policy_std) / np.maximum(a_sd_raw, 1e-8), dtype=np.float64)
     max_std_norm = np.asarray(float(args.max_policy_std) / np.maximum(a_sd_raw, 1e-8), dtype=np.float64)
     global_std = np.clip(global_std, min_std_norm, max_std_norm)
+    logged_std = np.clip(logged_std, min_std_norm, max_std_norm)
 
     theta_mu = torch.tensor(theta_mu0, dtype=dtype, device=device, requires_grad=True)
     eps_mu = torch.tensor(eps_mu0, dtype=dtype, device=device, requires_grad=True)
@@ -659,6 +676,7 @@ def fit_weighted_gaussian_mle(
     X_t = torch.tensor(X, dtype=dtype, device=device)
     Y_t = torch.tensor(Y, dtype=dtype, device=device)
     w_t = torch.tensor(w, dtype=dtype, device=device)
+    log_logged_std_t = torch.tensor(np.log(logged_std), dtype=dtype, device=device)
     min_log_std = torch.tensor(np.log(min_std_norm), dtype=dtype, device=device)
     max_log_std = torch.tensor(np.log(max_std_norm), dtype=dtype, device=device)
 
@@ -669,6 +687,8 @@ def fit_weighted_gaussian_mle(
     ridge_mu = float(args.linear_ridge)
     ridge_sigma = float(args.policy_std_ridge)
     clip_grad = float(args.grad_clip)
+    overlap_anchor_lambda = float(getattr(args, "overlap_anchor_lambda", 0.0))
+    overlap_std_anchor_lambda = float(getattr(args, "overlap_std_anchor_lambda", 0.0))
 
     history: List[dict] = []
     rng = np.random.default_rng(int(args.seed) + 1009)
@@ -688,8 +708,15 @@ def fit_weighted_gaussian_mle(
         inv_var = torch.exp(-2.0 * log_std)
         nll = torch.sum(log_std + 0.5 * (yb - mu) ** 2 * inv_var, dim=1)
         loss_data = torch.mean(wb * nll)
+        loss_overlap = torch.mean(torch.sum((mu - yb) ** 2, dim=1))
+        loss_std_anchor = torch.mean((log_std - log_logged_std_t.reshape(1, -1)) ** 2)
         loss_reg = ridge_mu * torch.sum(theta_mu ** 2) + ridge_sigma * torch.sum(theta_sigma ** 2)
-        loss = loss_data + loss_reg
+        loss = (
+            loss_data
+            + overlap_anchor_lambda * loss_overlap
+            + overlap_std_anchor_lambda * loss_std_anchor
+            + loss_reg
+        )
 
         opt.zero_grad(set_to_none=True)
         loss.backward()
@@ -708,6 +735,7 @@ def fit_weighted_gaussian_mle(
                     "loss": float(loss.detach().cpu()),
                     "weighted_train_nll": float(torch.mean(w_t * nll_all).detach().cpu()),
                     "train_mu_mse": float(torch.mean((mu_all - Y_t) ** 2).detach().cpu()),
+                    "overlap_anchor_mse": float(torch.mean((mu_all - Y_t) ** 2).detach().cpu()),
                     "mean_std_norm": [float(x) for x in torch.exp(log_std_all).mean(0).detach().cpu().tolist()],
                 }
                 history.append(rec)
@@ -734,15 +762,120 @@ def fit_weighted_gaussian_mle(
             "train_std_max_std_scale": np.max(np.exp(logstd_train), axis=0).tolist(),
             "theta_mu_norm_fro": float(np.linalg.norm(theta_mu_np)),
             "theta_sigma_norm_fro": float(np.linalg.norm(theta_sigma_np)),
+            "overlap_anchor_lambda": float(overlap_anchor_lambda),
+            "overlap_std_anchor_lambda": float(overlap_std_anchor_lambda),
+            "logged_action_baseline": {
+                "theta_mu_std": theta_mu_logged.tolist(),
+                "epsilon_mu_std": eps_mu_logged.tolist(),
+                "theta_sigma_std": np.zeros_like(theta_mu_logged).tolist(),
+                "epsilon_sigma_std": np.log(logged_std).tolist(),
+                "train_mu_mse_std_scale": float(np.mean((X @ theta_mu_logged + eps_mu_logged - Y) ** 2)),
+                "std_mean_std_scale": logged_std.tolist(),
+            },
         }
     return {
         "theta_mu_std": theta_mu_np,
         "epsilon_mu_std": eps_mu_np,
         "theta_sigma_std": theta_sigma_np,
         "epsilon_sigma_std": eps_sigma_np,
+        "logged_theta_mu_std": theta_mu_logged,
+        "logged_epsilon_mu_std": eps_mu_logged,
+        "logged_theta_sigma_std": np.zeros_like(theta_mu_logged),
+        "logged_epsilon_sigma_std": np.log(logged_std),
         "min_std_norm": min_std_norm,
         "max_std_norm": max_std_norm,
     }, fit
+
+
+def apply_policy_improvement_mix(
+    std_params: Dict[str, np.ndarray],
+    X_std: np.ndarray,
+    args,
+) -> Dict[str, object]:
+    """Shrink the target policy toward the logged-action linear baseline.
+
+    mix=1 reproduces the fully reward-weighted target; mix=0 gives the
+    unweighted logged-action linear Gaussian fit. Intermediate values preserve a
+    target-policy contrast while improving overlap.
+    """
+    mix = min(max(float(getattr(args, "policy_improvement_mix", 1.0)), 0.0), 1.0)
+    X = np.asarray(X_std, dtype=np.float64)
+
+    theta_before = np.asarray(std_params["theta_mu_std"], dtype=np.float64).copy()
+    eps_before = np.asarray(std_params["epsilon_mu_std"], dtype=np.float64).copy()
+    logstd_theta_before = np.asarray(std_params["theta_sigma_std"], dtype=np.float64).copy()
+    logstd_eps_before = np.asarray(std_params["epsilon_sigma_std"], dtype=np.float64).copy()
+
+    theta_logged = np.asarray(std_params["logged_theta_mu_std"], dtype=np.float64)
+    eps_logged = np.asarray(std_params["logged_epsilon_mu_std"], dtype=np.float64)
+    logstd_theta_logged = np.asarray(std_params["logged_theta_sigma_std"], dtype=np.float64)
+    logstd_eps_logged = np.asarray(std_params["logged_epsilon_sigma_std"], dtype=np.float64)
+
+    mu_logged = X @ theta_logged + eps_logged
+    mu_before = X @ theta_before + eps_before
+
+    std_params["theta_mu_std"] = theta_logged + mix * (theta_before - theta_logged)
+    std_params["epsilon_mu_std"] = eps_logged + mix * (eps_before - eps_logged)
+    std_params["theta_sigma_std"] = logstd_theta_logged + mix * (logstd_theta_before - logstd_theta_logged)
+    std_params["epsilon_sigma_std"] = logstd_eps_logged + mix * (logstd_eps_before - logstd_eps_logged)
+
+    mu_after = X @ std_params["theta_mu_std"] + std_params["epsilon_mu_std"]
+    return {
+        "enabled": bool(mix < 1.0),
+        "policy_improvement_mix": float(mix),
+        "meaning": "0=logged-action linear baseline, 1=fully reward-weighted target",
+        "mean_l2_shift_from_logged_before_std": float(np.mean(np.linalg.norm(mu_before - mu_logged, axis=1))),
+        "mean_l2_shift_from_logged_after_std": float(np.mean(np.linalg.norm(mu_after - mu_logged, axis=1))),
+        "max_l2_shift_from_logged_before_std": float(np.max(np.linalg.norm(mu_before - mu_logged, axis=1))),
+        "max_l2_shift_from_logged_after_std": float(np.max(np.linalg.norm(mu_after - mu_logged, axis=1))),
+    }
+
+
+def empirical_action_support_bounds(
+    act_train: np.ndarray,
+    integer_idx: Optional[int],
+    args,
+) -> Tuple[np.ndarray, np.ndarray, Dict[str, object]]:
+    A = np.asarray(act_train, dtype=np.float64)
+    lo_q = float(getattr(args, "action_support_lower_quantile", 0.0))
+    hi_q = float(getattr(args, "action_support_upper_quantile", 1.0))
+    lo_q = min(max(lo_q, 0.0), 1.0)
+    hi_q = min(max(hi_q, 0.0), 1.0)
+    if lo_q >= hi_q:
+        lo_q, hi_q = 0.0, 1.0
+
+    if lo_q <= 0.0 and hi_q >= 1.0:
+        lows = np.nanmin(A, axis=0).astype(np.float64)
+        highs = np.nanmax(A, axis=0).astype(np.float64)
+        mode = "minmax"
+    else:
+        lows = np.nanquantile(A, lo_q, axis=0).astype(np.float64)
+        highs = np.nanquantile(A, hi_q, axis=0).astype(np.float64)
+        min_lows = np.nanmin(A, axis=0).astype(np.float64)
+        max_highs = np.nanmax(A, axis=0).astype(np.float64)
+        invalid = ~(np.isfinite(lows) & np.isfinite(highs) & (highs > lows))
+        lows[invalid] = min_lows[invalid]
+        highs[invalid] = max_highs[invalid]
+        mode = "quantile"
+
+    if integer_idx is not None and 0 <= int(integer_idx) < A.shape[1]:
+        j = int(integer_idx)
+        low_i = math.ceil(float(lows[j]))
+        high_i = math.floor(float(highs[j]))
+        if high_i < low_i:
+            low_i = int(np.nanmin(A[:, j]))
+            high_i = int(np.nanmax(A[:, j]))
+        lows[j] = float(low_i)
+        highs[j] = float(high_i)
+
+    diag = {
+        "mode": mode,
+        "lower_quantile": float(lo_q),
+        "upper_quantile": float(hi_q),
+        "lows": lows.tolist(),
+        "highs": highs.tolist(),
+    }
+    return lows, highs, diag
 
 
 def convert_standardized_policy_to_raw(
@@ -1012,6 +1145,10 @@ def train_one_reward(
         k: v for k, v in dense_sigma_diag.items() if k != "adjusted"
     })
 
+    overlap_mix_diag = apply_policy_improvement_mix(std_params, X_std, args)
+    fit_meta["policy_improvement_mix"] = overlap_mix_diag
+    print("policy overlap mix:", overlap_mix_diag)
+
     theta_mu_raw, eps_mu_raw, theta_sigma_raw, eps_sigma_raw = convert_standardized_policy_to_raw(
         theta_mu_std=std_params["theta_mu_std"],
         epsilon_mu_std=std_params["epsilon_mu_std"],
@@ -1023,9 +1160,12 @@ def train_one_reward(
         a_sd=a_sd,
     )
 
-    action_lows = np.nanmin(act_train, axis=0).astype(np.float64)
-    action_highs = np.nanmax(act_train, axis=0).astype(np.float64)
     integer_idx, _, _, integer_name = infer_integer_idx(action_names, args.integer_action_col)
+    action_lows, action_highs, support_diag = empirical_action_support_bounds(
+        act_train,
+        integer_idx,
+        args,
+    )
     integer_low = None if integer_idx is None else int(np.round(action_lows[integer_idx]))
     integer_high = None if integer_idx is None else int(np.round(action_highs[integer_idx]))
 
@@ -1072,6 +1212,7 @@ def train_one_reward(
         "integer_action_high": integer_high,
         "action_lows": action_lows.tolist(),
         "action_highs": action_highs.tolist(),
+        "action_support_bounds": support_diag,
         "normalization_used_for_fit": {
             "state_mean": s_mu.tolist(),
             "state_std": s_sd.tolist(),
@@ -1128,13 +1269,49 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--min_policy_std", "--min-policy-std", type=float, default=0.05)
     p.add_argument("--max_policy_std", "--max-policy-std", type=float, default=25.0)
     p.add_argument("--grad-clip", type=float, default=10.0)
+    p.add_argument(
+        "--overlap-anchor-lambda",
+        type=float,
+        default=1.0,
+        help="Unweighted logged-action mean anchor inside the Gaussian loss; larger improves overlap.",
+    )
+    p.add_argument(
+        "--overlap-std-anchor-lambda",
+        type=float,
+        default=0.25,
+        help="Anchor log-std toward the unweighted logged-action Gaussian fit.",
+    )
+    p.add_argument(
+        "--policy-improvement-mix",
+        type=float,
+        default=0.45,
+        help="0=logged-action linear baseline, 1=fully reward-weighted target. Smaller values improve overlap.",
+    )
+    p.add_argument(
+        "--action-support-lower-quantile",
+        type=float,
+        default=0.02,
+        help="Lower empirical action quantile used for target-policy clipping; 0 uses the minimum.",
+    )
+    p.add_argument(
+        "--action-support-upper-quantile",
+        type=float,
+        default=0.98,
+        help="Upper empirical action quantile used for target-policy clipping; 1 uses the maximum.",
+    )
 
     p.add_argument("--reward-weight-mode", type=str, default="rank_softmax", choices=["uniform", "rank_softmax", "positive_boost", "top_quantile"])
     p.add_argument("--reward-temperature", type=float, default=10.0)
     p.add_argument("--click-reward-temperature", type=float, default=14.0)
     p.add_argument("--reward-top-quantile", type=float, default=0.90)
     p.add_argument("--weight-min", type=float, default=1e-4)
-    p.add_argument("--weight-max", type=float, default=1000.0)
+    p.add_argument("--weight-max", type=float, default=100.0)
+    p.add_argument(
+        "--reward-weight-uniform-mix",
+        type=float,
+        default=0.50,
+        help="Mix reward weights with uniform logged-data weights before fitting; 1 gives pure logged-data weighting.",
+    )
     p.add_argument("--positive-weight-boost", type=float, default=20.0)
     p.add_argument("--click_weight_boost", "--click-weight-boost", type=float, default=30.0)
     p.add_argument("--click_bank_min_reward", "--click-bank-min-reward", type=float, default=1.0)
@@ -1318,6 +1495,14 @@ def main(args) -> None:
         "training_method": "direct_reward_weighted_gaussian_mle",
         "seed": args.seed,
         "device": args.device,
+        "overlap_controls": {
+            "reward_weight_uniform_mix": float(args.reward_weight_uniform_mix),
+            "overlap_anchor_lambda": float(args.overlap_anchor_lambda),
+            "overlap_std_anchor_lambda": float(args.overlap_std_anchor_lambda),
+            "policy_improvement_mix": float(args.policy_improvement_mix),
+            "action_support_lower_quantile": float(args.action_support_lower_quantile),
+            "action_support_upper_quantile": float(args.action_support_upper_quantile),
+        },
         "train_blob": str(train_path),
         "test_blob": str(test_path) if test_path is not None else None,
         "raw_state_names": split_train_raw["raw_state_names"],
