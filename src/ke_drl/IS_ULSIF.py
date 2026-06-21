@@ -2,7 +2,10 @@
 
 Implements the kernel-based ratio estimator used to recover the target/behavior
 density ratio eta(x) = pi(a | s) / beta(a | s) entering Phi(x) = K_+ D_eta Gamma(x)
-in draft2.tex. Two basis choices are supported:
+in draft2.tex. The Bellman IS weight is the ordinary density ratio, so callers
+that build ``D_eta`` should use ``alpha_mix=0.0``. Nonzero ``alpha_mix`` fits an
+alpha-relative RuLSIF ratio, which is a different stabilization diagnostic and
+not the Bellman continuation weight. Two basis choices are supported:
 
 - ``basis_source="denominator"`` with ``n_basis=None``: every behavior sample is
   a basis function (kernel-ridge-flavored uLSIF, the original repository

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import contextlib
+import gc
 import inspect
 import json
 import math
@@ -302,18 +303,22 @@ def _parse_args() -> argparse.Namespace:
     # the same recovery logic used in plot_recovered_densities.py: do NOT treat
     # beta as a probability vector; find probability weights whose induced
     # embedding best matches beta.
-    # Importance-ratio (eta) stabilisation for the off-policy mean embedding.
+    # Importance-ratio (eta) controls for the off-policy mean embedding.
     p.add_argument(
         "--rulsif-alpha",
         "--ratio-alpha-mix",
         dest="ratio_alpha_mix",
         type=float,
-        default=0.1,
-        help="RuLSIF alpha-relative density-ratio mixing in [0,1). 0 reproduces old uLSIF; 0.1 bounds the relative ratio.",
+        default=0.0,
+        help=(
+            "Deprecated compatibility option. Bellman eta is always the ordinary "
+            "target-to-behavior ratio fitted by plain uLSIF; nonzero values are "
+            "recorded but ignored by ke_drl for D_eta."
+        ),
     )
-    p.add_argument("--normalize-eta", type=int, default=1, help="1=self-normalise eta so mean(eta)~=1 (recommended).")
-    p.add_argument("--eta-clip-max", type=float, default=20.0, help="Upper clip on importance ratio eta; raises ESS. <=0 disables.")
-    p.add_argument("--ratio-lambda-reg", type=float, default=1e-2, help="Ridge for the uLSIF/RuLSIF density-ratio fit (larger=smoother eta).")
+    p.add_argument("--normalize-eta", type=int, default=0, help="1=self-normalise eta after ordinary uLSIF. Default 0 matches the Bellman expression.")
+    p.add_argument("--eta-clip-max", type=float, default=0.0, help="Optional upper clip on ordinary uLSIF eta. <=0 disables; default disables.")
+    p.add_argument("--ratio-lambda-reg", type=float, default=1e-2, help="Ridge for the ordinary uLSIF density-ratio fit (larger=smoother eta).")
     p.add_argument("--density-recovery-device", type=str, default="same", help="same/cpu/cuda; device for post-fit density recovery.")
     p.add_argument("--density-recovery-ridge", type=float, default=1e-5, help="Ridge in beta_tilde=(K+ridge I)^(-1)Aw; internally floored by kernel spectrum.")
     p.add_argument("--density-recovery-lr", type=float, default=1e-2)
@@ -367,11 +372,11 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument(
         "--embedding-target-set-size",
         type=int,
-        default=256,
+        default=-1,
         help=(
             "Number of training states used as X_star target points for fitting "
-            "the global mean-embedding operator. Use 1 to reproduce the old "
-            "single-plot-point fit."
+            "the global mean-embedding operator. Use <=0 to use all training "
+            "rows; use 1 to reproduce the old single-plot-point fit."
         ),
     )
     p.add_argument(
@@ -386,6 +391,24 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=64,
         help="Target-point mini-batch size for fitting B. Use <=0 to use all selected target points each step.",
+    )
+    p.add_argument(
+        "--return-heavy-precompute",
+        type=int,
+        default=0,
+        help=(
+            "0/1; ask ke_drl to return large diagnostic training matrices in pre. "
+            "Default 0 keeps only matrices needed for risk and density recovery."
+        ),
+    )
+    p.add_argument(
+        "--save-beta-all-targets",
+        type=int,
+        default=0,
+        help=(
+            "0/1; save the full target-by-atom beta matrix. Default 0 saves only "
+            "the plot target beta plus a skipped-file metadata JSON."
+        ),
     )
     p.add_argument("--policy-specific-initial-action", type=int, default=1, help="0/1; use the policy greedy action at s_star instead of the logged a_star.")
     p.add_argument("--support-sample-n", type=int, default=1024)
@@ -557,7 +580,8 @@ def _select_embedding_target_indices(
     n = int(s0_tr.shape[0])
     if n <= 0:
         raise ValueError("Cannot select embedding targets from an empty training set.")
-    L = min(max(1, int(size)), n)
+    requested_size = int(size)
+    L = n if requested_size <= 0 else min(max(1, requested_size), n)
     mode_raw = str(mode or "random")
     mode_l = mode_raw.strip().lower()
     anchor = int(plot_idx.reshape(-1)[0].detach().cpu().item())
@@ -567,7 +591,7 @@ def _select_embedding_target_indices(
         idx = torch.tensor([anchor], dtype=torch.long, device=s0_tr.device)
         return idx, {
             "mode": mode_raw,
-            "requested_size": int(size),
+            "requested_size": requested_size,
             "effective_size": 1,
             "plot_target_included": True,
             "plot_target_train_index": int(anchor),
@@ -612,7 +636,7 @@ def _select_embedding_target_indices(
     idx = torch.as_tensor(chosen, dtype=torch.long, device=s0_tr.device)
     return idx, {
         "mode": mode_raw,
-        "requested_size": int(size),
+        "requested_size": requested_size,
         "effective_size": int(idx.numel()),
         "plot_target_included": bool(anchor in seen),
         "plot_target_train_index": int(anchor),
@@ -639,6 +663,14 @@ def save_json(path: Path, obj: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w") as f:
         json.dump(obj, f, indent=2)
+
+
+def _release_memory(device: Optional[torch.device] = None) -> None:
+    """Release Python and CUDA allocator caches after dropping large tensors."""
+    gc.collect()
+    if torch.cuda.is_available():
+        if device is None or str(device).startswith("cuda"):
+            torch.cuda.empty_cache()
 
 
 
@@ -4326,11 +4358,11 @@ def run_one_policy(
         gamma_val=gamma_val,
         lambda_reg=lambda_reg,
         # --- eta (importance ratio) stabilisation for the off-policy embedding ---
-        ratio_alpha_mix=float(getattr(args, "ratio_alpha_mix", 0.1)),
-        normalize_eta=bool(int(getattr(args, "normalize_eta", 1))),
+        ratio_alpha_mix=float(getattr(args, "ratio_alpha_mix", 0.0)),
+        normalize_eta=bool(int(getattr(args, "normalize_eta", 0))),
         eta_clip_min=0.0,
-        eta_clip_max=(None if float(getattr(args, "eta_clip_max", 20.0)) <= 0
-                      else float(getattr(args, "eta_clip_max", 20.0))),
+        eta_clip_max=(None if float(getattr(args, "eta_clip_max", 0.0)) <= 0
+                      else float(getattr(args, "eta_clip_max", 0.0))),
         ratio_lambda_reg=float(getattr(args, "ratio_lambda_reg", 1e-2)),
         target_batch_size=(None if int(getattr(args, "embedding_target_batch_size", 64) or 0) <= 0
                            else int(getattr(args, "embedding_target_batch_size", 64))),
@@ -4354,6 +4386,7 @@ def run_one_policy(
         mean_embedding_basis_batch_size=int(getattr(args, "mean_embedding_basis_batch_size", 8192)),
         device=str(device),
         dtype=torch.float32,
+        return_heavy_matrices=bool(int(getattr(args, "return_heavy_precompute", 0))),
     )
     B_hat, hist_obj, hist_be, pre = _call_estimate_embedding_compatible(**embedding_kwargs)
     toc(t0, f'DONE estimate_embedding [{policy_name}]')
@@ -4465,15 +4498,6 @@ def run_one_policy(
 
     save_json(out_dir / "simplex_calibration_diagnostics.json", simplex_calibration_diagnostics)
 
-    # Export the learned reward atom grid in both normalized and raw scales.
-    _save_array_csv(out_dir / "Z_grid_normalized_optimized.csv", Z_grid.detach().cpu(), reward_cols)
-    _save_array_csv(out_dir / "Z_grid_raw_est.csv", Z_grid_raw_est.detach().cpu(), reward_cols)
-    _save_array_csv(out_dir / "Z_grid_raw_supported_for_plots.csv", Z_grid_raw_supported.detach().cpu(), reward_cols)
-    _save_array_csv(out_dir / "B_hat_mean_embedding_operator.csv", B_hat.detach().cpu())
-    _save_array_csv(out_dir / "mean_embedding_state_action_basis.csv", sa_basis.detach().cpu())
-    _save_array_csv(out_dir / "mean_embedding_state_action_basis_indices.csv", sa_basis_idx.detach().cpu(), ["basis_row_index"])
-    save_json(out_dir / "mean_embedding_basis_diagnostics.json", mean_embedding_basis_info)
-
     risk_eval_start = time.time()
     t0 = tic(f'START test state-action kernel [{policy_name}]')
     sa_test = torch.cat([s0_test, a0_test], dim=1)
@@ -4482,26 +4506,33 @@ def run_one_policy(
 
     def diagnose_W(k_sa, B_hat, name):
         W = k_sa @ B_hat
-        print(f"\n{name} W diagnostics")
-        print("shape:", tuple(W.shape))
-        print("min:", float(W.min()))
-        print("max:", float(W.max()))
-        print("row-sum mean:", float(W.sum(1).mean()))
-        print("row-sum std:", float(W.sum(1).std()))
-        print("negative mass mean:", float(torch.clamp(-W, min=0).sum(1).mean()))
-        print("L1 mass mean:", float(W.abs().sum(1).mean()))
-        print("")
-        return {
+        row_sum = W.sum(1)
+        negative_mass = torch.clamp(-W, min=0).sum(1)
+        l1_mass = W.abs().sum(1)
+        stats = {
             "shape": [int(W.shape[0]), int(W.shape[1])],
             "min": float(W.min()),
             "max": float(W.max()),
-            "row_sum_mean": float(W.sum(1).mean()),
-            "row_sum_std": float(W.sum(1).std()),
-            "negative_mass_mean": float(torch.clamp(-W, min=0).sum(1).mean()),
-            "l1_mass_mean": float(W.abs().sum(1).mean()),
+            "row_sum_mean": float(row_sum.mean()),
+            "row_sum_std": float(row_sum.std()),
+            "negative_mass_mean": float(negative_mass.mean()),
+            "l1_mass_mean": float(l1_mass.mean()),
         }
+        print(f"\n{name} W diagnostics")
+        print("shape:", tuple(stats["shape"]))
+        print("min:", stats["min"])
+        print("max:", stats["max"])
+        print("row-sum mean:", stats["row_sum_mean"])
+        print("row-sum std:", stats["row_sum_std"])
+        print("negative mass mean:", stats["negative_mass_mean"])
+        print("L1 mass mean:", stats["l1_mass_mean"])
+        print("")
+        del W, row_sum, negative_mass, l1_mass
+        return stats
 
     test_W_diagnostics = diagnose_W(k_sa_test, B_hat, "TEST")
+    del k_sa_test, sa_test
+    _release_memory(device)
 
     K_Z_fit = pre.get("K_Z", None)
     if not isinstance(K_Z_fit, torch.Tensor):
@@ -4515,6 +4546,9 @@ def run_one_policy(
             reduction="mean",
         ).detach().cpu().item()
     )
+    pre.pop("K_Z", None)
+    del K_Z_fit
+    _release_memory(device)
     risk_eval_time = time.time() - risk_eval_start
 
     print(
@@ -4545,11 +4579,12 @@ def run_one_policy(
             'method': method,
             'num_steps': int(args.num_steps),
             'num_grid_points': int(m_Z),
-            'ratio_alpha_mix': float(getattr(args, "ratio_alpha_mix", 0.1)),
-            'normalize_eta': bool(int(getattr(args, "normalize_eta", 1))),
+            'bellman_ratio_type': 'ordinary_target_to_behavior',
+            'ratio_alpha_mix_requested': float(getattr(args, "ratio_alpha_mix", 0.0)),
+            'normalize_eta': bool(int(getattr(args, "normalize_eta", 0))),
             'eta_clip_min': 0.0,
-            'eta_clip_max': (None if float(getattr(args, "eta_clip_max", 20.0)) <= 0
-                             else float(getattr(args, "eta_clip_max", 20.0))),
+            'eta_clip_max': (None if float(getattr(args, "eta_clip_max", 0.0)) <= 0
+                             else float(getattr(args, "eta_clip_max", 0.0))),
             'ratio_lambda_reg': float(getattr(args, "ratio_lambda_reg", 1e-2)),
             'embedding_target_set': embedding_target_info,
             'embedding_target_batch_size': (None if int(getattr(args, "embedding_target_batch_size", 64) or 0) <= 0
@@ -4612,19 +4647,35 @@ def run_one_policy(
     }
     save_json(out_dir / 'metrics.json', metrics)
 
+    B_hat_cpu = B_hat.detach().cpu()
+    sa_basis_cpu = sa_basis.detach().cpu()
+    sa_basis_idx_cpu = sa_basis_idx.detach().cpu()
+    K_sa_basis_cpu = K_sa_basis.detach().cpu()
+    Z_grid_cpu = Z_grid.detach().cpu()
+    Z_grid_raw_est_cpu = Z_grid_raw_est.detach().cpu()
+    Z_grid_raw_supported_cpu = Z_grid_raw_supported.detach().cpu()
+    Z_grid_norm_supported_cpu = _zscore(
+        Z_grid_raw_supported_cpu,
+        r_mu.detach().cpu(),
+        r_sd.detach().cpu(),
+    ).detach().cpu()
+    eta_plus_raw_cpu = pre["eta_plus_raw"].detach().cpu() if isinstance(pre.get("eta_plus_raw", None), torch.Tensor) else None
+    eta_plus_used_cpu = pre["eta_plus"].detach().cpu() if isinstance(pre.get("eta_plus", None), torch.Tensor) else None
+
     torch.save(
         {
-            'B_hat': B_hat.detach().cpu(),
+            'B_hat': B_hat_cpu,
+            'B_hat_mean_embedding_operator': B_hat_cpu,
             'B_hat_shape': tuple(B_hat.shape),
             'mean_embedding_basis_info': mean_embedding_basis_info,
             'eta_diagnostics': eta_diagnostics,
-            'eta_plus_raw': pre["eta_plus_raw"].detach().cpu() if isinstance(pre.get("eta_plus_raw", None), torch.Tensor) else None,
-            'eta_plus_used': pre["eta_plus"].detach().cpu() if isinstance(pre.get("eta_plus", None), torch.Tensor) else None,
-            'mean_embedding_state_action_basis': sa_basis.detach().cpu(),
-            'mean_embedding_state_action_basis_indices': sa_basis_idx.detach().cpu(),
-            'K_mean_embedding_basis': K_sa_basis.detach().cpu(),
-            'Z_grid': Z_grid.detach().cpu(),
-            'Z_grid_normalized_optimized': Z_grid.detach().cpu(),
+            'eta_plus_raw': eta_plus_raw_cpu,
+            'eta_plus_used': eta_plus_used_cpu,
+            'mean_embedding_state_action_basis': sa_basis_cpu,
+            'mean_embedding_state_action_basis_indices': sa_basis_idx_cpu,
+            'K_mean_embedding_basis': K_sa_basis_cpu,
+            'Z_grid': Z_grid_cpu,
+            'Z_grid_normalized_optimized': Z_grid_cpu,
             's_star': s_star.detach().cpu(),
             'a_star': a_star.detach().cpu(),
             's_star_fit': s_star_fit.detach().cpu(),
@@ -4657,24 +4708,20 @@ def run_one_policy(
             'discrete_reward_cols': discrete_reward_cols,
             'discrete_reward_dims': discrete_reward_dims,
             'reward_support_info': reward_support_info,
-            'Z_grid_raw_est': Z_grid_raw_est.detach().cpu(),
-            'Z_grid_raw_supported_for_plots': Z_grid_raw_supported.detach().cpu(),
-            'Z_grid_normalized_supported_for_plots': _zscore(
-                Z_grid_raw_supported,
-                r_mu.detach().cpu(),
-                r_sd.detach().cpu()
-            ).detach().cpu(),            'Z_grid_raw_support_shift_max': float(Z_grid_raw_support_shift_max),
-            "Z_grid_normalized_optimized": Z_grid.detach().cpu(),
-            "Z_grid_raw_est": Z_grid_raw_est.detach().cpu(),
-            "Z_grid_raw_supported_for_plots": Z_grid_raw_supported.detach().cpu(),
-            "B_hat_mean_embedding_operator": B_hat.detach().cpu(),
-            "mean_embedding_state_action_basis": sa_basis.detach().cpu(),
-            "mean_embedding_state_action_basis_indices": sa_basis_idx.detach().cpu(),
-            "K_mean_embedding_basis": K_sa_basis.detach().cpu(),
+            'Z_grid_raw_est': Z_grid_raw_est_cpu,
+            'Z_grid_raw_supported_for_plots': Z_grid_raw_supported_cpu,
+            'Z_grid_normalized_supported_for_plots': Z_grid_norm_supported_cpu,
+            'Z_grid_raw_support_shift_max': float(Z_grid_raw_support_shift_max),
         },
 
         out_dir / 'artifacts.pt',
     )
+    del (
+        B_hat_cpu, sa_basis_cpu, sa_basis_idx_cpu, K_sa_basis_cpu,
+        Z_grid_cpu, Z_grid_raw_est_cpu, Z_grid_raw_supported_cpu,
+        Z_grid_norm_supported_cpu, eta_plus_raw_cpu, eta_plus_used_cpu,
+    )
+    _release_memory(device)
 
     try:
         save_json(
@@ -4686,6 +4733,10 @@ def run_one_policy(
         )
     except Exception:
         torch.save({'hist_obj': hist_obj, 'hist_be': hist_be}, out_dir / 'history.pt')
+
+    if not do_plots:
+        pre.clear()
+        _release_memory(device)
 
     if do_plots:
         plot_cfg = build_plot_config(
@@ -4730,15 +4781,32 @@ def run_one_policy(
             config=plot_cfg,
         )
         beta_plot = _beta_for_plot_target(beta, n_atoms=int(Zg.shape[0]))
-        _save_array_csv(
-            out_dir / "mean_embedding_coefficients_beta_all_targets.csv",
-            beta.detach().cpu(),
-        )
+        beta_all_targets_shape = [int(x) for x in beta.shape]
+        if bool(int(getattr(args, "save_beta_all_targets", 0))):
+            _save_array_csv(
+                out_dir / "mean_embedding_coefficients_beta_all_targets.csv",
+                beta.detach().cpu(),
+            )
+            beta_all_targets_saved = True
+        else:
+            beta_all_targets_saved = False
+            save_json(
+                out_dir / "mean_embedding_coefficients_beta_all_targets_skipped.json",
+                {
+                    "saved": False,
+                    "shape": beta_all_targets_shape,
+                    "reason": "Skipped by default to avoid materializing a large target-by-atom matrix on CPU.",
+                    "enable_with": "--save-beta-all-targets 1",
+                },
+            )
         _save_array_csv(
             out_dir / "mean_embedding_coefficients_beta.csv",
             beta_plot.detach().cpu(),
             ["beta_mean_embedding"],
         )
+        del beta
+        pre.clear()
+        _release_memory(device)
         Zg_norm_optimized = Zg.detach().cpu().clone()
         Zg_raw_est = _denorm(Zg_norm_optimized.clone(), r_mu.detach().cpu(), r_sd.detach().cpu())
         Zg_raw, recovered_support_info = _enforce_reward_support_raw(
@@ -4756,7 +4824,6 @@ def run_one_policy(
         _save_array_csv(out_dir / "density_atoms_Z_grid_raw_est.csv", Zg_raw_est, reward_cols)
         _save_array_csv(out_dir / "density_atoms_Z_grid_raw_supported.csv", Zg_raw, reward_cols)
         _save_array_csv(out_dir / "density_atoms_Z_grid_normalized_supported.csv", Zg_norm_for_density, reward_cols)
-        _save_array_csv(out_dir / "mean_embedding_coefficients_beta.csv", beta_plot.detach().cpu(), ["beta_mean_embedding"])
 
         # Recovered density/PMF uses induced-embedding matching, not direct simplex
         # projection of beta.  This mirrors plot_recovered_densities.py and is
@@ -4899,7 +4966,8 @@ def run_one_policy(
             'Zg_raw': _to_cpu_serializable(Zg_raw),
             'Zg_norm_for_density': _to_cpu_serializable(Zg_norm_for_density),
             'beta': _to_cpu_serializable(beta_plot),
-            'beta_all_targets': _to_cpu_serializable(beta),
+            'beta_all_targets_shape': beta_all_targets_shape,
+            'beta_all_targets_saved': beta_all_targets_saved,
             'density_weights': _to_cpu_serializable(density_weights),
             'density_weight_projection': _to_cpu_serializable(marginal_payload.get('projection', {})),
             'marginal_payload': _to_cpu_serializable(marginal_payload),
@@ -4928,6 +4996,15 @@ def run_one_policy(
             },
             out_dir / 'plot_payload.pt',
         )
+        del raw_plot_payload, overlay_data
+        del marginal_payload, density_weights, beta_tilde_induced
+        del Zg, Zg_norm_optimized, Zg_raw_est, Zg_raw, Zg_norm_for_density
+        del beta_plot, joint_surface_raw, cache_raw
+        try:
+            del continuous_mean_embedding_2d
+        except UnboundLocalError:
+            pass
+        _release_memory(device)
 
     return metrics
 
@@ -5035,6 +5112,8 @@ def main() -> None:
     s0_test_raw = s0_test_raw[idx_test]
     a0_test_raw = a0_test_raw[idx_test]
     r_test_raw = r_test_raw[idx_test]
+    del train_blob, test_blob
+    _release_memory(None)
 
     # Backward-compatible aliases for legacy helper signatures.  These are not evaluated.
     s0_val_raw = s0_test_raw
@@ -5189,7 +5268,7 @@ def main() -> None:
         s0_tr=s0_tr,
         a0_tr=a0_tr,
         plot_idx=idx_star,
-        size=int(getattr(args, "embedding_target_set_size", 256)),
+        size=int(getattr(args, "embedding_target_set_size", -1)),
         mode=str(getattr(args, "embedding_target_set_mode", "random")),
         seed=int(args.seed) + 991,
     )
@@ -5204,6 +5283,8 @@ def main() -> None:
         "selected_state_raw_encoded": _np(_denorm(s_star, s_mu, s_sd)).reshape(-1).tolist(),
         "selected_logged_action_raw": _np(_denorm(a_star, a_mu, a_sd)).reshape(-1).tolist(),
     })
+    del s0_tr_raw_unencoded, s1_tr_raw_unencoded, s0_test_raw_unencoded, s0_val_raw_unencoded
+    _release_memory(None)
 
     print("\nTarget point for conditional mean embedding:")
     print(f"  mode          : {target_point_info.get('mode')}")

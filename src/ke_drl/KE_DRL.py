@@ -58,6 +58,18 @@ def _eta_stats(eta: torch.Tensor) -> dict[str, float]:
     }
 
 
+def _is_cuda_device(device: str | torch.device) -> bool:
+    try:
+        return torch.device(device).type == "cuda"
+    except Exception:
+        return str(device).startswith("cuda")
+
+
+def _empty_cuda_cache_if_needed(device: str | torch.device) -> None:
+    if torch.cuda.is_available() and _is_cuda_device(device):
+        torch.cuda.empty_cache()
+
+
 def KE_DRL(
     *,
     # --- core data ---
@@ -119,6 +131,7 @@ def KE_DRL(
     dtype: torch.dtype = torch.float64,
     optimize_dtype: Optional[torch.dtype] = None,
     offload_operators: str = "auto",
+    return_heavy_matrices: bool = True,
     return_best: bool = True,
     verbose: bool = True,
     # --- legacy options kept for API compatibility; ignored by the revised estimator ---
@@ -159,6 +172,16 @@ def KE_DRL(
         ``"auto"`` (default) keeps H_stack and G_stack on GPU when they fit,
         but moves them to CPU when their combined size exceeds 4 GB.
         ``"cpu"`` always offloads; ``"never"`` keeps on GPU unconditionally.
+    return_heavy_matrices : bool
+        When true, return the historical full ``pre`` payload, including
+        training kernels and Bellman operator stacks.  When false, return only
+        the matrices needed for risk evaluation and density recovery and release
+        large intermediates before returning.
+    ratio_alpha_mix : float or None
+        Deprecated for the Bellman IS path.  The Bellman weight is the ordinary
+        target-to-behavior ratio, so this function always fits the uLSIF ratio
+        with ``alpha_mix=0.0`` for ``D_eta``.  Nonzero values are recorded in
+        diagnostics as requested-but-ignored.
     """
     t0 = time.time()
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -229,10 +252,20 @@ def KE_DRL(
     s_a_plus = torch.cat([s1, a1], dim=1)
     x_star = torch.cat([s_star, a_star], dim=1)
 
+    requested_alpha_mix = None if ratio_alpha_mix is None else float(ratio_alpha_mix)
+    if requested_alpha_mix not in (None, 0.0) and verbose:
+        print(
+            "Warning: ratio_alpha_mix is ignored for Bellman IS weights. "
+            "The Bellman continuation ratio is the ordinary target-to-behavior "
+            "density ratio eta(x') = pi(a'|s') / beta(a'|s'), so KE_DRL fits "
+            "plain uLSIF with alpha_mix=0.0 for D_eta.",
+            flush=True,
+        )
+
     ulsif = ULSIFEstimator(
         kernel_func=matern_kernel,
         lambda_reg=ratio_reg,
-        alpha_mix=ratio_alpha_mix,
+        alpha_mix=0.0,
         **ratio_params,
     )
     alpha = ulsif.fit(
@@ -255,18 +288,18 @@ def KE_DRL(
         eta_mean = eta_plus.mean()
         if torch.isfinite(eta_mean) and eta_mean > torch.finfo(dtype).eps:
             eta_plus = eta_plus / eta_mean
-    alpha_bound = None
     alpha_mix_value = float(getattr(ulsif, "alpha_mix", 0.0))
-    if alpha_mix_value > 0.0:
-        alpha_bound = 1.0 / alpha_mix_value
-        final_cap = alpha_bound if eta_clip_max is None else min(float(eta_clip_max), alpha_bound)
-        eta_plus = eta_plus.clamp_max(float(final_cap))
     raw_eta_stats = _eta_stats(eta_plus_raw)
     used_eta_stats = _eta_stats(eta_plus)
     eta_diagnostics = {
+        "ratio_type": "ordinary_target_to_behavior",
+        "bellman_is_weight": "eta(x_plus)=pi(a_plus|s_plus)/beta(a_plus|s_plus)",
         "ratio_lambda_reg": float(ratio_reg),
+        "requested_ratio_alpha_mix": requested_alpha_mix,
+        "used_ratio_alpha_mix": float(alpha_mix_value),
+        "ignored_ratio_alpha_mix_for_bellman": bool(requested_alpha_mix not in (None, 0.0)),
         "ratio_alpha_mix": float(alpha_mix_value),
-        "ratio_alpha_bound": None if alpha_bound is None else float(alpha_bound),
+        "ratio_alpha_bound": None,
         "ratio_n_basis": None if ratio_n_basis is None else int(ratio_n_basis),
         "ratio_basis_source": str(ratio_basis_source),
         "eta_clip_min": None if eta_clip_min is None else float(eta_clip_min),
@@ -292,8 +325,9 @@ def KE_DRL(
         )
         print(
             "eta_plus diagnostics: "
-            f"alpha_mix={eta_diagnostics['ratio_alpha_mix']:.3g}, "
-            f"alpha_bound={eta_diagnostics['ratio_alpha_bound']}, "
+            f"ratio_type={eta_diagnostics['ratio_type']}, "
+            f"used_alpha_mix={eta_diagnostics['used_ratio_alpha_mix']:.3g}, "
+            f"requested_alpha_mix={eta_diagnostics['requested_ratio_alpha_mix']}, "
             f"clip=[{eta_diagnostics['eta_clip_min']}, {eta_diagnostics['eta_clip_max']}], "
             f"normalize={eta_diagnostics['normalize_eta']}; "
             f"raw_mean={eta_diagnostics['raw_mean']:.3g}, "
@@ -304,6 +338,7 @@ def KE_DRL(
             f"used_min={eta_diagnostics['used_min']:.3g}, "
             f"used_max={eta_diagnostics['used_max']:.3g}"
         )
+    del ulsif
 
     stage_t = time.time()
     Z = ZGrid.Z_kmeans(r, n_clusters=int(num_grid_points), constant_factor=float(hull_expand_factor))
@@ -454,8 +489,7 @@ def KE_DRL(
     if _do_offload and H_stack.is_cuda:
         H_stack = H_stack.cpu()
         G_stack = G_stack.cpu()
-        if dev == "cuda" or (hasattr(dev, "type") and getattr(dev, "type", None) == "cuda"):
-            torch.cuda.empty_cache()
+        _empty_cuda_cache_if_needed(dev)
         stage_t = log_stage("offload H/G to CPU", stage_t)
 
     optimizer = RKDRL_Optimizer(device=dev, dtype=dtype)
@@ -500,29 +534,18 @@ def KE_DRL(
     B_hat_torch = B_hat  # already on correct device/dtype from optimizer
     pre_computed_matrices = {
         "Z_grid": Z,
-        "X_train": s_a,
-        "X_successor": s_a_plus,
         "X_basis": X_basis,
         "basis_indices": basis_indices,
         "mean_embedding_basis": basis_meta,
-        "X_star": x_star,
-        "K_X": K_X,
         "K_sa": K_basis,      # backward-compatible alias for the fitted feature Gram
-        "K_plus": K_plus,
         "K_basis": K_basis,
-        "K_basis_plus": K_basis_plus,
         "K_Z": K_Z,
         "k_star": k_star,
-        "k_star_full": k_star_full,
         "k_sa": k_star,       # backward-compatible alias
-        "Gamma": Gamma_stack,
         "Phi": Phi_stack,
-        "H": H_stack,
-        "G": G_stack,
         "eta_plus": eta_plus,
         "eta_plus_raw": eta_plus_raw,
         "eta_diagnostics": eta_diagnostics,
-        "alpha": torch.as_tensor(alpha, dtype=dtype, device=dev),
         "optimizer_diagnostics": optimizer.last_diagnostics,
         "x_kernel_params": x_params,
         "z_kernel_params": z_params,
@@ -530,6 +553,33 @@ def KE_DRL(
         "lambda_Gamma": torch.as_tensor(lambda_reg, dtype=dtype, device=dev),
         "lambda_B": torch.as_tensor(lambda_B, dtype=dtype, device=dev),
     }
+    if return_heavy_matrices:
+        pre_computed_matrices.update({
+            "X_train": s_a,
+            "X_successor": s_a_plus,
+            "X_star": x_star,
+            "K_X": K_X,
+            "K_plus": K_plus,
+            "K_basis_plus": K_basis_plus,
+            "k_star_full": k_star_full,
+            "Gamma": Gamma_stack,
+            "H": H_stack,
+            "G": G_stack,
+            "alpha": torch.as_tensor(alpha, dtype=dtype, device=dev),
+        })
+    else:
+        del s0, s1, a0, a1, s_star, a_star, r
+        del s_a, s_a_plus, x_star, K_X, K_plus, K_basis_plus
+        del k_star_full, Gamma_stack, H_stack, G_stack, alpha
+        try:
+            del transformed
+        except UnboundLocalError:
+            pass
+        try:
+            del omega, phase, rff_scale, feat_Z
+        except UnboundLocalError:
+            pass
+        _empty_cuda_cache_if_needed(dev)
 
     if verbose:
         print(f"Done in {time.time() - t0:.2f}s.")

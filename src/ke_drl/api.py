@@ -72,6 +72,7 @@ def estimate_embedding(
     B_ridge_penalty: bool = False,
     H_batch_size: int = 10,
     device: Optional[str] = None, dtype: torch.dtype = torch.float64,
+    return_heavy_matrices: bool = True,
     return_best: bool = True,
     verbose: bool = True,
 ) -> Tuple[torch.Tensor, list, list, Dict[str, torch.Tensor]]:
@@ -111,7 +112,8 @@ def estimate_embedding(
         negativity_penalty_lambda=negativity_penalty_lambda, max_B_norm=max_B_norm,
         B_ridge_penalty=B_ridge_penalty,
         H_batch_size=H_batch_size,
-        device=device, dtype=dtype, return_best=return_best, verbose=verbose,
+        device=device, dtype=dtype, return_heavy_matrices=return_heavy_matrices,
+        return_best=return_best, verbose=verbose,
     )
 
 # ------------- PLOT CONFIG -------------

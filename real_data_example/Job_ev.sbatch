@@ -18,8 +18,10 @@
 #   sbatch Job_d3rlpy.sbatch
 #   sbatch --dependency=afterok:<d3rlpy_jobid> Job_ev.sbatch
 #
-# The evaluator itself owns the stabilized ratio and density-recovery settings:
-# bounded RuLSIF, self-normalized/clipped eta, positive-beta anchored recovery,
+# The Bellman evaluator uses the ordinary target-to-behavior density ratio
+# eta(x') = pi(a'|s') / beta(a'|s') in D_eta, fitted by ordinary uLSIF without
+# alpha-relative mixing, self-normalization, or upper clipping by default.
+# Density-recovery stabilization is handled separately by positive-beta anchoring,
 # spectrum-scaled ridge, and a smaller atom grid for better conditioning.
 # =====================================================================
 
@@ -47,10 +49,9 @@ export OPENBLAS_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 export NUMEXPR_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 export PYTORCH_CUDA_ALLOC_CONF="${PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}"
 
-# RuLSIF alpha-relative mixing for the density-ratio fit (0=plain uLSIF).
-# 0.1 bounds the ratio by 1/0.1=10 -> removes the negative/heavy-tail blow-ups
-# and raises ESS. Set to 0.0 to reproduce the old behavior.
-export KEDRL_RULSIF_ALPHA="${KEDRL_RULSIF_ALPHA:-0.1}"
+# Deprecated compatibility knob. The KE-DRL Bellman path ignores nonzero alpha
+# and fits ordinary uLSIF with alpha_mix=0.0 for D_eta.
+export KEDRL_RULSIF_ALPHA="${KEDRL_RULSIF_ALPHA:-0.0}"
 RULSIF_ALPHA="${RULSIF_ALPHA:-${KEDRL_RULSIF_ALPHA}}"
 
 echo "Job ID:    ${SLURM_JOB_ID}"
@@ -58,8 +59,8 @@ echo "Array idx: ${SLURM_ARRAY_TASK_ID}"
 echo "CPUs/node: ${SLURM_CPUS_ON_NODE:-NA}"
 echo "Mem/node:  ${SLURM_MEM_PER_NODE:-NA}"
 echo "Node:      $(hostname)"
-echo "KEDRL_RULSIF_ALPHA=${KEDRL_RULSIF_ALPHA}"
-echo "RULSIF_ALPHA=${RULSIF_ALPHA}"
+echo "KEDRL_RULSIF_ALPHA=${KEDRL_RULSIF_ALPHA} (deprecated; Bellman eta uses ordinary uLSIF)"
+echo "RULSIF_ALPHA=${RULSIF_ALPHA} (requested only; nonzero is ignored by KE_DRL for D_eta)"
 echo "Start:     $(date)"
 
 set +u
@@ -97,8 +98,10 @@ BW_PER_DIM_ARR=("30,1" "50,1" "70,1" "90,1")
 LAMREC_ARR=(0.0)
 GRID_ARR=(300)                       # was 1200; fewer atoms -> better-conditioned recovery
 MEAN_EMBEDDING_BASIS_SIZE_ARR=(6000)
-EMBEDDING_TARGET_SET_SIZE="${EMBEDDING_TARGET_SET_SIZE:-256}"
+EMBEDDING_TARGET_SET_SIZE="${EMBEDDING_TARGET_SET_SIZE:--1}"  # <=0 means all --max-train rows
 EMBEDDING_TARGET_BATCH_SIZE="${EMBEDDING_TARGET_BATCH_SIZE:-64}"
+RETURN_HEAVY_PRECOMPUTE="${RETURN_HEAVY_PRECOMPUTE:-0}"
+SAVE_BETA_ALL_TARGETS="${SAVE_BETA_ALL_TARGETS:-0}"
 STEPS_ARR=(40000)
 TARGET_POINT_ARR=("state_pc_q25" "state_pc_q50" "state_pc_q75")
 
@@ -180,6 +183,8 @@ echo "  GRID         = ${GRID}"
 echo "  BASIS L      = ${MEAN_EMBEDDING_BASIS_SIZE}"
 echo "  FIT TARGETS  = ${EMBEDDING_TARGET_SET_SIZE}"
 echo "  TARGET BATCH = ${EMBEDDING_TARGET_BATCH_SIZE}"
+echo "  HEAVY PRE    = ${RETURN_HEAVY_PRECOMPUTE}"
+echo "  SAVE BETA ALL= ${SAVE_BETA_ALL_TARGETS}"
 echo "  STEPS        = ${STEPS}"
 echo "  TARGET_POINT = ${TARGET_POINT}"
 echo "  OUTROOT      = ${OUTROOT}"
@@ -195,6 +200,7 @@ for x in [
     "eta_clip_max",
     "ratio_lambda_reg",
     "ratio_alpha_mix",
+    "return_heavy_matrices",
     "nu",
     "length_scale",
     "sigma",
@@ -250,6 +256,8 @@ python -u "${PYFILE}" \
   --embedding-target-set-size "${EMBEDDING_TARGET_SET_SIZE}" \
   --embedding-target-set-mode random \
   --embedding-target-batch-size "${EMBEDDING_TARGET_BATCH_SIZE}" \
+  --return-heavy-precompute "${RETURN_HEAVY_PRECOMPUTE}" \
+  --save-beta-all-targets "${SAVE_BETA_ALL_TARGETS}" \
   --policy-specific-initial-action 1 \
   --discrete-reward-cols total_clicks \
   --export-subsets 1 \
@@ -257,8 +265,8 @@ python -u "${PYFILE}" \
   --simplex-calib-ridge 1e-3 \
   --simplex-calib-max-rows 0 \
   --rulsif-alpha "${RULSIF_ALPHA}" \
-  --normalize-eta 1 \
-  --eta-clip-max 20 \
+  --normalize-eta 0 \
+  --eta-clip-max 0 \
   --ratio-lambda-reg 1e-2 \
   --density-recovery-steps 20000 \
   --density-recovery-lr 1e-2 \
