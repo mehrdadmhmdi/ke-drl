@@ -21,7 +21,7 @@
 # two per-policy subfolders inside it (each contains artifacts.pt). Example for
 # the patched output tree (cfg 0, q50 target point):
 #
-#   export INPUT_ROOT="evaluation_results/expedia_encoded_10k_linear3_fixed/main_cfg_0_state_pc_q50"
+#   export INPUT_ROOT="evaluation_results/expedia_encoded_10k_linear_overlap_fixed/main_cfg_0_state_pc_q50"
 #   export POLICY_DIRS="gross_revenue_per_night_cfg000_nuZ3.5_ellZ2.0_nuSA3.5_ellSA1.0_lam1e-05_sigmaZ1.0 total_clicks_cfg000_nuZ3.5_ellZ2.0_nuSA3.5_ellSA1.0_lam1e-05_sigmaZ1.0"
 #   export LABELS="rev_policy,click_policy"
 #   sbatch Job_plot.sbatch
@@ -63,7 +63,7 @@ source /sw/external/python/anaconda3_gpu/etc/profile.d/conda.sh
 conda activate /u/mehrdad3/.conda/envs/delta_env
 
 # Default to ONE patched config dir; override INPUT_ROOT/POLICY_DIRS as above.
-INPUT_ROOT="${INPUT_ROOT:-evaluation_results/expedia_encoded_10k_linear3_fixed/main_cfg_0_state_pc_q50}"
+INPUT_ROOT="${INPUT_ROOT:-evaluation_results/expedia_encoded_10k_linear_overlap_fixed/main_cfg_0_state_pc_q50}"
 POLICY_DIRS="${POLICY_DIRS:-gross_revenue_per_night_cfg000_nuZ3.5_ellZ2.0_nuSA3.5_ellSA1.0_lam1e-05_sigmaZ1.0 total_clicks_cfg000_nuZ3.5_ellZ2.0_nuSA3.5_ellSA1.0_lam1e-05_sigmaZ1.0}"
 OUT_DIR="${OUT_DIR:-${INPUT_ROOT}/replot_induced}"
 LABELS="${LABELS:-rev_policy,click_policy}"

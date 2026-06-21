@@ -227,7 +227,7 @@ def _parse_args() -> argparse.Namespace:
     )
 
     p.add_argument("--policy-objective",type=str,default="both",help="Reward name to evaluate, or 'both' to evaluate both reward-specific policies.")
-    p.add_argument("--policy-ckpt-dir", type=str, default="checkpoints")
+    p.add_argument("--policy-ckpt-dir", type=str, default="policies_linear_overlap")
 
     p.add_argument("--state-cols",type=str,default=None,help="Optional comma-separated state variable names."    )
     p.add_argument("--action-cols",type=str,default=None,help="Optional comma-separated action variable names.",)

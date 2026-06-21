@@ -14,13 +14,13 @@
 
 # =====================================================================
 # Mean-embedding + density-recovery evaluation.
-# Prerequisite: run Job_d3rlpy.sbatch first so ./policies_linear3 exists.
+# Prerequisite: run Job_d3rlpy.sbatch first so ./policies_linear_overlap exists.
 #   sbatch Job_d3rlpy.sbatch
 #   sbatch --dependency=afterok:<d3rlpy_jobid> Job_ev.sbatch
 #
-# The Bellman evaluator uses the ordinary target-to-behavior density ratio
-# eta(x') = pi(a'|s') / beta(a'|s') in D_eta, fitted by ordinary uLSIF without
-# alpha-relative mixing, self-normalization, or upper clipping by default.
+# The Bellman evaluator uses the ordinary target-to-logged-data density ratio in
+# D_eta, fitted directly by ordinary uLSIF from target-policy samples versus
+# logged samples. No behavior policy model is fit.
 # Density-recovery stabilization is handled separately by positive-beta anchoring,
 # spectrum-scaled ridge, and a smaller atom grid for better conditioning.
 # =====================================================================
@@ -74,7 +74,7 @@ eval "$(conda shell.bash hook)"
 set -u
 
 DATA_BASE="${DATA_BASE:-./Expedia_data}"
-POLICY_CKPT_DIR="${POLICY_CKPT_DIR:-./policies_linear3}"
+POLICY_CKPT_DIR="${POLICY_CKPT_DIR:-./policies_linear_overlap}"
 STATE_ENCODER_PATH="${STATE_ENCODER_PATH:-${POLICY_CKPT_DIR}/state_encoder.json}"
 PYFILE="${PYFILE:-policy_evaluation.py}"
 TASK="${SLURM_ARRAY_TASK_ID}"
@@ -161,7 +161,7 @@ STEPS=${STEPS_ARR[$I_STEPS]}
 TARGET_POINT=${TARGET_POINT_ARR[$I_TARGET_POINT]}
 
 CFG_INDEX=$(( TASK / N_TARGET_POINT ))
-OUTROOT="evaluation_results/expedia_encoded_10k_linear3_fixed/main_cfg_${CFG_INDEX}_${TARGET_POINT}"
+OUTROOT="evaluation_results/expedia_encoded_10k_linear_overlap_fixed/main_cfg_${CFG_INDEX}_${TARGET_POINT}"
 
 echo "Resolved config:"
 echo "  PYFILE       = ${PYFILE}"

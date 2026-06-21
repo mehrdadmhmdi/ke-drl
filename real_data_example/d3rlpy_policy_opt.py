@@ -1243,7 +1243,7 @@ def train_one_reward(
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Direct reward-weighted linear-Gaussian target-policy fitting.")
     p.add_argument("--data_base", "--data-base", default="./Expedia_data")
-    p.add_argument("--ckpt_dir", "--ckpt-dir", default="./policies_linear")
+    p.add_argument("--ckpt_dir", "--ckpt-dir", default="./policies_linear_overlap")
     p.add_argument("--train_blob", "--train-blob", default="expedia_train_timeindexed.pt")
     p.add_argument("--test_blob", "--test-blob", default=None)
     p.add_argument("--max_train", "--max-train", type=int, default=80000)
