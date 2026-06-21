@@ -312,13 +312,54 @@ def _parse_args() -> argparse.Namespace:
         default=0.0,
         help=(
             "Deprecated compatibility option. Bellman eta is always the ordinary "
-            "target-to-behavior ratio fitted by plain uLSIF; nonzero values are "
-            "recorded but ignored by ke_drl for D_eta."
+            "target-to-logged-data ratio fitted directly by plain uLSIF from "
+            "target-policy samples versus observed samples; nonzero values are "
+            "recorded but ignored by ke_drl for D_eta. No behavior policy model is fit."
         ),
     )
-    p.add_argument("--normalize-eta", type=int, default=0, help="1=self-normalise eta after ordinary uLSIF. Default 0 matches the Bellman expression.")
+    p.add_argument("--normalize-eta", type=int, default=0, help="1=extra post-hoc self-normalization after direct ordinary uLSIF. Default 0 matches the Bellman expression.")
     p.add_argument("--eta-clip-max", type=float, default=0.0, help="Optional upper clip on ordinary uLSIF eta. <=0 disables; default disables.")
     p.add_argument("--ratio-lambda-reg", type=float, default=1e-2, help="Ridge for the ordinary uLSIF density-ratio fit (larger=smoother eta).")
+    p.add_argument(
+        "--ratio-n-basis",
+        type=int,
+        default=1500,
+        help="Number of direct-uLSIF kernel centers. Use <=0 for all centers from --ratio-basis-source.",
+    )
+    p.add_argument(
+        "--ratio-basis-source",
+        type=str,
+        default="numerator",
+        choices=["numerator", "denominator"],
+        help=(
+            "Direct-uLSIF basis source. 'numerator' samples centers from the user-chosen "
+            "target policy and is the standard choice for estimating target/data ratios."
+        ),
+    )
+    p.add_argument(
+        "--ratio-target-samples",
+        type=int,
+        default=3,
+        help=(
+            "Number of target-policy action draws per observed successor state for direct "
+            "uLSIF numerator samples. This does not fit a behavior policy."
+        ),
+    )
+    p.add_argument(
+        "--ratio-nonnegative-alpha",
+        type=int,
+        default=1,
+        help="0/1; clamp direct-uLSIF kernel coefficients to zero after solving.",
+    )
+    p.add_argument(
+        "--ratio-calibrate-mean",
+        type=int,
+        default=1,
+        help=(
+            "0/1; rescale the ordinary direct ratio so its empirical data mean is one. "
+            "This enforces a density-ratio identity without estimating the behavior policy."
+        ),
+    )
     p.add_argument("--density-recovery-device", type=str, default="same", help="same/cpu/cuda; device for post-fit density recovery.")
     p.add_argument("--density-recovery-ridge", type=float, default=1e-5, help="Ridge in beta_tilde=(K+ridge I)^(-1)Aw; internally floored by kernel spectrum.")
     p.add_argument("--density-recovery-lr", type=float, default=1e-2)
@@ -4364,6 +4405,12 @@ def run_one_policy(
         eta_clip_max=(None if float(getattr(args, "eta_clip_max", 0.0)) <= 0
                       else float(getattr(args, "eta_clip_max", 0.0))),
         ratio_lambda_reg=float(getattr(args, "ratio_lambda_reg", 1e-2)),
+        ratio_n_basis=(None if int(getattr(args, "ratio_n_basis", 0) or 0) <= 0
+                       else int(getattr(args, "ratio_n_basis", 0))),
+        ratio_basis_source=str(getattr(args, "ratio_basis_source", "numerator")),
+        ratio_target_sample_multiplier=max(1, int(getattr(args, "ratio_target_samples", 1) or 1)),
+        ratio_nonnegative_alpha=bool(int(getattr(args, "ratio_nonnegative_alpha", 1))),
+        ratio_calibrate_mean=bool(int(getattr(args, "ratio_calibrate_mean", 1))),
         target_batch_size=(None if int(getattr(args, "embedding_target_batch_size", 64) or 0) <= 0
                            else int(getattr(args, "embedding_target_batch_size", 64))),
         lambda_B=float(getattr(args, "lambda_B", 0.0)),
@@ -4579,13 +4626,21 @@ def run_one_policy(
             'method': method,
             'num_steps': int(args.num_steps),
             'num_grid_points': int(m_Z),
-            'bellman_ratio_type': 'ordinary_target_to_behavior',
+            'bellman_ratio_type': 'ordinary_target_to_logged_data_direct',
+            'bellman_ratio_estimator': 'direct_uLSIF_no_behavior_policy_model',
             'ratio_alpha_mix_requested': float(getattr(args, "ratio_alpha_mix", 0.0)),
             'normalize_eta': bool(int(getattr(args, "normalize_eta", 0))),
             'eta_clip_min': 0.0,
             'eta_clip_max': (None if float(getattr(args, "eta_clip_max", 0.0)) <= 0
                              else float(getattr(args, "eta_clip_max", 0.0))),
             'ratio_lambda_reg': float(getattr(args, "ratio_lambda_reg", 1e-2)),
+            'ratio_n_basis': (None if int(getattr(args, "ratio_n_basis", 0) or 0) <= 0
+                              else int(getattr(args, "ratio_n_basis", 0))),
+            'ratio_basis_source': str(getattr(args, "ratio_basis_source", "numerator")),
+            'ratio_target_samples': max(1, int(getattr(args, "ratio_target_samples", 1) or 1)),
+            'ratio_nonnegative_alpha': bool(int(getattr(args, "ratio_nonnegative_alpha", 1))),
+            'ratio_calibrate_mean': bool(int(getattr(args, "ratio_calibrate_mean", 1))),
+            'fits_behavior_policy_model': False,
             'embedding_target_set': embedding_target_info,
             'embedding_target_batch_size': (None if int(getattr(args, "embedding_target_batch_size", 64) or 0) <= 0
                                             else int(getattr(args, "embedding_target_batch_size", 64))),

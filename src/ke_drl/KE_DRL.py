@@ -99,8 +99,11 @@ def KE_DRL(
     ratio_sigma: Optional[float] = None,
     ratio_alpha_mix: Optional[float] = None,
     ratio_n_basis: Optional[int] = None,
-    ratio_basis_source: str = "denominator",
+    ratio_basis_source: str = "numerator",
     ratio_basis_seed: Optional[int] = None,
+    ratio_target_sample_multiplier: int = 1,
+    ratio_nonnegative_alpha: bool = True,
+    ratio_calibrate_mean: bool = True,
     mean_embedding_basis_size: Optional[int] = None,
     mean_embedding_basis_method: str = "full",
     mean_embedding_basis_seed: Optional[int] = None,
@@ -179,9 +182,23 @@ def KE_DRL(
         large intermediates before returning.
     ratio_alpha_mix : float or None
         Deprecated for the Bellman IS path.  The Bellman weight is the ordinary
-        target-to-behavior ratio, so this function always fits the uLSIF ratio
-        with ``alpha_mix=0.0`` for ``D_eta``.  Nonzero values are recorded in
-        diagnostics as requested-but-ignored.
+        target-to-logged-data ratio fit directly from samples, so this function
+        always fits the uLSIF ratio with ``alpha_mix=0.0`` for ``D_eta``.
+        Nonzero values are recorded in diagnostics as requested-but-ignored.
+    ratio_basis_source : str
+        Kernel-center source for the direct ratio fit. The default
+        ``"numerator"`` samples centers from target-policy draws at the logged
+        successor states, while the denominator is only the observed
+        ``(S_plus, A_plus)`` sample. No behavior-policy model is fit.
+    ratio_target_sample_multiplier : int
+        Number of target-policy action draws per observed successor state used
+        to form numerator samples for direct uLSIF. This does not fit or require
+        a behavior policy model.
+    ratio_nonnegative_alpha : bool
+        Clamp uLSIF kernel coefficients to zero after the linear solve.
+    ratio_calibrate_mean : bool
+        For the ordinary ratio, rescale the fitted ratio to satisfy the
+        empirical density-ratio identity ``mean_data eta = 1``.
     """
     t0 = time.time()
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -256,9 +273,9 @@ def KE_DRL(
     if requested_alpha_mix not in (None, 0.0) and verbose:
         print(
             "Warning: ratio_alpha_mix is ignored for Bellman IS weights. "
-            "The Bellman continuation ratio is the ordinary target-to-behavior "
-            "density ratio eta(x') = pi(a'|s') / beta(a'|s'), so KE_DRL fits "
-            "plain uLSIF with alpha_mix=0.0 for D_eta.",
+            "The Bellman continuation ratio is the ordinary target-to-logged-data "
+            "density ratio fit directly from target-policy samples versus logged "
+            "samples, so KE_DRL fits plain uLSIF with alpha_mix=0.0 for D_eta.",
             flush=True,
         )
 
@@ -276,6 +293,9 @@ def KE_DRL(
         n_basis=ratio_n_basis,
         basis_source=ratio_basis_source,
         basis_seed=ratio_basis_seed if ratio_basis_seed is not None else random_seed,
+        target_sample_multiplier=int(ratio_target_sample_multiplier or 1),
+        nonnegative_alpha=bool(ratio_nonnegative_alpha),
+        calibrate_mean=bool(ratio_calibrate_mean),
         plot=False,
     )
     eta_plus_raw = ulsif.predict(s1, a1).to(dev, dtype).reshape(-1, 1)
@@ -292,8 +312,11 @@ def KE_DRL(
     raw_eta_stats = _eta_stats(eta_plus_raw)
     used_eta_stats = _eta_stats(eta_plus)
     eta_diagnostics = {
-        "ratio_type": "ordinary_target_to_behavior",
-        "bellman_is_weight": "eta(x_plus)=pi(a_plus|s_plus)/beta(a_plus|s_plus)",
+        "ratio_type": "ordinary_target_to_logged_data_direct",
+        "bellman_is_weight": (
+            "eta(x_plus)=p_target(x_plus)/p_logged_data(x_plus), fit directly "
+            "from target-policy samples versus logged samples; no behavior-policy model"
+        ),
         "ratio_lambda_reg": float(ratio_reg),
         "requested_ratio_alpha_mix": requested_alpha_mix,
         "used_ratio_alpha_mix": float(alpha_mix_value),
@@ -305,6 +328,12 @@ def KE_DRL(
         "eta_clip_min": None if eta_clip_min is None else float(eta_clip_min),
         "eta_clip_max": None if eta_clip_max is None else float(eta_clip_max),
         "normalize_eta": bool(normalize_eta),
+        "ratio_target_sample_multiplier": int(ratio_target_sample_multiplier or 1),
+        "ratio_nonnegative_alpha": bool(ratio_nonnegative_alpha),
+        "ratio_calibrate_mean": bool(ratio_calibrate_mean),
+        "fits_behavior_policy_model": False,
+        "direct_ratio_estimator": "uLSIF",
+        "direct_ratio_fit_diagnostics": dict(getattr(ulsif, "fit_diagnostics", {}) or {}),
         "raw_mean": raw_eta_stats["mean"],
         "raw_min": raw_eta_stats["min"],
         "raw_max": raw_eta_stats["max"],
@@ -326,6 +355,9 @@ def KE_DRL(
         print(
             "eta_plus diagnostics: "
             f"ratio_type={eta_diagnostics['ratio_type']}, "
+            f"basis={eta_diagnostics['ratio_basis_source']}, "
+            f"target_draws/state={eta_diagnostics['ratio_target_sample_multiplier']}, "
+            f"no_behavior_model={not eta_diagnostics['fits_behavior_policy_model']}, "
             f"used_alpha_mix={eta_diagnostics['used_ratio_alpha_mix']:.3g}, "
             f"requested_alpha_mix={eta_diagnostics['requested_ratio_alpha_mix']}, "
             f"clip=[{eta_diagnostics['eta_clip_min']}, {eta_diagnostics['eta_clip_max']}], "

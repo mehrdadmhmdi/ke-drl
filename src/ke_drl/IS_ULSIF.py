@@ -1,18 +1,26 @@
 """Unconstrained Least-Squares Importance Fitting (uLSIF) estimator.
 
-Implements the kernel-based ratio estimator used to recover the target/behavior
-density ratio eta(x) = pi(a | s) / beta(a | s) entering Phi(x) = K_+ D_eta Gamma(x)
-in draft2.tex. The Bellman IS weight is the ordinary density ratio, so callers
+Implements the kernel-based direct ratio estimator used to recover the
+target/logged-data density ratio entering Phi(x) = K_+ D_eta Gamma(x). The
+denominator is represented by the observed samples; no behavior-policy density
+model is fit. The Bellman IS weight is the ordinary density ratio, so callers
 that build ``D_eta`` should use ``alpha_mix=0.0``. Nonzero ``alpha_mix`` fits an
 alpha-relative RuLSIF ratio, which is a different stabilization diagnostic and
 not the Bellman continuation weight. Two basis choices are supported:
 
-- ``basis_source="denominator"`` with ``n_basis=None``: every behavior sample is
+- ``basis_source="denominator"`` with ``n_basis=None``: every logged sample is
   a basis function (kernel-ridge-flavored uLSIF, the original repository
   behavior). Cost O(N^3) per fit; cleaner for small N.
 - ``basis_source="numerator"`` (or ``"denominator"``) with ``n_basis=b`` for b < N:
   classical uLSIF with a randomly sampled subset of b centers (Kanamori et al.
   2009). Cost O(b^2 N + b^3) per fit; the standard speed-up for large N.
+
+The real-data KE-DRL path deliberately does not fit a behavior policy model.
+The denominator distribution is represented only by the observed samples
+``(S, A)``, while the numerator distribution is represented by resampling
+actions from the user-specified target policy at those same states.  Optional
+nonnegativity and empirical mean calibration enforce basic density-ratio
+identities without estimating either density separately.
 """
 
 from __future__ import annotations
@@ -50,6 +58,7 @@ class ULSIFEstimator:
             raise ValueError("alpha_mix must be in [0, 1).")
         self.alpha: Optional[torch.Tensor] = None      # (n_basis, 1)
         self._X_basis: Optional[torch.Tensor] = None   # (n_basis, d)
+        self.fit_diagnostics: dict[str, object] = {}
 
     # ------------------------------------------------------------------
     def _sample_target(
@@ -89,8 +98,11 @@ class ULSIFEstimator:
         target_p_params: dict,
         *,
         n_basis: Optional[int] = None,
-        basis_source: str = "denominator",
+        basis_source: str = "numerator",
         basis_seed: Optional[int] = None,
+        target_sample_multiplier: int = 1,
+        nonnegative_alpha: bool = True,
+        calibrate_mean: bool = True,
         plot: bool = False,
     ) -> torch.Tensor:
         """Fit the uLSIF coefficients.
@@ -102,9 +114,19 @@ class ULSIFEstimator:
             n_basis: number of basis centers. ``None`` keeps the original
                 behavior of using every denominator sample as a basis (cost
                 grows as O(N^3)).
-            basis_source: ``"denominator"`` (default) or ``"numerator"``. The
-                latter matches the canonical uLSIF construction.
+            basis_source: ``"numerator"`` (default) or ``"denominator"``. The
+                default matches the canonical direct-uLSIF construction.
             basis_seed: optional integer seed for the basis subsample.
+            target_sample_multiplier: number of target-policy action draws per
+                observed state used to form numerator samples. This still
+                estimates the direct target/data ratio; it does not estimate a
+                behavior policy.
+            nonnegative_alpha: clamp negative kernel coefficients to zero after
+                the linear solve, the standard uLSIF post-processing that keeps
+                the fitted ratio nonnegative for positive kernels.
+            calibrate_mean: for ordinary uLSIF (``alpha_mix=0``), rescale the
+                fitted ratio so its empirical denominator mean is one. The true
+                density ratio obeys this identity.
             plot: optional diagnostic plots; off by default to keep cluster runs
                 lightweight.
         """
@@ -115,8 +137,13 @@ class ULSIFEstimator:
         n, d_a = A.shape
 
         X_beta = torch.cat([S, A], dim=1).to(device=device, dtype=dtype)             # denominator
-        a_pi = self._sample_target(d_a, S.to(device, dtype), target_p_choice, target_p_params)
-        X_pi = torch.cat([S.to(device, dtype), a_pi], dim=1)                          # numerator
+
+        target_sample_multiplier = max(1, int(target_sample_multiplier or 1))
+        S_nu = S.to(device, dtype)
+        if target_sample_multiplier > 1:
+            S_nu = S_nu.repeat((target_sample_multiplier, 1))
+        a_pi = self._sample_target(d_a, S_nu, target_p_choice, target_p_params)
+        X_pi = torch.cat([S_nu, a_pi], dim=1)                                        # numerator
 
         basis_source_l = str(basis_source).lower()
         if basis_source_l not in {"denominator", "numerator"}:
@@ -161,15 +188,85 @@ class ULSIFEstimator:
         except RuntimeError:
             alpha = torch.linalg.solve(A_mat + jitter * I_b, h)
 
+        alpha_unconstrained = alpha
+        alpha_unconstrained_neg_frac = float((alpha_unconstrained < 0).double().mean().detach().cpu().item())
+        alpha_unconstrained_min = float(alpha_unconstrained.min().detach().cpu().item())
+        alpha_unconstrained_max = float(alpha_unconstrained.max().detach().cpu().item())
+
+        if bool(nonnegative_alpha):
+            alpha = torch.clamp(alpha, min=0.0)
+
+        eta_pre_calibration = (K_basis_de.transpose(0, 1) @ alpha.reshape(-1, 1)).squeeze(1)
+        eta_pre_mean = eta_pre_calibration.mean()
+        mean_calibration_scale = 1.0
+        mean_calibration_applied = False
+        mean_calibration_skipped = None
+        if bool(calibrate_mean):
+            if am != 0.0:
+                mean_calibration_skipped = "alpha_relative_ratio_has_no_unit_mean_identity"
+            elif torch.isfinite(eta_pre_mean) and eta_pre_mean > torch.finfo(dtype).eps:
+                mean_calibration_scale = float((1.0 / eta_pre_mean).detach().cpu().item())
+                alpha = alpha * mean_calibration_scale
+                mean_calibration_applied = True
+            else:
+                mean_calibration_skipped = "nonpositive_or_nonfinite_denominator_mean"
+
         self.alpha = alpha.reshape(-1, 1)
 
         with torch.no_grad():
             eta_hat = (K_basis_de.transpose(0, 1) @ self.alpha).squeeze(1)
             neg = (eta_hat < 0).float().mean().item()
+            sw = torch.clamp(eta_hat, min=0.0).sum()
+            ess = 0.0
+            if float(sw.detach().cpu()) > 0.0:
+                ess = float(((sw * sw) / (torch.clamp(eta_hat, min=0.0).pow(2).sum() + 1e-12)).detach().cpu().item())
+            self.fit_diagnostics = {
+                "estimator": "direct_uLSIF",
+                "ratio_type": "ordinary_target_to_logged_data_direct" if am == 0.0 else "alpha_relative_target_to_logged_data_direct",
+                "fits_behavior_policy_model": False,
+                "n_denominator": int(n_de),
+                "n_numerator": int(n_nu),
+                "target_sample_multiplier": int(target_sample_multiplier),
+                "basis_size": int(b),
+                "basis_source": str(basis_source_l),
+                "basis_seed": None if basis_seed is None else int(basis_seed),
+                "alpha_mix": float(am),
+                "lambda_reg": float(self.lambda_reg),
+                "nonnegative_alpha": bool(nonnegative_alpha),
+                "alpha_unconstrained_neg_frac": alpha_unconstrained_neg_frac,
+                "alpha_unconstrained_min": alpha_unconstrained_min,
+                "alpha_unconstrained_max": alpha_unconstrained_max,
+                "alpha_min": float(self.alpha.min().detach().cpu().item()),
+                "alpha_max": float(self.alpha.max().detach().cpu().item()),
+                "calibrate_mean": bool(calibrate_mean),
+                "mean_calibration_applied": bool(mean_calibration_applied),
+                "mean_calibration_scale": float(mean_calibration_scale),
+                "mean_calibration_skipped": mean_calibration_skipped,
+                "eta_pre_calibration_mean": float(eta_pre_calibration.mean().detach().cpu().item()),
+                "eta_pre_calibration_min": float(eta_pre_calibration.min().detach().cpu().item()),
+                "eta_pre_calibration_max": float(eta_pre_calibration.max().detach().cpu().item()),
+                "eta_hat_mean": float(eta_hat.mean().detach().cpu().item()),
+                "eta_hat_min": float(eta_hat.min().detach().cpu().item()),
+                "eta_hat_max": float(eta_hat.max().detach().cpu().item()),
+                "eta_hat_neg_frac": float(neg),
+                "eta_hat_ess": float(ess),
+            }
             print(
-                "[uLSIF alpha_mix={:.2f}] basis={}/{} ({}); eta_hat min={:.3e} max={:.3e} neg%={:.2f}".format(
-                    am, b, source_pool.shape[0], basis_source_l,
-                    eta_hat.min().item(), eta_hat.max().item(), 100.0 * neg,
+                "[uLSIF alpha_mix={:.2f}] basis={}/{} ({}); numerator={} target_draws/state={}; "
+                "nonneg_alpha={}; mean_calib={} scale={:.3g}; eta_hat mean={:.3e} min={:.3e} max={:.3e} neg%={:.2f}".format(
+                    am,
+                    b,
+                    source_pool.shape[0],
+                    basis_source_l,
+                    n_nu,
+                    target_sample_multiplier,
+                    bool(nonnegative_alpha),
+                    bool(mean_calibration_applied),
+                    mean_calibration_scale,
+                    eta_hat.mean().item(),
+                    eta_hat.min().item(),
+                    eta_hat.max().item(),
+                    100.0 * neg,
                 )
             )
 
