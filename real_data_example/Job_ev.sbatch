@@ -201,6 +201,7 @@ for x in [
     "ratio_lambda_reg",
     "ratio_alpha_mix",
     "return_heavy_matrices",
+    "round_discrete_z_grid",
     "nu",
     "length_scale",
     "sigma",

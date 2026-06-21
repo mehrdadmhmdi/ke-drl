@@ -3155,6 +3155,83 @@ def _extract_1d_density_from_payload(payload: dict, dim_idx: int) -> Optional[Di
     return None
 
 
+def _summarize_1d_marginal(item: Optional[Dict[str, np.ndarray]], reward_name: str) -> Optional[Dict[str, object]]:
+    if not isinstance(item, dict):
+        return None
+    grid = np.asarray(item.get("grid", []), dtype=float).reshape(-1)
+    dens = np.asarray(item.get("density", []), dtype=float).reshape(-1)
+    kind = str(item.get("kind", "continuous")).lower()
+    if grid.size == 0 or dens.size != grid.size:
+        return None
+
+    if kind == "discrete":
+        pmf = np.maximum(np.nan_to_num(dens, nan=0.0, posinf=0.0, neginf=0.0), 0.0)
+        total = float(pmf.sum())
+        if total <= 0.0 or not np.isfinite(total):
+            pmf = np.full_like(grid, 1.0 / float(max(1, grid.size)), dtype=float)
+        else:
+            pmf = pmf / total
+        out: Dict[str, object] = {
+            "reward": str(reward_name),
+            "kind": "discrete",
+            "mean": float(np.sum(grid * pmf)),
+            "support": grid.tolist(),
+            "pmf": pmf.tolist(),
+            "mode": float(grid[int(np.argmax(pmf))]),
+        }
+        for thr in [1.0, 2.0, 3.0]:
+            out[f"prob_ge_{int(thr)}"] = float(np.sum(pmf[grid >= thr]))
+        return out
+
+    density = _normalize_nonnegative_density(dens, grid)
+    mean = float(np.trapezoid(grid * density, grid)) if grid.size >= 2 else float(grid[0])
+    out = {
+        "reward": str(reward_name),
+        "kind": "continuous",
+        "mean": mean,
+        "grid_min": float(np.nanmin(grid)),
+        "grid_max": float(np.nanmax(grid)),
+        "mode": float(grid[int(np.argmax(density))]),
+    }
+    if _name_suggests_nonnegative(reward_name):
+        for thr in [0.0, 1.0, 10.0, 50.0, 100.0]:
+            mask = grid >= thr
+            out[f"prob_ge_{thr:g}"] = float(np.trapezoid(density[mask], grid[mask])) if np.sum(mask) >= 2 else 0.0
+    return out
+
+
+def _summarize_marginal_payload(payload: dict, reward_cols: Sequence[str]) -> Dict[str, object]:
+    out: Dict[str, object] = {}
+    if not isinstance(payload, dict):
+        return out
+    for d, name in enumerate(reward_cols):
+        item = _extract_1d_density_from_payload({"overlay_data": {"one_d": {
+            str(d): (payload.get("marginals", {}) or {}).get(str(d), {})
+        }}}, d)
+        if item is None and "overlay_data" in payload:
+            item = _extract_1d_density_from_payload(payload, d)
+        summary = _summarize_1d_marginal(item, str(name))
+        if summary is not None:
+            out[str(name)] = summary
+    return out
+
+
+def _compare_recovered_marginal_summaries(payload_A: dict, payload_B: dict, reward_cols: Sequence[str]) -> Dict[str, object]:
+    sum_A = _summarize_marginal_payload(payload_A.get("marginal_payload", payload_A), reward_cols)
+    sum_B = _summarize_marginal_payload(payload_B.get("marginal_payload", payload_B), reward_cols)
+    out: Dict[str, object] = {"policy_A": sum_A, "policy_B": sum_B, "delta_B_minus_A": {}}
+    for name in reward_cols:
+        a = sum_A.get(str(name), {})
+        b = sum_B.get(str(name), {})
+        deltas = {}
+        for key in sorted(set(a.keys()) & set(b.keys())):
+            if isinstance(a.get(key), (int, float)) and isinstance(b.get(key), (int, float)):
+                deltas[key] = float(b[key]) - float(a[key])
+        if deltas:
+            out["delta_B_minus_A"][str(name)] = deltas
+    return out
+
+
 def _pretty_label(name: str) -> str:
     mapping = {
         "gross_revenue_per_night": "Gross Revenue per Night",
@@ -4415,6 +4492,10 @@ def run_one_policy(
                            else int(getattr(args, "embedding_target_batch_size", 64))),
         lambda_B=float(getattr(args, "lambda_B", 0.0)),
         num_grid_points=m_Z,
+        # Rewards passed to KE_DRL are standardized.  Raw integer count rewards
+        # are therefore not integer-valued in this coordinate system, so rounding
+        # the normalized Z-grid would create pseudo-count atoms.
+        round_discrete_z_grid=False,
         hull_expand_factor=hull_expand_factor,
         lr=lr,
         num_steps=int(args.num_steps),
@@ -4626,6 +4707,7 @@ def run_one_policy(
             'method': method,
             'num_steps': int(args.num_steps),
             'num_grid_points': int(m_Z),
+            'round_discrete_z_grid': False,
             'bellman_ratio_type': 'ordinary_target_to_logged_data_direct',
             'bellman_ratio_estimator': 'direct_uLSIF_no_behavior_policy_model',
             'ratio_alpha_mix_requested': float(getattr(args, "ratio_alpha_mix", 0.0)),
@@ -4930,6 +5012,10 @@ def run_one_policy(
             reward_cols=reward_cols,
             outdir=str(plots_dir),
         )
+        recovered_marginal_summary = _summarize_marginal_payload(marginal_payload, reward_cols)
+        metrics["recovered_marginal_summary"] = recovered_marginal_summary
+        save_json(out_dir / "recovered_marginal_summary.json", recovered_marginal_summary)
+        save_json(out_dir / "metrics.json", metrics)
 
         joint_dims = (0, 1)
 
@@ -5026,6 +5112,7 @@ def run_one_policy(
             'density_weights': _to_cpu_serializable(density_weights),
             'density_weight_projection': _to_cpu_serializable(marginal_payload.get('projection', {})),
             'marginal_payload': _to_cpu_serializable(marginal_payload),
+            'recovered_marginal_summary': _to_cpu_serializable(recovered_marginal_summary),
             'reward_support_info': reward_support_info,
             'recovered_support_info': recovered_support_info,
             'cache_raw': _to_cpu_serializable(cache_raw),
@@ -5053,6 +5140,7 @@ def run_one_policy(
         )
         del raw_plot_payload, overlay_data
         del marginal_payload, density_weights, beta_tilde_induced
+        del recovered_marginal_summary
         del Zg, Zg_norm_optimized, Zg_raw_est, Zg_raw, Zg_norm_for_density
         del beta_plot, joint_surface_raw, cache_raw
         try:
@@ -5531,6 +5619,15 @@ def main() -> None:
                     out_dir=overlay_dir,
                 )
                 summary.setdefault("two_policy_comparison", {})["overlay_plot_paths"] = overlay_paths
+                recovered_cmp = _compare_recovered_marginal_summaries(payload_A, payload_B, reward_cols)
+                summary.setdefault("two_policy_comparison", {})["recovered_marginal_comparison"] = recovered_cmp
+                save_json(overlay_dir / "recovered_marginal_comparison.json", recovered_cmp)
+                click_cmp = recovered_cmp.get("delta_B_minus_A", {}).get(B, {})
+                if click_cmp:
+                    print("\nRecovered click marginal deltas (click policy minus revenue policy):")
+                    for key in ["mean", "prob_ge_1", "prob_ge_2", "prob_ge_3"]:
+                        if key in click_cmp:
+                            print(f"  {key}: {click_cmp[key]:+.6f}")
 
     save_json(out_root / f"summary_cfg{cfg_index:03d}.json", summary)
     print(f"\nSaved summary: {out_root / f'summary_cfg{cfg_index:03d}.json'}")

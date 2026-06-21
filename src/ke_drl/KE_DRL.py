@@ -112,6 +112,7 @@ def KE_DRL(
     mean_embedding_basis_max_iter: int = 20,
     mean_embedding_basis_batch_size: int = 8192,
     num_grid_points: int = 200,
+    round_discrete_z_grid: bool = True,
     # --- implementation controls ---
     hull_expand_factor: float = 1.8,
     lr: float = 1e-3,
@@ -199,6 +200,10 @@ def KE_DRL(
     ratio_calibrate_mean : bool
         For the ordinary ratio, rescale the fitted ratio to satisfy the
         empirical density-ratio identity ``mean_data eta = 1``.
+    round_discrete_z_grid : bool
+        If true, round ``discrete_dims`` in the coordinate system of ``r``.
+        Disable this when rewards have already been standardized; raw integer
+        counts are not integer-valued after z-scoring.
     """
     t0 = time.time()
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
@@ -374,10 +379,17 @@ def KE_DRL(
 
     stage_t = time.time()
     Z = ZGrid.Z_kmeans(r, n_clusters=int(num_grid_points), constant_factor=float(hull_expand_factor))
-    if discrete_dims is not None:
+    if discrete_dims is not None and bool(round_discrete_z_grid):
         Z[:, discrete_dims] = torch.round(Z[:, discrete_dims])
         if verbose:
             print(f"Rounded discrete reward dimensions in Z-grid: {discrete_dims}")
+    elif discrete_dims is not None and verbose:
+        print(
+            "Discrete reward dimensions were provided but Z-grid rounding is disabled. "
+            "This is correct when r is standardized, because raw integer counts are "
+            "not integer-valued in z-score coordinates.",
+            flush=True,
+        )
     stage_t = log_stage("Z-grid", stage_t)
 
     K_X = matern_kernel(s_a, s_a, **x_params)
@@ -582,6 +594,8 @@ def KE_DRL(
         "x_kernel_params": x_params,
         "z_kernel_params": z_params,
         "ratio_kernel_params": ratio_params,
+        "discrete_dims": None if discrete_dims is None else [int(j) for j in discrete_dims],
+        "round_discrete_z_grid": bool(round_discrete_z_grid),
         "lambda_Gamma": torch.as_tensor(lambda_reg, dtype=dtype, device=dev),
         "lambda_B": torch.as_tensor(lambda_B, dtype=dtype, device=dev),
     }

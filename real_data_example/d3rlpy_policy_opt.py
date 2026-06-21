@@ -86,6 +86,55 @@ def reward_suggests_click_like(name: str) -> bool:
     return any(k in s for k in ["click", "booking", "count", "visit", "impression"])
 
 
+def average_tie_percent_rank(values: np.ndarray) -> np.ndarray:
+    """Percent ranks in [0, 1] with equal rewards receiving equal average rank."""
+    x = np.asarray(values, dtype=np.float64).reshape(-1)
+    n = int(x.size)
+    if n <= 1:
+        return np.zeros(n, dtype=np.float64)
+    finite = np.isfinite(x)
+    if not finite.any():
+        return np.full(n, 0.5, dtype=np.float64)
+    fill = float(np.nanmin(x[finite]))
+    x_work = np.nan_to_num(x, nan=fill, posinf=float(np.nanmax(x[finite])), neginf=fill)
+    order = np.argsort(x_work, kind="mergesort")
+    sorted_x = x_work[order]
+    ranks = np.empty(n, dtype=np.float64)
+    start = 0
+    while start < n:
+        end = start + 1
+        while end < n and sorted_x[end] == sorted_x[start]:
+            end += 1
+        avg_rank = 0.5 * float(start + end - 1)
+        ranks[order[start:end]] = avg_rank
+        start = end
+    return ranks / float(max(1, n - 1))
+
+
+def reward_support_diagnostics(values: np.ndarray) -> Dict[str, object]:
+    r = np.asarray(values, dtype=np.float64).reshape(-1)
+    finite = r[np.isfinite(r)]
+    if finite.size == 0:
+        return {"n_unique_reward_values": 0}
+    rounded = np.round(finite)
+    integer_like = bool(np.mean(np.abs(finite - rounded) <= 1e-8) >= 0.995)
+    out: Dict[str, object] = {
+        "n_unique_reward_values": int(np.unique(finite).size),
+        "zero_fraction": float(np.mean(finite == 0.0)),
+        "integer_like": integer_like,
+    }
+    if integer_like:
+        vals, counts = np.unique(rounded.astype(int), return_counts=True)
+        total = float(finite.size)
+        out["integer_value_fractions"] = {
+            str(int(v)): float(c / total) for v, c in zip(vals[:20], counts[:20])
+        }
+        out["ge_1_fraction"] = float(np.mean(finite >= 1.0))
+        out["ge_2_fraction"] = float(np.mean(finite >= 2.0))
+        out["ge_3_fraction"] = float(np.mean(finite >= 3.0))
+    return out
+
+
 # -----------------------------------------------------------------------------
 # generic IO/utilities
 # -----------------------------------------------------------------------------
@@ -425,8 +474,7 @@ def make_reward_weights(reward_values: np.ndarray, reward_name: str, args) -> Tu
     if mode == "uniform":
         w = np.ones(n, dtype=np.float64)
     elif mode == "rank_softmax":
-        order = np.argsort(np.argsort(r, kind="mergesort"), kind="mergesort")
-        rank = order.astype(np.float64) / max(1, n - 1)
+        rank = average_tie_percent_rank(r)
         temp = float(args.click_reward_temperature if reward_suggests_click_like(reward_name) else args.reward_temperature)
         logits = temp * (rank - np.mean(rank))
         logits = np.clip(logits, -50.0, 50.0)
@@ -443,10 +491,16 @@ def make_reward_weights(reward_values: np.ndarray, reward_name: str, args) -> Tu
     else:
         raise ValueError(f"Unknown --reward-weight-mode={args.reward_weight_mode}")
 
-    if reward_suggests_click_like(reward_name) and float(args.click_weight_boost) > 0.0:
+    click_like = reward_suggests_click_like(reward_name)
+    click_boost_threshold = float(args.click_bank_min_reward)
+    click_boost_mask = np.zeros(n, dtype=bool)
+    if click_like and float(args.click_weight_boost) > 0.0:
         # Extra enrichment for rare positive count/click objectives.  This is applied
-        # on top of the chosen base weighting mode.
-        w = w * (1.0 + float(args.click_weight_boost) * (r > float(args.click_bank_min_reward)).astype(np.float64))
+        # on top of the chosen base weighting mode.  The strict inequality is
+        # deliberate: with the default threshold 1, this targets 2+ clicks, not
+        # merely any click.
+        click_boost_mask = r > click_boost_threshold
+        w = w * (1.0 + float(args.click_weight_boost) * click_boost_mask.astype(np.float64))
 
     w = np.nan_to_num(w, nan=1.0, posinf=float(args.weight_max), neginf=1.0)
     w = np.maximum(w, float(args.weight_min))
@@ -462,6 +516,7 @@ def make_reward_weights(reward_values: np.ndarray, reward_name: str, args) -> Tu
     diag = {
         "mode": mode,
         "reward_name": str(reward_name),
+        "rank_method": "average_tie_percent_rank" if mode == "rank_softmax" else None,
         "uniform_mix": float(uniform_mix),
         "mean": float(w.mean()),
         "std": float(w.std()),
@@ -473,6 +528,9 @@ def make_reward_weights(reward_values: np.ndarray, reward_name: str, args) -> Tu
         "reward_max": float(np.max(r)),
         "positive_fraction": float(np.mean(r > 0.0)),
         "temperature": float(args.click_reward_temperature if reward_suggests_click_like(reward_name) else args.reward_temperature),
+        "support": reward_support_diagnostics(r),
+        "click_tail_boost_threshold_strict_gt": float(click_boost_threshold) if click_like else None,
+        "click_tail_boost_fraction": float(np.mean(click_boost_mask)) if click_like else None,
     }
     return w.astype(np.float64), diag
 
@@ -505,11 +563,32 @@ def compute_reward_contrast_shift(
     q = min(max(q, 0.50), 0.99)
     threshold = float(np.quantile(r, q))
     mask = r >= threshold
+    tail_rule = "quantile_r_ge_threshold"
+    if click_like:
+        # For zero-inflated integer counts, a high quantile often lands exactly
+        # on 1, which selects all positive-click rows.  That improves "any
+        # click" but can lower the 2+ click tail.  Prefer the strict high-count
+        # tail when enough rows exist; fall back to positives only if necessary.
+        high_click_threshold = float(args.click_bank_min_reward)
+        high_click_mask = r > high_click_threshold
+        min_tail_n = max(25, int(0.005 * A.shape[0]))
+        if int(high_click_mask.sum()) >= min_tail_n:
+            threshold = high_click_threshold
+            mask = high_click_mask
+            tail_rule = "click_tail_r_gt_click_bank_min_reward"
+        else:
+            positive_mask = r > 0.0
+            if int(positive_mask.sum()) >= max(25, int(0.01 * A.shape[0])):
+                threshold = 0.0
+                mask = positive_mask
+                tail_rule = "click_positive_fallback_r_gt_0"
     if int(mask.sum()) < max(25, int(0.01 * A.shape[0])):
         threshold = float(np.quantile(r, 0.80))
         mask = r >= threshold
+        tail_rule = "fallback_quantile_0.80_r_ge_threshold"
     if int(mask.sum()) == 0:
         mask = np.ones(A.shape[0], dtype=bool)
+        tail_rule = "fallback_all_rows"
 
     base_mean = np.mean(A, axis=0)
     tail_weights = np.maximum(w[mask], 1e-12)
@@ -555,7 +634,9 @@ def compute_reward_contrast_shift(
         'click_like': bool(click_like),
         'contrast_top_quantile': float(q),
         'tail_threshold': float(threshold),
+        'tail_rule': tail_rule,
         'tail_n': int(mask.sum()),
+        'tail_fraction': float(np.mean(mask)),
         'strength': float(strength),
         'empirical_tail_minus_behavior_shift_std': empirical_shift.tolist(),
         'final_intercept_shift_std': shift.tolist(),

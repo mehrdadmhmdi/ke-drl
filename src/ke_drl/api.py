@@ -50,6 +50,7 @@ def estimate_embedding(
     mean_embedding_basis_max_iter: int = 20,
     mean_embedding_basis_batch_size: int = 8192,
     num_grid_points: int = 200,
+    round_discrete_z_grid: bool = True,
     # passthrough options identical to KE_DRL defaults
     hull_expand_factor: float = 1.0,
     lr: float = 1e-3, weight_decay: float = 0.0, num_steps: int = 5000,
@@ -102,6 +103,7 @@ def estimate_embedding(
         mean_embedding_basis_max_iter=mean_embedding_basis_max_iter,
         mean_embedding_basis_batch_size=mean_embedding_basis_batch_size,
         num_grid_points=num_grid_points,
+        round_discrete_z_grid=round_discrete_z_grid,
         hull_expand_factor=hull_expand_factor,
         lr=lr, weight_decay=weight_decay, num_steps=num_steps,
         target_batch_size=target_batch_size, target_weights=target_weights,

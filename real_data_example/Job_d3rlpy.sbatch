@@ -72,7 +72,7 @@ python -u d3rlpy_policy_opt.py \
   --gaussian-lr 2e-3 \
   --overlap-anchor-lambda 3.0 \
   --overlap-std-anchor-lambda 1.0 \
-  --policy-improvement-mix 0.35 \
+  --policy-improvement-mix 0.40 \
   --action-support-lower-quantile 0.02 \
   --action-support-upper-quantile 0.98 \
   --state-cols mean_hist_price,std_hist_price,prop_location_score1,srch_room_count,srch_length_of_stay,prop_review_score,comp_inv \
@@ -83,22 +83,23 @@ python -u d3rlpy_policy_opt.py \
   --reward-cols gross_revenue_per_night,total_clicks \
   --reward-weight-mode rank_softmax \
   --reward-temperature 5 \
-  --click-reward-temperature 7 \
+  --click-reward-temperature 10 \
   --positive-weight-boost 8 \
-  --click-weight-boost 10 \
+  --click-weight-boost 25 \
+  --click-bank-min-reward 1.0 \
   --weight-max 50 \
-  --reward-weight-uniform-mix 0.70 \
+  --reward-weight-uniform-mix 0.60 \
   --enable-policy-contrast-shift 1 \
   --contrast-top-quantile 0.92 \
   --revenue-contrast-strength 0.35 \
-  --click-contrast-strength 0.45 \
-  --action-shift-clip-std 0.75 \
+  --click-contrast-strength 0.70 \
+  --action-shift-clip-std 0.95 \
   --revenue-price-shift-std 0.25 \
   --revenue-promotion-shift-std -0.15 \
   --revenue-spread-shift-std 0.10 \
-  --click-price-shift-std -0.30 \
-  --click-promotion-shift-std 0.45 \
-  --click-spread-shift-std -0.10 \
+  --click-price-shift-std -0.45 \
+  --click-promotion-shift-std 0.70 \
+  --click-spread-shift-std -0.15 \
   --min-abs-mean-state-coef-std 0.0 \
   --min-abs-logstd-state-coef-std 0.0 \
   --linear-ridge 5e-3 \
